@@ -62,20 +62,20 @@ async def websocket_endpoint(ws: WebSocket):
         # model="gpt-3.5-turbo-1106",
     )
 
-    tts_service = ElevenTTSService(
-        api_key=ELEVENLABS_API_KEY,
-        voice_id=VOICE_ID,
-        similarity_boost=0.6,
-        stability=0.7,
+    # tts_service = ElevenTTSService(
+    #     api_key=ELEVENLABS_API_KEY,
+    #     voice_id=VOICE_ID,
+    #     similarity_boost=0.6,
+    #     stability=0.7,
+    #     stream_results=True,
+    # )
+
+    tts_service = AmazonTTSService(
+        access_key=AWS_ACCESS_KEY_ID,
+        secret_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_REGION,
         stream_results=True,
     )
-
-    # tts_service = AmazonTTSService(
-    #     access_key=AWS_ACCESS_KEY_ID,
-    #     secret_key=AWS_SECRET_ACCESS_KEY,
-    #     region_name=AWS_REGION,
-    #     stream_results=False,
-    # )
 
     orchestrator = Orchestrator(
         websocket_handler=websocket_handler,

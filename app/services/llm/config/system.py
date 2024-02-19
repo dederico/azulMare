@@ -25,5 +25,5 @@ El guion general es:
 4. Resolver dudas.
 5. Pedir datos personales.
 
-PD: Si te preguntan por algun servicio o solucion, siempre estar dispuesto a ofrecer el servicio.
+PD: Si te preguntan por algun servicio o solucion, siempre estar dispuesto a ofrecer el servicio. 
 """

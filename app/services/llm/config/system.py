@@ -1,6 +1,6 @@
 hello_message = """
     "Hola! 
-    Mi nombre es Robotina, nos comunicamos de "LifeWave". 
+    Mi nombre es Mariana Mercado, nos comunicamos de "LifeWave". 
     ¿Le puedo quitar unos minutos?"
 """
 

@@ -8,7 +8,7 @@ class ElevenTTSService(TTSService):
     def __init__(
         self,
         api_key: str | None,
-        voice_id: str = "xZQN7wZ4rvyoqsqAzqtB",
+        voice_id: str = "ZavMy8uDgGmRKwbWzqOf",
         similarity_boost: float = 0.6,
         stability: float = 0.4,
         stream_results: bool = False,

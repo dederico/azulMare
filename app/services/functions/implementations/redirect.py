@@ -82,7 +82,7 @@ async def redirect_call(call_sid):
     dial = response.dial()
     #"+523335910363",
     dial.number(
-        "+525532044232",
+        "+528182871484",
         url=f"{HOSTNAME}/handle_redirected_call",
     )
     call = client.calls(call_sid).fetch()

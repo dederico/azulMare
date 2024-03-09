@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request, Response, WebSocket
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from app.api.websocket_handler import WebSocketHandler
 from app.core.orchestrator import Orchestrator
+from app.services.stt.amazon_service import AmazonTranscribeService
 from app.services.stt.deepgram_service import DeepgramService
 from app.services.llm.openai_service import OpenAIService
 from app.services.tts.eleven_service import ElevenTTSService
@@ -20,15 +21,18 @@ from app.services.llm.config.system import system_message
 from app.services.functions.function_manager import FunctionManager
 from twilio.rest import Client
 from urllib.parse import parse_qs
+from app.services.functions.implementations.identify import get_customer_identity
 
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-VOICE_ID = os.environ.get("VOICE_ID")
-AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.environ.get("AWS_REGION")
+try:
+    OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+    DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
+    ELEVENLABS_API_KEY = os.environ["ELEVENLABS_API_KEY"]
+    VOICE_ID = os.environ["VOICE_ID"]
+    AWS_ACCESS_KEY_ID = os.environ["AWS_ACCESS_KEY_ID"]
+    AWS_SECRET_ACCESS_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
+    AWS_REGION = os.environ["AWS_REGION"]
+except:
+    raise Exception("Missing environment variables")
 
 router = APIRouter()
 
@@ -41,7 +45,6 @@ async def post(request: Request):
     connect.stream(url=f"wss://{host}/stream")
     response.append(connect)
     text = response.to_xml()
-    print(text)
     return Response(content=text, media_type="text/xml")
 
 
@@ -52,30 +55,53 @@ async def websocket_endpoint(ws: WebSocket):
 
     stt_service = DeepgramService(DEEPGRAM_API_KEY)
 
+    # stt_service = AmazonTranscribeService(
+    #         region="us-east-1",
+    #         sample_rate=8000,
+    #         enhanced=False,
+    #         language="es-US",
+    #     )
+
+    # Create a function manager to manage
+
     function_manager = FunctionManager(registered_functions)
+    async for _ in websocket_handler.process_stream():
+        break
+
+    from datetime import datetime
+
+    # Get the current date and time
+    now = datetime.now()
+
+    # Format the date as a string
+    date_string = now.strftime("%Y-%m-%d")
+
+    call_sid = websocket_handler.call_sid
+    customer_identity = await get_customer_identity(call_sid)
+    #print("HOLA------------>",customer_identity)
 
     llm_service = OpenAIService(
         api_key=OPENAI_API_KEY,
-        system=system_message,
+        system=system_message.format(customer_name=customer_identity, call_sid=call_sid,date=date_string, now=now),
         function_manager=function_manager,
         model="gpt-4-1106-preview",
         # model="gpt-3.5-turbo-1106",
     )
 
-    tts_service = ElevenTTSService(
-        api_key=ELEVENLABS_API_KEY,
-        voice_id=VOICE_ID,
-        similarity_boost=0.6,
-        stability=0.7,
-        stream_results=True,
-    )
-
-    # tts_service = AmazonTTSService(
-    #     access_key=AWS_ACCESS_KEY_ID,
-    #     secret_key=AWS_SECRET_ACCESS_KEY,
-    #     region_name=AWS_REGION,
-    #     stream_results=False,
+    # tts_service = ElevenTTSService(
+    #     api_key=ELEVENLABS_API_KEY,
+    #     voice_id=VOICE_ID,
+    #     similarity_boost=0.6,
+    #     stability=0.7,
+    #     stream_results=True,
     # )
+
+    tts_service = AmazonTTSService(
+        access_key=AWS_ACCESS_KEY_ID,
+        secret_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_REGION,
+        stream_results=False,
+    )
 
     orchestrator = Orchestrator(
         websocket_handler=websocket_handler,

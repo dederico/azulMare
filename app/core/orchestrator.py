@@ -19,6 +19,7 @@ class Orchestrator:
         self.llm_service = llm_service
         self.tts_service = tts_service
         self.websocket_handler = websocket_handler
+        self.transcript_buffer = ""
 
     async def process_audio_stream(self):
         await self.greet()
@@ -32,12 +33,22 @@ class Orchestrator:
 
     async def handler(self, transcription: dict) -> None:
         if self.websocket_handler.is_connected and transcription.get("channel"):
-            full_transcript = transcription["channel"]["alternatives"][0]["transcript"]
-            if full_transcript:
+            transcript = transcription["channel"]["alternatives"][0]["transcript"]
+
+            if not transcript:
+                return
+
+            if transcription["is_final"] and not transcription["speech_final"]:
+                logging.getLogger("uvicorn").info(f"PARTIAL: {transcript}")
+                self.transcript_buffer += transcript
+
+            if transcription["is_final"] and transcription["speech_final"]:
+                full_transcript = self.transcript_buffer + transcript
                 logging.getLogger("uvicorn").info(f"CUSTOMER: {full_transcript}")
                 await self.websocket_handler.send_mark("not_listening")
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
+                self.transcript_buffer = ""
 
     async def process_transcript(self, transcript: str) -> None:
         buffer = ""
@@ -85,9 +96,7 @@ class Orchestrator:
 
     async def greet(self):
         await self.websocket_handler.send_mark("not_listening")
-        greeting = """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
-            ¿Con quién tengo el gusto de hablar?
-        """
+        greeting = """ Bueno """
         await self.synthesize_and_send(greeting)
         self.llm_service.add_to_conversation("assistant", greeting)
         await self.websocket_handler.send_mark("listening")

@@ -57,7 +57,7 @@ class WebSocketHandler:
         raw_audio_data = audioop.ulaw2lin(audio_content, 2)
         rms = audioop.rms(raw_audio_data, 2)
 
-        if rms > 300 and (self.switch == "listening" or self.switch is None):
+        if rms > 450 and (self.switch == "listening" or self.switch is None):
             return raw_audio_data
         else:
             raw_audio_data = await self.generate_silence()

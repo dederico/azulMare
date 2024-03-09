@@ -8,7 +8,7 @@ class ElevenTTSService(TTSService):
     def __init__(
         self,
         api_key: str | None,
-        voice_id: str = "xZQN7wZ4rvyoqsqAzqtB",
+        voice_id: str = "ZavMy8uDgGmRKwbWzqOf",
         similarity_boost: float = 0.6,
         stability: float = 0.4,
         stream_results: bool = False,
@@ -21,19 +21,19 @@ class ElevenTTSService(TTSService):
 
     async def synthesize(self, text: str):
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}"
-        querystring = {"optimize_streaming_latency": "3", "output_format": "ulaw_8000"}
+        querystring = {"optimize_streaming_latency": "2", "output_format": "ulaw_8000"}
 
         payload = {
             "model_id": "eleven_multilingual_v1",
             "text": text,
             "voice_settings": {
-                "similarity_boost": 0.6,
-                "stability": 0.6,
-                "use_speaker_boost": True,
+                "similarity_boost": 0.5,
+                "stability": 0.4,
+                "use_speaker_boost": False,
             },
         }
         headers = {
-            "xi-api-key": "be6ba447f38b2f84255363d41d5fe297",
+            "xi-api-key": self.api_key,
             "Content-Type": "application/json",
         }
 
@@ -48,7 +48,7 @@ class ElevenTTSService(TTSService):
 
     async def stream_synthesize(self, text: str):
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}/stream"
-        querystring = {"optimize_streaming_latency": "3", "output_format": "ulaw_8000"}
+        querystring = {"optimize_streaming_latency": "2", "output_format": "ulaw_8000"}
 
         payload = {
             "model_id": "eleven_multilingual_v1",

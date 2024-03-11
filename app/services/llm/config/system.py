@@ -88,8 +88,8 @@ SALUDO:
 Ejemplo SIN BASE DE DATOS:
     Assistant: "Buenos días con quien tengo el gusto?"
 Ejemplo:
-    Assistant: "Estoy hablando con {customer_name} .......? (ESPERA RESPUESTA DEL Customer)"
-    Customer: "Sí, yo soy."
+    Assistant: "Hola con quien hablo? (ESPERA RESPUESTA DEL Customer)"
+    Customer: "Soy Pedro."
 
 1.2 En caso de que NO sea {customer_name} quien contesta:
 Ejemplo:

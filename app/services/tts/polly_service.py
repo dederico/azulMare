@@ -56,7 +56,7 @@ class AmazonTTSService(TTSService):
                 Text=text,
                 TextType="ssml" if "<speak>" in text else "text",
                 OutputFormat="pcm",
-                VoiceId="Pedro",
+                VoiceId="Lupe",
                 SampleRate=str(SAMPLE_RATE),
                 Engine="neural",
                 LanguageCode="es-US",

@@ -80,10 +80,21 @@ class OpenAIService(LLMService):
     async def handle_tool_call_finish(self):
         for k, v in self.functions.items():
             logging.getLogger("uvicorn").debug(f"Call: {k} with arguments: {v}")
-            arguments = json.loads(v)
+            
+            try:
+                arguments = json.loads(v)
+            except json.decoder.JSONDecoderError as e:
+                logging.getLogger("uvicorn").error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
+                continue
+
             for func in self.function_manager.registered_functions:
                 if func.__name__ == k:
-                    response = await func(**arguments)
+                    try:
+                        response = await func(**arguments)
+                    except Exception as e:
+                        logging.getLogger("uvicorn").error(f"Error calling function {k} with arguments {arguments}: {e}")
+                        continue
+                    
                     self.add_to_conversation(
                         "function", content=response, name=func.__name__
                     )

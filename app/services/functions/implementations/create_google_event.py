@@ -12,7 +12,7 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE = './credentials.json'
 CALENDAR_ID = 'dederico@gmail.com'
 
-def get_credentials():
+async def get_credentials():
     """Obtiene las credenciales de usuario válidas del almacenamiento.
 
     Si no se encuentran credenciales válidas, se completa el flujo OAuth2 para obtener
@@ -33,13 +33,13 @@ def get_credentials():
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
                 'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = flow.run_console()
         # Guarda las credenciales para la próxima ejecución
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
     return creds
 
-def create_google_event(start_datetime, end_datetime, summary, location, description, email_address):
+async def create_google_event(start_datetime, end_datetime, summary="Resumen del evento", location="Monterrey, Mexico", description="Descripción del evento", email_address="dederico@gmail.com"):
     """Crea un evento en Google Calendar.
     
     Args:
@@ -61,7 +61,7 @@ def create_google_event(start_datetime, end_datetime, summary, location, descrip
     print(f"description: {description}")
     print(f"email_address: {email_address}")
 
-    creds = get_credentials()
+    creds = await get_credentials()
     try:
         service = build('calendar', 'v3', credentials=creds)
         event = {
@@ -70,11 +70,11 @@ def create_google_event(start_datetime, end_datetime, summary, location, descrip
             'description': description,
             'start': {
                 'dateTime': start_datetime.strftime("%Y-%m-%dT%H:%M:%S"),
-                'timeZone': 'Asia/Kolkata',
+                'timeZone': 'America/Mexico_City',
             },
             'end': {
                 'dateTime': end_datetime.strftime("%Y-%m-%dT%H:%M:%S"),
-                'timeZone': 'Asia/Kolkata',
+                'timeZone': 'America/Mexico_City',
             },
             'attendees': [{'email': email_address}] if email_address else [],
             'reminders': {

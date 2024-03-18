@@ -83,7 +83,7 @@ class OpenAIService(LLMService):
             
             try:
                 arguments = json.loads(v)
-            except json.decoder.JSONDecoderError as e:
+            except json.decoder.JSONDecodeError as e:
                 logging.getLogger("uvicorn").error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
                 continue
 

@@ -6,6 +6,8 @@ import os.path
 import pytz
 from google.auth.transport.requests import Request
 #from function_manager import FunctionManager
+from dateutil import parser as date_parser
+
 
 # Credenciales de Google Calendar
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -39,7 +41,7 @@ async def get_credentials():
             token.write(creds.to_json())
     return creds
 
-async def create_google_event(start_datetime, end_datetime, summary="Resumen del evento", location="Monterrey, Mexico", description="Descripción del evento", email_address="dederico@gmail.com"):
+async def create_google_event(start_datetime: str, end_datetime: str, summary="Resumen del evento", location="Monterrey, Mexico", description="Descripción del evento", email_address="dederico@gmail.com"):
     """Crea un evento en Google Calendar.
     
     Args:
@@ -53,6 +55,10 @@ async def create_google_event(start_datetime, end_datetime, summary="Resumen del
     Returns:
         string: Mensaje de confirmación.
     """
+    # Parse start and end datetimes
+    start_datetime = date_parser.parse(start_datetime)
+    end_datetime = date_parser.parse(end_datetime)
+
     print("Creating Google Calendar event with the following parameters:")
     print(f"start_datetime: {start_datetime}")
     print(f"end_datetime: {end_datetime}")

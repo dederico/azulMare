@@ -20,6 +20,11 @@ from app.services.llm.config.system import system_message
 from app.services.functions.function_manager import FunctionManager
 from twilio.rest import Client
 from urllib.parse import parse_qs
+from datetime import datetime
+from app.services.functions.implementations.identify import get_customer_identity
+from app.services.functions.implementations.date import get_current_date
+
+
 
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -54,9 +59,21 @@ async def websocket_endpoint(ws: WebSocket):
 
     function_manager = FunctionManager(registered_functions)
 
+    # Get the current date and time
+    now = datetime.now()
+
+    # Format the date as a string
+    date_string = now.strftime("%Y-%m-%d")
+
+    current_date = await get_current_date()
+
+    # Get call SID and customer identity
+    call_sid = websocket_handler.call_sid
+    customer_identity = await get_customer_identity(call_sid)
+
     llm_service = OpenAIService(
         api_key=OPENAI_API_KEY,
-        system=system_message,
+        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager,
         #model="gpt-4-1106-preview",
         model="gpt-3.5-turbo-1106",

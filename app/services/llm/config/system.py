@@ -64,5 +64,5 @@ system_message = """
 """
 
 hello_message = """
-    ¿Bueno?, Hola ... mi nombre es Lorena, te estamos hablando de EASY.
+    ¿Bueno?, Hola ... mi nombre es Lorena, te estamos hablando de Telmex.
 """

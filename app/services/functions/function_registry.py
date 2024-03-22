@@ -11,7 +11,7 @@ from .implementations.identify import get_customer_identity
 
 
 registered_functions = [
-    get_credit_card_options, 
+    #get_credit_card_options, 
     #hangup, 
     get_current_weather, 
     #get_customer_debt, 

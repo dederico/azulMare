@@ -19,7 +19,7 @@ scope = [
 # Configuración de Twilio
 account_sid = "AC274ae17c4a1dc4f8d1097d5b7f03aef3"
 auth_token = "4be617ccc7e365ce45ae0f8504689b4b"
-from_phone_number = "+525568268327"
+from_phone_number = "+12708594915"
 NGROK_URL = os.environ.get("HOSTNAME")
 # to_phone_number = '+528181850026'
 

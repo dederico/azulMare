@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv(".env")
-NGROK_URL = os.environ.get("NGROK")
+#NGROK_URL = os.environ.get("HOSTNAME")
 # Configuración de Google Sheets
 spreadsheet_key = "1IMK9AbP2-xMlFf9oIxP-JH0KgopRLaUJ4ccTWcGHPIA"
 credentials_path = "credentials.json"
@@ -19,7 +19,7 @@ scope = [
 # Configuración de Twilio
 account_sid = "AC274ae17c4a1dc4f8d1097d5b7f03aef3"
 auth_token = "4be617ccc7e365ce45ae0f8504689b4b"
-from_phone_number = "+12708594915"
+from_phone_number = "+528141701647"
 NGROK_URL = os.environ.get("HOSTNAME")
 # to_phone_number = '+528181850026'
 
@@ -38,8 +38,23 @@ def make_twilio_call(to_phone_number, message):
         to=to_phone_number,
         from_=from_phone_number,
         url=NGROK_URL,  # Puedes proporcionar un URL con un mensaje grabado o texto a voz
+        machine_detection="Enable",
+        async_amd="Enable",
+        async_amd_status_callback=f"{NGROK_URL}/amd_callback",
     )
     return call.sid
+
+# def make_twilio_call(to_phone_number, host):
+#     client = Client(account_sid, auth_token)
+#     call = client.calls.create(
+#         to=to_phone_number,
+#         from_=from_phone_number,
+#         url=f"{NGROK_URL}/",  # URL for call handling TwiML
+#         machine_detection="Enable",
+#         async_amd="Enable",
+#         async_amd_status_callback=f"{NGROK_URL}/amd_callback",
+#     )
+#     return call.sid
 
 
 def main():

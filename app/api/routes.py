@@ -12,6 +12,7 @@ from twilio.twiml.voice_response import VoiceResponse, Connect
 from app.api.websocket_handler import WebSocketHandler
 from app.core.orchestrator import Orchestrator
 from app.services.stt.deepgram_service import DeepgramService
+from app.services.stt.amazon_service import AmazonTranscribeService
 from app.services.llm.openai_service import OpenAIService
 from app.services.tts.eleven_service import ElevenTTSService
 from app.services.tts.polly_service import AmazonTTSService
@@ -55,7 +56,16 @@ async def websocket_endpoint(ws: WebSocket):
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
 
-    stt_service = DeepgramService(DEEPGRAM_API_KEY)
+    # Set up Deepgram as the Speech-to-Text (STT) Model
+    #stt_service = DeepgramService(DEEPGRAM_API_KEY)
+
+    # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
+    stt_service = AmazonTranscribeService(
+        region="us-east-1",
+        sample_rate=8000,
+        enhanced=False,
+        language="es-US",
+    )
 
     function_manager = FunctionManager(registered_functions)
 

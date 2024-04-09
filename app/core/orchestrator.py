@@ -85,7 +85,7 @@ class Orchestrator:
 
     async def greet(self):
         await self.websocket_handler.send_mark("not_listening")
-        greeting = """Mi nombre es MarIA, un concierge y asistente digital para huéspedes en el Hotel León. 
+        greeting = """Mi nombre es MarIA, un concierge y asistente digital para huéspedes del Grupo "G-Group". 
             ¿Con quien tengo el gusto de hablar?"
         """
         await self.synthesize_and_send(greeting)

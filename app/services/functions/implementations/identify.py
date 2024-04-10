@@ -54,12 +54,15 @@ async def get_customer_identity(call_sid):
         string: Mensaje de confirmacion.
     """
     
-    call = client.calls(call_sid).fetch()
+    try:
+        call = client.calls(call_sid).fetch()
 
-    # Get the caller's phone number
-    phone_number = call.to
+        # Get the caller's phone number
+        phone_number = call.to
 
-    return await find_by_phone_number(phone_number)
+        return await find_by_phone_number(phone_number)
+    except:
+        return "Name not FOUND"
 
 
 # async def main():

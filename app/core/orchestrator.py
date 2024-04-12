@@ -85,8 +85,7 @@ class Orchestrator:
 
     async def greet(self):
         await self.websocket_handler.send_mark("not_listening")
-        greeting = """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
-            ¿Con quién tengo el gusto de hablar?
+        greeting = """Hola! Mi nombre es Mauricio, ahora me dicen el tio Mau, con quien hablo?
         """
         await self.synthesize_and_send(greeting)
         self.llm_service.add_to_conversation("assistant", greeting)

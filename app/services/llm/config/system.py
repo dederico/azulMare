@@ -1,6 +1,6 @@
 hello_message = """
     "Hola! 
-    Mi nombre es MarIA, un concierge y asistente digital para huéspedes en los hoteles del Grupo "G-Group". 
+    Mi nombre es MarIA, un concierge para huéspedes en los hoteles del Grupo "G-Group". 
     ¿Con quien tengo el gusto de hablar?"
 """
 

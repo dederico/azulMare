@@ -1,6 +1,6 @@
 hello_message = """
     "Hola! 
-    Mi nombre es Julieta Perez, nos comunicamos de SWITCH en colaboración con AMERICAN EXPRESS. 
+    Mi nombre es Robotino,
     ¿Me comunico con {customer_name}?"
 """
 

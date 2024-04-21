@@ -67,7 +67,7 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language="en-US",
+        language="es-US",
     )
 
     function_manager = FunctionManager(registered_functions)

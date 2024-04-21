@@ -1,7 +1,7 @@
 import json
-import logging
 import time
 import openai
+from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
 from app.services.functions.function_manager import FunctionManager
@@ -79,12 +79,12 @@ class OpenAIService(LLMService):
 
     async def handle_tool_call_finish(self):
         for k, v in self.functions.items():
-            logging.getLogger("uvicorn").debug(f"Call: {k} with arguments: {v}")
+            logger.debug(f"Call: {k} with arguments: {v}")
             
             try:
                 arguments = json.loads(v)
             except json.decoder.JSONDecodeError as e:
-                logging.getLogger("uvicorn").error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
+                logger.error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
                 continue
 
             for func in self.function_manager.registered_functions:
@@ -92,7 +92,7 @@ class OpenAIService(LLMService):
                     try:
                         response = await func(**arguments)
                     except Exception as e:
-                        logging.getLogger("uvicorn").error(f"Error calling function {k} with arguments {arguments}: {e}")
+                        logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
                         continue
                     
                     self.add_to_conversation(

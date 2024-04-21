@@ -22,6 +22,7 @@ from app.services.functions.function_manager import FunctionManager
 from twilio.rest import Client
 from urllib.parse import parse_qs
 from datetime import datetime
+from app.util.logger import logger
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 
@@ -47,12 +48,13 @@ async def post(request: Request):
     connect.stream(url=f"wss://{host}/stream")
     response.append(connect)
     text = response.to_xml()
-    print(text)
+    logger.debug(text)
     return Response(content=text, media_type="text/xml")
 
 
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
+    logger.info("Got new INCOMING_CALL")
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
 
@@ -60,11 +62,12 @@ async def websocket_endpoint(ws: WebSocket):
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)
 
     # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
+    logger.debug("Setting up transcription service")
     stt_service = AmazonTranscribeService(
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language="es-US",
+        language="en-US",
     )
 
     function_manager = FunctionManager(registered_functions)
@@ -81,6 +84,7 @@ async def websocket_endpoint(ws: WebSocket):
     call_sid = websocket_handler.call_sid
     customer_identity = await get_customer_identity(call_sid)
 
+    logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
@@ -97,6 +101,7 @@ async def websocket_endpoint(ws: WebSocket):
     #     stream_results=True,
     # )
 
+    logger.debug("Initializing TTS engine for call")
     tts_service = AmazonTTSService(
         access_key=AWS_ACCESS_KEY_ID,
         secret_key=AWS_SECRET_ACCESS_KEY,
@@ -104,6 +109,7 @@ async def websocket_endpoint(ws: WebSocket):
         stream_results=False,
     )
 
+    logger.debug("Initializing orchestrator for the call")
     orchestrator = Orchestrator(
         websocket_handler=websocket_handler,
         stt_service=stt_service,
@@ -111,10 +117,11 @@ async def websocket_endpoint(ws: WebSocket):
         tts_service=tts_service,
     )
     try:
+        logger.debug("Starting a conversation with caller")
         await orchestrator.process_audio_stream()
-    except:
+    except Exception as e:
+        logger.critical("Call Ended " + e)
         await stt_service.finish_transcription()
-        logging.getLogger("uvicorn").warning("Call ended")
 
 
 @router.post("/amd_detect")
@@ -132,9 +139,7 @@ async def amd_detect(request: Request):
         client = Client(account_sid, auth_token)
         client.calls(call_sid).update(status="completed")
 
-        logging.getLogger("uvicorn").warning(
-            f"Machine - {answered_by} detected for: {call_sid}"
-        )
+        logger.warning(f"Machine - {answered_by} detected for: {call_sid}")
 
 
 @router.get("/health")
@@ -174,6 +179,6 @@ async def make_call(request: Request):
             try:
                 response.raise_for_status()
                 r = await response.text()
-                logging.getLogger("uvicorn").info(r)
+                logger.info(r)
             except Exception as e:
-                logging.getLogger("uvicorn").warning(f"Call failed with error: {e}")
+                logger.warning(f"Call failed with error: {e}")

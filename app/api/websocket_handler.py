@@ -1,7 +1,7 @@
 import base64
 import audioop
-import logging
 from fastapi import WebSocket
+from app.util.logger import logger
 from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
 
@@ -30,11 +30,11 @@ class WebSocketHandler:
                     yield chunk
 
         except WebSocketDisconnect:
-            logging.getLogger("uvicorn").warning("WebSocket disconnected")
+            logger.warning("WebSocket disconnected")
             raise WebSocketDisconnect
 
         except Exception as e:
-            logging.getLogger("uvicorn").error(
+            logger.error(
                 f"Error in WebSocket stream processing: {e}"
             )
             raise e

@@ -67,3 +67,4 @@ opentelemetry-instrumentation-fastapi==0.43b0
 opentelemetry-instrumentation-logging==0.43b0
 opentelemetry-exporter-otlp==1.22.0
 pyyaml
+colorlog

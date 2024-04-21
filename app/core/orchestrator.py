@@ -1,6 +1,6 @@
-import logging
 import re
 
+from app.util.logger import logger
 from app.services.stt.stt_service import STTService
 from app.services.llm.llm_service import LLMService
 from app.services.tts.tts_service import TTSService
@@ -19,8 +19,10 @@ class Orchestrator:
         self.llm_service = llm_service
         self.tts_service = tts_service
         self.websocket_handler = websocket_handler
+        logger.debug("Orchestrator for new call has been initialized")
 
     async def process_audio_stream(self):
+        logger.debug("Greeting the caller")
         await self.greet()
 
         await self.stt_service.start_transcription()
@@ -29,18 +31,21 @@ class Orchestrator:
         async for audio_chunk in self.websocket_handler.process_stream():
             await self.stt_service.transcribe(audio_chunk)
         await self.stt_service.finish_transcription()
+        logger.debug("Transcription processed finished")
 
     async def handler(self, transcription: dict) -> None:
         if self.websocket_handler.is_connected and transcription.get("channel"):
             full_transcript = transcription["channel"]["alternatives"][0]["transcript"]
             if full_transcript:
-                logging.getLogger("uvicorn").info(f"CUSTOMER: {full_transcript}")
+                logger.warning(f"CUSTOMER: {full_transcript}")
                 await self.websocket_handler.send_mark("not_listening")
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
 
     async def process_transcript(self, transcript: str) -> None:
         buffer = ""
+
+        logger.debug("Generating response from LLM service")
         generator = self.llm_service.generate_response(transcript)
 
         async for token in generator:  # type:ignore
@@ -51,6 +56,7 @@ class Orchestrator:
             buffer = await self.process_buffer(buffer)
 
         if buffer:
+            logger.debug("Invoking TTS engine on LLM response")
             await self.synthesize_and_send(buffer)
 
     async def process_buffer(self, buffer: str) -> str:
@@ -61,7 +67,7 @@ class Orchestrator:
         return buffer
 
     async def synthesize_and_send(self, text: str) -> None:
-        logging.getLogger("uvicorn").info(f"MODEL: {text}")
+        logger.warning(f"Speaking: {text}")
         if self.tts_service.stream_results:
             generator = self.tts_service.stream_synthesize(text)
             async for encoded_audio in generator:  # type:ignore
@@ -88,6 +94,8 @@ class Orchestrator:
         greeting = """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
             ¿Con quién tengo el gusto de hablar?
         """
+
+        logger.debug("GREETING: {}".format(greeting))
         await self.synthesize_and_send(greeting)
         self.llm_service.add_to_conversation("assistant", greeting)
         await self.websocket_handler.send_mark("listening")

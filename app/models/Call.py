@@ -1,0 +1,10 @@
+class Call:
+    callerName: str
+    callerAddress: str
+    callSource: str
+    callNumber: str
+    callStatus: str
+    callType: str
+    callDuration: int
+    callScript: str
+    callLogs: str

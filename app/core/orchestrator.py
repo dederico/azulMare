@@ -5,7 +5,8 @@ from app.services.stt.stt_service import STTService
 from app.services.llm.llm_service import LLMService
 from app.services.tts.tts_service import TTSService
 from app.api.websocket_handler import WebSocketHandler
-
+from app.util.database import LocalStorage
+from app.models import Config
 
 class Orchestrator:
     def __init__(
@@ -15,6 +16,7 @@ class Orchestrator:
         llm_service: LLMService,
         tts_service: TTSService,
     ):
+        self.stats = { "Logs": "", "Script": [], "Status": "COMPLETED" }
         self.stt_service = stt_service
         self.llm_service = llm_service
         self.tts_service = tts_service
@@ -22,21 +24,27 @@ class Orchestrator:
         logger.debug("Orchestrator for new call has been initialized")
 
     async def process_audio_stream(self):
-        logger.debug("Greeting the caller")
-        await self.greet()
+        try:
+            logger.debug("Greeting the caller")
+            await self.greet()
 
-        await self.stt_service.start_transcription()
-        await self.stt_service.set_transcript_received_callback(self.handler)
+            await self.stt_service.start_transcription()
+            await self.stt_service.set_transcript_received_callback(self.handler)
 
-        async for audio_chunk in self.websocket_handler.process_stream():
-            await self.stt_service.transcribe(audio_chunk)
-        await self.stt_service.finish_transcription()
-        logger.debug("Transcription processed finished")
+            async for audio_chunk in self.websocket_handler.process_stream():
+                await self.stt_service.transcribe(audio_chunk)
+            await self.stt_service.finish_transcription()
+            logger.debug("Call ended Gracefully")
+        except Exception as e:
+            logger.critical(e)
+            self.stats["Logs"] += str(e)
+            self.stats["Status"] = "COMPLETED_WITH_ERROR"
 
     async def handler(self, transcription: dict) -> None:
         if self.websocket_handler.is_connected and transcription.get("channel"):
             full_transcript = transcription["channel"]["alternatives"][0]["transcript"]
             if full_transcript:
+                self.stats["Script"].append({ "role": "CUSTOMER", "dialog": full_transcript })
                 logger.warning(f"CUSTOMER: {full_transcript}")
                 await self.websocket_handler.send_mark("not_listening")
                 await self.process_transcript(full_transcript)
@@ -68,6 +76,7 @@ class Orchestrator:
 
     async def synthesize_and_send(self, text: str) -> None:
         logger.warning(f"Speaking: {text}")
+        self.stats["Script"].append({ "role": "BOT", "dialog": text })
         if self.tts_service.stream_results:
             generator = self.tts_service.stream_synthesize(text)
             async for encoded_audio in generator:  # type:ignore
@@ -90,8 +99,10 @@ class Orchestrator:
             return None, None
 
     async def greet(self):
+        ls = LocalStorage()
+        config = { conf.name: conf.value for conf in ls.GetAll(Config) }
         await self.websocket_handler.send_mark("not_listening")
-        greeting = """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
+        greeting = config.get("Greeting") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
             ¿Con quién tengo el gusto de hablar?
         """
 

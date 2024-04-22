@@ -3,7 +3,7 @@ import aiohttp
 import logging
 import urllib.parse
 import os
-
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,6 +23,8 @@ from twilio.rest import Client
 from urllib.parse import parse_qs
 from datetime import datetime
 from app.util.logger import logger
+from app.models import Call
+from app.util.database import LocalStorage
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 
@@ -55,6 +57,7 @@ async def post(request: Request):
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
     logger.info("Got new INCOMING_CALL")
+    db = LocalStorage()
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
 
@@ -74,6 +77,16 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Get the current date and time
     now = datetime.now()
+    call = Call(
+        callTime = now.strftime("%d-%m-%Y %T"),
+        callerAddress = None,
+        callSource = "Twillio",
+        callType = "IP",
+        callLogs = "",
+        callStatus = "IN_PROGRESS",
+        callNumber = websocket_handler.call_sid
+    )
+    call = db.Insert(call)
 
     # Format the date as a string
     date_string = now.strftime("%Y-%m-%d")
@@ -83,6 +96,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Get call SID and customer identity
     call_sid = websocket_handler.call_sid
     customer_identity = await get_customer_identity(call_sid)
+    call.callerName = customer_identity
 
     logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(
@@ -116,12 +130,16 @@ async def websocket_endpoint(ws: WebSocket):
         llm_service=llm_service,
         tts_service=tts_service,
     )
-    try:
-        logger.debug("Starting a conversation with caller")
-        await orchestrator.process_audio_stream()
-    except Exception as e:
-        logger.critical("Call Ended " + e)
-        await stt_service.finish_transcription()
+
+    logger.debug("Starting a conversation with caller")
+    stats = await orchestrator.process_audio_stream()
+        
+    call.callLogs = stats['Logs']
+    call.callScript = json.dumps(stats['Script'])
+    call.callStatus = stats['Status']
+    
+    call.callDuration = (datetime.now() - now).seconds
+    db.Update(call)
 
 
 @router.post("/amd_detect")

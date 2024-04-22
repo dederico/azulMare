@@ -73,9 +73,42 @@ class LocalStorage:
             ''', values)
 
             conn.commit()
+            setattr(data, 'id', cursor.lastrowid)
+
             conn.close()
             logger.info("New record added successfully in Local Storage")
-            return True
+            return data
+        except Exception as e:
+            logger.error(e)
+            return False
+    
+    def Update(self, data):
+        try:
+            if not hasattr(data, 'id'):
+                logger.warning("Unique ID not found in data instance skipping update")
+                return False
+
+            logger.debug("Trying to Update existing model entry in local storage")
+            conn = sqlite3.connect(self.filename)
+            cursor = conn.cursor()
+
+            table_name = f"{type(data).__name__.lower()}s"
+            fields = ', '.join(data.__dict__.keys())
+            placeholders = ', '.join(['?' for _ in range(len(data.__dict__))])
+
+            values = [getattr(data, field) for field in data.__dict__.keys()]
+            cursor.execute(f'''
+                UPDATE {table_name}
+                SET {', '.join([f"{field} = ?" for field in fields.split(",")])}
+                WHERE id = ?
+            ''', values + [data.id])
+
+
+            conn.commit()
+
+            conn.close()
+            logger.info("Existing record updated successfully in Local Storage")
+            return data
         except Exception as e:
             logger.error(e)
             return False

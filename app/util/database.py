@@ -1,10 +1,12 @@
 import os
 import sqlite3
-from logger import logger
-from app.models import Call, User, Config
+from .logger import logger
+from app.models.Call import Call
+from app.models.Config import Config
+from app.models.User import User
 
 class LocalStorage:
-    def __init__(self, dbName='my-db'):
+    def __init__(self, dbName='my-db.db'):
         self.filename = dbName
         logger.debug("Preparing local storage")
         if not os.path.exists(self.filename):
@@ -22,14 +24,17 @@ class LocalStorage:
 
             table_name = f"{model_cls.__name__.lower()}s"
             logger.debug("Creating table " + table_name)
-            fields = ', '.join([f"{field} {data_type}" for field, data_type in model_cls.__annotations__.items()])
-
-            cursor.execute(f'''
+            fields = ', '.join([f"{field} {data_type.__name__}" for field, data_type in model_cls.__annotations__.items()])
+            query = f'''
                 CREATE TABLE IF NOT EXISTS {table_name} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                     {fields}
                 )
-            ''')
+            '''
+
+            logger.warning("Executing query")
+            logger.warning(query)
+            cursor.execute(query)
 
             conn.commit()
             conn.close()
@@ -38,16 +43,17 @@ class LocalStorage:
             logger.error(e)
             return False
     
-    def GetAll(model):
+    def GetAll(self, model):
         try:
             conn = sqlite3.connect(self.filename)
             cursor = conn.cursor()
 
-            cursor.execute(f"SELECT * FROM {type(model).__name__.lower()}s")
+            cursor.execute(f"SELECT * FROM {model.__name__.lower()}s")
+            column_names = [column[0] for column in cursor.description]
 
             records = []
             for row in cursor.fetchall():
-                record = model(**dict(row))
+                record = model(**dict(zip(column_names, row)))
                 records.append(record)
 
             conn.close()
@@ -93,13 +99,12 @@ class LocalStorage:
             cursor = conn.cursor()
 
             table_name = f"{type(data).__name__.lower()}s"
-            fields = ', '.join(data.__dict__.keys())
             placeholders = ', '.join(['?' for _ in range(len(data.__dict__))])
 
             values = [getattr(data, field) for field in data.__dict__.keys()]
             cursor.execute(f'''
                 UPDATE {table_name}
-                SET {', '.join([f"{field} = ?" for field in fields.split(",")])}
+                SET {', '.join([f"{field} = ?" for field in data.__dict__.keys()])}
                 WHERE id = ?
             ''', values + [data.id])
 

@@ -23,13 +23,10 @@ from twilio.rest import Client
 from urllib.parse import parse_qs
 from datetime import datetime
 from app.util.logger import logger
-from app.models import Call
+from app.models.Call import Call
 from app.util.database import LocalStorage
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
-
-
-
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
@@ -79,10 +76,8 @@ async def websocket_endpoint(ws: WebSocket):
     now = datetime.now()
     call = Call(
         callTime = now.strftime("%d-%m-%Y %T"),
-        callerAddress = None,
         callSource = "Twillio",
         callType = "IP",
-        callLogs = "",
         callStatus = "IN_PROGRESS",
         callNumber = websocket_handler.call_sid
     )

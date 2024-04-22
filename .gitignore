@@ -3,3 +3,5 @@ __pycache__/
 .DS_Store
 .vscode
 serve
+*.log
+.db

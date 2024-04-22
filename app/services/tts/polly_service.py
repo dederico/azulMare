@@ -4,6 +4,8 @@ from typing import AsyncGenerator
 import aiobotocore
 from aiobotocore.session import AioSession
 import time
+from app.models.Config import Config
+from app.util.database import LocalStorage
 from app.services.tts.tts_service import TTSService
 
 # Configuration constants
@@ -48,6 +50,10 @@ class AmazonTTSService(TTSService):
         :param text: Text to be converted to speech.
         """
 
+        ls = LocalStorage()
+        config = { c.name: c.value for c in ls.GetAll(Config) }
+        lang = config.get("Lang") or "es-US"
+
         if not self.client:
             await self.initialize_client()
 
@@ -59,7 +65,7 @@ class AmazonTTSService(TTSService):
                 VoiceId="Lupe",
                 SampleRate=str(SAMPLE_RATE),
                 Engine="neural",
-                LanguageCode="es-US",
+                LanguageCode=lang,
             )  # type: ignore
             mulaw_audio = await synth["AudioStream"].read()
             audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)

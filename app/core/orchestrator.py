@@ -6,7 +6,7 @@ from app.services.llm.llm_service import LLMService
 from app.services.tts.tts_service import TTSService
 from app.api.websocket_handler import WebSocketHandler
 from app.util.database import LocalStorage
-from app.models import Config
+from app.models.Config import Config
 
 class Orchestrator:
     def __init__(
@@ -39,6 +39,8 @@ class Orchestrator:
             logger.critical(e)
             self.stats["Logs"] += str(e)
             self.stats["Status"] = "COMPLETED_WITH_ERROR"
+        
+        return self.stats
 
     async def handler(self, transcription: dict) -> None:
         if self.websocket_handler.is_connected and transcription.get("channel"):

@@ -4,4 +4,4 @@ __pycache__/
 .vscode
 serve
 *.log
-.db
+*.db

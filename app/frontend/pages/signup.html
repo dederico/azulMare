@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>Welcome</title>
+	<link rel="stylesheet" href="/static/css/bootstrap.css">
+	<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.3.1/css/all.css"
+		integrity="sha384-mzrmE5qonljUremFsqc01SB46JvROS7bZs3IO2EmfFsd15uHvIt+Y8vEf7N7fWAU" crossorigin="anonymous">
+
+	<link rel="stylesheet" type="text/css" href="/static/css/login.css">
+	<script src="/static/js/jquery.js"></script>
+
+	<style>
+		form {
+			display: none;
+		}
+	</style>
+
+</head>
+
+<body>
+	<div class="container">
+		<div class="d-flex justify-content-center h-100">
+			<div class="card">
+				<div class="card-header">
+					<h3>
+						<center>Welcome</center>
+					</h3>
+				</div>
+				<div class="card-body">
+					<label style="color: white;" class="welcome-message">
+						We welcome you to your very own virtual call assistant <strong
+							style="color:orange;">Call-GPT</strong>. A product brought to you by Beholder Enterprises.
+					</label>
+					<label style="color: white;" class="welcome-message">
+						It seems like you're new here. To get started, please create your account by providing a
+						username and password.
+					</label>
+					<form method="POST" action="#">
+						<div class="input-group form-group">
+							<div class="input-group-prepend">
+								<span class="input-group-text"><i class="fas fa-language"></i></span>
+							</div>
+							<select name="language" id="language" class="form-control" required>
+								<option value="arb">Arabic</option>
+								<option value="ar-AE">Arabic (Gulf)</option>
+								<option value="ca-ES">Catalan</option>
+								<option value="yue-CN">Chinese (Cantonese)</option>
+								<option value="cmn-CN">Chinese (Mandarin)</option>
+								<option value="da-DK">Danish</option>
+								<option value="nl-BE">Dutch (Belgian)</option>
+								<option value="nl-NL">Dutch</option>
+								<option value="en-AU">English (Australian)</option>
+								<option value="en-GB">English (British)</option>
+								<option value="en-IN">English (Indian)</option>
+								<option value="en-NZ">English (New Zealand)</option>
+								<option value="en-ZA">English (South African)</option>
+								<option value="en-US" selected>English (US)</option>
+								<option value="en-GB-WLS">English (Welsh)</option>
+								<option value="fi-FI">Finnish</option>
+								<option value="fr-FR">French</option>
+								<option value="fr-BE">French (Belgian)</option>
+								<option value="fr-CA">French (Canadian)</option>
+								<option value="hi-IN">Hindi</option>
+								<option value="de-DE">German</option>
+								<option value="de-AT">German (Austrian)</option>
+								<option value="is-IS">Icelandic</option>
+								<option value="it-IT">Italian</option>
+								<option value="ja-JP">Japanese</option>
+								<option value="ko-KR">Korean</option>
+								<option value="nb-NO">Norwegian</option>
+								<option value="pl-PL">Polish</option>
+								<option value="pt-BR">Portuguese (Brazilian)</option>
+								<option value="pt-PT">Portuguese (European)</option>
+								<option value="ro-RO">Romanian</option>
+								<option value="ru-RU">Russian</option>
+								<option value="es-ES">Spanish (European)</option>
+								<option value="es-MX">Spanish (Mexican)</option>
+								<option value="es-US">Spanish (US)</option>
+								<option value="sv-SE">Swedish</option>
+								<option value="tr-TR">Turkish</option>
+								<option value="cy-GB">Welsh</option>
+							</select>
+						</div>
+						<div class="input-group form-group">
+							<div class="input-group-prepend">
+								<span class="input-group-text"><i class="fas fa-user"></i></span>
+							</div>
+							<input name="username" type="text" class="form-control" placeholder="Username" required>
+						</div>
+						<div class="input-group form-group">
+							<div class="input-group-prepend">
+								<span class="input-group-text"><i class="fas fa-key"></i></span>
+							</div>
+							<input id="password" name="password" type="password" class="form-control"
+								placeholder="Password" required>
+						</div>
+						<div class="input-group form-group">
+							<div class="input-group-prepend">
+								<span class="input-group-text"><i class="fas fa-key"></i></span>
+							</div>
+							<input id="cpassword" type="password" class="form-control" placeholder="Confirm Password"
+								required>
+						</div>
+						<div class="form-group">
+							<input type="submit" value="Let Me In" class="btn float-right login_btn">
+						</div>
+					</form>
+					<div class="form-group welcome-message">
+						<br />
+						<input type="button" value="Continue" class="btn float-right login_btn">
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script src="/static/js/login.js"></script>
+
+</body>
+
+</html>

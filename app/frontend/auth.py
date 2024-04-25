@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import RedirectResponse, HTMLResponse
 import jwt
 import os
 from passlib.context import CryptContext
@@ -15,6 +16,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def page(name):
+    return f"app/frontend/pages/{name}"
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -37,25 +41,26 @@ def create_access_token(data: dict, expires_delta: timedelta):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-@router.post("/signup/")
+@router.post("/signup/", response_class=HTMLResponse)
 async def signup(user: UserInLogin):
     ls = LocalStorage()
     users = ls.GetAll(User)
-    if len(users) > 0:
-        raise HTTPException(status_code=400, detail="Cannot register more then one Admins")
-    hashed_password = pwd_context.hash(user.password)
-    user = User(username=user.username, password=hashed_password)
-    user = ls.Insert(user)
+    if len(users) == 0:
+        hashed_password = pwd_context.hash(user.password)
+        user = User(username=user.username, password=hashed_password)
+        user = ls.Insert(user)
 
-    return {"message": "User created successfully"}
+    return open(page('login.html'), 'r').read()
 
-@router.post("/login/")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+@router.post("/login/", response_class=HTMLResponse)
+async def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends()):
     ls = LocalStorage()
     users = ls.GetAll(User)
     user = authenticate_user(users, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        return open(page('login.html'), 'r').read()
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.id}, expires_delta=access_token_expires)
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    response.set_cookie('beholder', access_token)
+    return open(page('dashboard.html'), 'r').read()

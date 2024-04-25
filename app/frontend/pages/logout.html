@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logout</title>
+
+    <link rel="stylesheet" href="/static/css/bootstrap.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <style>
+        .container {
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .logout-message {
+            font-size: 24px;
+            margin-top: 20px;
+        }
+
+        @keyframes bounce {
+            0%, 100% {
+                transform: translateY(0);
+            }
+            50% {
+                transform: translateY(-10px);
+            }
+        }
+
+        .dot {
+            display: inline-block;
+            margin: 0 5px;
+            font-size: 36px;
+            animation: bounce 0.5s infinite alternate;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container text-center">
+        <div>
+            <i class="fas fa-sign-out-alt fa-5x text-danger"></i>
+            <p class="logout-message">You are being logged out <span class="dot">.</span> <span class="dot">.</span> <span class="dot">.</span></p>
+        </div>
+    </div>
+    <script>
+        setTimeout(() => {
+            window.location.href = "/admin/";
+        }, 2500);
+    </script>
+</body>
+</html>

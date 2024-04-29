@@ -43,7 +43,7 @@ class LocalStorage:
             logger.error(e)
             return False
     
-    def GetAll(self, model):
+    def GetAll(self, model, json=False):
         try:
             conn = sqlite3.connect(self.filename)
             cursor = conn.cursor()
@@ -53,8 +53,10 @@ class LocalStorage:
 
             records = []
             for row in cursor.fetchall():
-                record = model(**dict(zip(column_names, row)))
-                records.append(record)
+                if not json:
+                    records.append(model(**dict(zip(column_names, row))))
+                else:
+                    records.append(dict(zip(column_names, row)))
 
             conn.close()
             return records

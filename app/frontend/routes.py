@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from app.util.database import LocalStorage
 from fastapi.security import OAuth2PasswordBearer
 from .controllers import Context
+from app.util.logger import logger
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/frontend/pages")
@@ -40,14 +41,22 @@ async def index(request: Request):
 
 @router.get("/{fragment}", response_class=HTMLResponse)
 async def dashboard(request: Request, fragment):
-    if request.cookies.get('beholder') is None:
-        return RedirectResponse('/admin/')
+    try:
+        if request.cookies.get('beholder') is None:
+            return RedirectResponse('/admin/')
+    
+        if not os.path.exists(f"app/frontend/pages/{fragment}.html"):
+            fragment = "404"
 
-    if all([ k not in fragment.lower() for k in ['login', 'signup']]):
-        context = { "request": request, "data": Context(fragment).prepare() }
-        response = templates.TemplateResponse(f"{fragment}.html", context)
-        if fragment == 'logout':
-            response.delete_cookie(key='beholder')
-        return response
-    else:
-        return RedirectResponse("/admin/dashboard")
+        if all([ k not in fragment.lower() for k in ['login', 'signup']]):
+            context = { "request": request, "data": Context(fragment).prepare() }
+            response = templates.TemplateResponse(f"{fragment}.html", context)
+            if fragment == 'logout':
+                response.delete_cookie(key='beholder')
+            return response
+        else:
+            return RedirectResponse("/admin/dashboard")
+    except Exception as e:
+        logger.error(e)
+        context = { "request": request, "data": {} }
+        return templates.TemplateResponse(f"500.html", context)

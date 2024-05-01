@@ -7,55 +7,55 @@
       <div class="col-lg-3 col-6">
         <div class="small-box bg-info">
           <div class="inner">
-            <h3>0</h3>
+            <h3>{{ data["inProgress"] }}</h3>
 
             <p>In Progress</p>
           </div>
           <div class="icon">
             <i class="fas fa-phone-volume"></i>
           </div>
-          <a href="#" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
+          <a href="/admin/calls?filter=IN_PROGRESS" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
         </div>
       </div>
 
       <div class="col-lg-3 col-6">
         <div class="small-box bg-success">
           <div class="inner">
-            <h3>0</h3>
+            <h3>{{ data["completed"] }}</h3>
 
             <p>Completed</p>
           </div>
           <div class="icon">
             <i class="fas fa-phone"></i>
           </div>
-          <a href="#" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
+          <a href="/admin/calls?filter=COMPLETED" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
         </div>
       </div>
 
       <div class="col-lg-3 col-6">
         <div class="small-box bg-warning">
           <div class="inner">
-            <h3>0</h3>
+            <h3>{{ data["hanged"] }}</h3>
 
             <p>Hanged Up</p>
           </div>
           <div class="icon">
             <i class="fas fa-phone-slash"></i>
           </div>
-          <a href="#" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
+          <a href="/admin/calls?filter=HANGED_UP" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
         </div>
       </div>
       <div class="col-lg-3 col-6">
         <div class="small-box bg-danger">
           <div class="inner">
-            <h3>0</h3>
+            <h3>{{ data["error"] }}</h3>
 
             <p>Completed with Error</p>
           </div>
           <div class="icon">
             <i class="fas fa-phone-flip"></i>
           </div>
-          <a href="#" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
+          <a href="/admin/calls?filter=COMPLETED_WITH_ERROR" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
         </div>
       </div>
     </div>
@@ -138,4 +138,16 @@
       </section>
     </div>
   </div>
+
+<script src="/static/js/dashboard.js"></script>
+<script src="/static/plugins/chart.js/Chart.min.js"></script>
+<script src="/static/plugins/sparklines/sparkline.js"></script>
+<script src="/static/plugins/jqvmap/jquery.vmap.min.js"></script>
+<script src="/static/plugins/jqvmap/maps/jquery.vmap.usa.js"></script>
+<script src="/static/plugins/jquery-knob/jquery.knob.min.js"></script>
+<script src="/static/plugins/moment/moment.min.js"></script>
+<script src="/static/plugins/daterangepicker/daterangepicker.js"></script>
+<script src="/static/plugins/tempusdominus-bootstrap-4/js/tempusdominus-bootstrap-4.min.js"></script>
+<script src="/static/plugins/summernote/summernote-bs4.min.js"></script>
+
   {% endblock %}

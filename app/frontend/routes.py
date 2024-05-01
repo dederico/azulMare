@@ -43,6 +43,7 @@ async def index(request: Request):
 async def dashboard(request: Request, fragment):
     try:
         if request.cookies.get('beholder') is None:
+            #TODO Need to check here if token is valid
             return RedirectResponse('/admin/')
     
         if not os.path.exists(f"app/frontend/pages/{fragment}.html"):
@@ -54,6 +55,26 @@ async def dashboard(request: Request, fragment):
             if fragment == 'logout':
                 response.delete_cookie(key='beholder')
             return response
+        else:
+            return RedirectResponse("/admin/dashboard")
+    except Exception as e:
+        logger.error(e)
+        context = { "request": request, "data": {} }
+        return templates.TemplateResponse(f"500.html", context)
+
+@router.get("/{fragment}/{id}", response_class=HTMLResponse)
+async def dashboard(request: Request, fragment, id):
+    try:
+        if request.cookies.get('beholder') is None:
+            #TODO Need to check here if token is valid
+            return RedirectResponse('/admin/')
+    
+        if not os.path.exists(f"app/frontend/pages/subpages/{fragment}.html"):
+            fragment = "404"
+
+        if all([ k not in fragment.lower() for k in ['login', 'signup']]):
+            context = { "request": request, "data": Context(fragment).prepare(id=id) }
+            return templates.TemplateResponse(f"subpages/{fragment}.html", context)
         else:
             return RedirectResponse("/admin/dashboard")
     except Exception as e:

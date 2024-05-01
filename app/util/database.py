@@ -43,6 +43,23 @@ class LocalStorage:
             logger.error(e)
             return False
     
+    def GetByPK(self, model, id, json=False):
+        try:
+            conn = sqlite3.connect(self.filename)
+            cursor = conn.cursor()
+
+            cursor.execute(f"SELECT * FROM {model.__name__.lower()}s where id = {id}")
+            column_names = [column[0] for column in cursor.description]
+
+            record = cursor.fetchone()
+            record = model(**dict(zip(column_names, record))) if not json else dict(zip(column_names, record))
+
+            conn.close()
+            return record
+        except Exception as e:
+            logger.error(e)
+            return None
+
     def GetAll(self, model, json=False):
         try:
             conn = sqlite3.connect(self.filename)

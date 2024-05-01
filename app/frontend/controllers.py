@@ -1,3 +1,4 @@
+import json
 from app.models.Call import Call
 from app.util.database import LocalStorage
 
@@ -6,16 +7,30 @@ class Context:
         self.__fragment = fragment
         self.__ls = LocalStorage()
     
-    def prepare(self):
+    def prepare(self, **kwargs):
         if hasattr(self, f"_Context__{self.__fragment}"):
-            return getattr(self, f"_Context__{self.__fragment}")()
+            return getattr(self, f"_Context__{self.__fragment}")(**kwargs)
         
         return {}
     
     def __dashboard(self, **kwargs):
+        calls = self.__ls.GetAll(Call, True)
         return {
-            "title": "Dashboard"
+            "title": "Dashboard",
+            "inProgress": len([c for c in calls if 'progress' in c['callStatus'].lower() ]),
+            "completed": len([c for c in calls if 'COMPLETED' == c['callStatus'] ]),
+            "hanged": len([c for c in calls if 'hanged' in c['callStatus'].lower() ]),
+            "error": len([c for c in calls if 'error' in c['callStatus'].lower() ])
         }
+
+    def __script(self, **kwargs):
+        call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
+        return {
+            "script": json.loads(call['callScript'])
+        }
+
+    def __health(self, **kwargs):
+        return { "title": "System Health"}
 
     def __calls(self, **kwargs):
         excluded = ['callScript', 'callLogs']

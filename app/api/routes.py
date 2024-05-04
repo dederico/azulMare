@@ -22,11 +22,14 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
+#import webrtc
+
 
 load_dotenv()
 
 try:
-
+    #ASTERISK CHANGES
+    NGROK_URL = "wss://pbx.almaguer.com.mx:8000"
     OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
     DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
     ELEVENLABS_API_KEY = os.environ["ELEVENLABS_API_KEY"]
@@ -39,7 +42,8 @@ try:
 except Exception as env_exception:
     raise Exception("Missing environment variables") from env_exception
 
-NGROK_URL = os.environ.get("HOSTNAME")
+#ASTERISK CHANGES
+#NGROK_URL = os.environ.get("HOSTNAME")
 
 router = APIRouter()
 
@@ -47,9 +51,10 @@ router = APIRouter()
 @router.post("/")
 async def post(request: Request):
     response = VoiceResponse()
-    host = request.headers.get("host")
+    # ASTERISK CHANGES
+    #host = request.headers.get("host")
     connect = Connect()
-    connect.stream(url=f"wss://{host}/stream")
+    connect.stream(url=f"{NGROK_URL}/ws")
     response.append(connect)
     text = response.to_xml()
     print(text)
@@ -113,7 +118,7 @@ async def amd_detect(request: Request):
 
 
 
-@router.websocket("/stream")
+@router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()

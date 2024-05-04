@@ -19,7 +19,7 @@ scope = [
 # Configuración de Twilio
 account_sid = "AC274ae17c4a1dc4f8d1097d5b7f03aef3"
 auth_token = "4be617ccc7e365ce45ae0f8504689b4b"
-from_phone_number = "+525568268327"
+from_phone_number = "+528141701647"
 NGROK_URL = os.environ.get("HOSTNAME")
 # to_phone_number = '+528181850026'
 
@@ -32,12 +32,24 @@ def authenticate_google_sheets():
     return gc.open_by_key(spreadsheet_key)
 
 
-def make_twilio_call(to_phone_number, message):
+# def make_twilio_call(to_phone_number, message):
+#     client = Client(account_sid, auth_token)
+#     call = client.calls.create(
+#         to=to_phone_number,
+#         from_=from_phone_number,
+#         url=NGROK_URL,  # Puedes proporcionar un URL con un mensaje grabado o texto a voz
+#     )
+#     return call.sid
+
+def make_twilio_call(to_phone_number, host):
     client = Client(account_sid, auth_token)
     call = client.calls.create(
         to=to_phone_number,
         from_=from_phone_number,
-        url=NGROK_URL,  # Puedes proporcionar un URL con un mensaje grabado o texto a voz
+        url=f"{NGROK_URL}/",  # URL for call handling TwiML
+        machine_detection="Enable",
+        async_amd="Enable",
+        async_amd_status_callback=f"{NGROK_URL}/amd_callback",
     )
     return call.sid
 

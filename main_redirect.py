@@ -17,8 +17,8 @@ scope = [
 ]
 
 # Configuración de Twilio
-account_sid = "AC274ae17c4a1dc4f8d1097d5b7f03aef3"
-auth_token = "d2ffb52730a5a6284cce5836ff86c7aa"
+account_sid = "<ACCOUNT_SID>"
+auth_token = "<AUTH_TOKEN>"
 from_phone_number = "+528141701647"
 NGROK_URL = os.environ.get("HOSTNAME")
 print(NGROK_URL)

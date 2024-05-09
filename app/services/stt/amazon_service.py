@@ -12,7 +12,7 @@ from amazon_transcribe.model import (
 
 
 class AmazonTranscribeService(STTService):
-    def __init__(self, region, language="es-US", sample_rate=8000, enhanced=True):
+    def __init__(self, region, language="en-US", sample_rate=8000, enhanced=True):
         self.client = TranscribeStreamingClient(region="us-west-2")
         self.stream = None
         self.callback = None

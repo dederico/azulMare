@@ -3,4 +3,4 @@ from .implementations.weather import get_current_weather
 from .implementations.hangup import hangup
 from .implementations.identify import get_customer_identity
 from .implementations.redirect import redirect_call
-registered_functions = [get_credit_card_options, hangup, get_current_weather, get_customer_identity, redirect_call]
+registered_functions = [get_credit_card_options, hangup, get_current_weather, redirect_call, get_customer_identity]

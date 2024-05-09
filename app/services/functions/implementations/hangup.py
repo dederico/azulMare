@@ -21,8 +21,8 @@ async def hangup(call_sid):
     """
 
     response = VoiceResponse()
-    response.say("Gracias por tu tiempo.", voice="Polly.Lupe-Neural", language="es-US")
+    response.say("Thanks for your time.", voice="Polly.Salli-Neural", language="en-US")
     response.pause(length=5)
     client.calls(call_sid).update(twiml=response.to_xml())
     client.calls(call_sid).update(status="completed")
-    return "La interaccion termino"
+    return "The interaction is finished."

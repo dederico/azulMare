@@ -22,14 +22,11 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 
-#import webrtc
-
 
 load_dotenv()
 
 try:
-    #ASTERISK CHANGES
-    NGROK_URL = "wss://pbx.almaguer.com.mx:8000"
+
     OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
     DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
     ELEVENLABS_API_KEY = os.environ["ELEVENLABS_API_KEY"]
@@ -42,8 +39,7 @@ try:
 except Exception as env_exception:
     raise Exception("Missing environment variables") from env_exception
 
-#ASTERISK CHANGES
-#NGROK_URL = os.environ.get("HOSTNAME")
+NGROK_URL = os.environ.get("HOSTNAME")
 
 router = APIRouter()
 
@@ -51,10 +47,9 @@ router = APIRouter()
 @router.post("/")
 async def post(request: Request):
     response = VoiceResponse()
-    # ASTERISK CHANGES
-    #host = request.headers.get("host")
+    host = request.headers.get("host")
     connect = Connect()
-    connect.stream(url=f"{NGROK_URL}/ws")
+    connect.stream(url=f"wss://{host}/stream")
     response.append(connect)
     text = response.to_xml()
     print(text)
@@ -118,7 +113,7 @@ async def amd_detect(request: Request):
 
 
 
-@router.websocket("/ws")
+@router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
@@ -130,7 +125,7 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language="es-US",
+        language="en-US",
     )
 
     # Create a function manager to manage registered functions
@@ -252,7 +247,7 @@ async def handle_redirected_call(request: Request):
 # Create a new VoiceResponse
     response = VoiceResponse()
 # Add a Say verb to the response to say a message
-    response.say("Esta es una llamada redirigida.", voice='Polly.Lupe', language='es-US')
+    response.say("This is a redirect call.", voice='Polly.Salli', language='en-US')
 # Convert the VoiceResponse to XML
     text = response.to_xml()
 # Return the XML as a response with the correct media type

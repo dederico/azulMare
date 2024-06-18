@@ -6,7 +6,7 @@
     <div class="col-10">
 <div class="row">
     <div class="col-6">
-<canvas data-type="radial-gauge"
+<canvas id="processor" data-type="radial-gauge"
     title="Processor Usage (%)"
     data-width="300"
     data-height="300"
@@ -35,7 +35,7 @@
     data-animation-rule="linear"
 ></canvas>
 </div><div lcass="col-6">
-<canvas data-type="radial-gauge"
+<canvas id="memory" data-type="radial-gauge"
     title="RAM Usage (%)"
     data-width="300"
     data-height="300"
@@ -66,7 +66,7 @@
 
 <div class="row">
     <div class="col-6">
-<canvas data-type="linear-gauge"
+<canvas id="temperature" data-type="linear-gauge"
     data-width="300"
     data-height="150"
     data-units="°C"
@@ -105,11 +105,11 @@
 ></canvas>
 </div>
 <div clas="col-6">
-<canvas title="Server Ping (ms)" id="lineChart" style="min-height: 200px; height: 200px; max-height: 200px; max-width: 300px;margin-top: -5px;"></canvas>
+<canvas title="Server Ping (ms)" id="pingChart" style="min-height: 200px; height: 200px; max-height: 200px; max-width: 300px;margin-top: -5px;"></canvas>
 </div></div>
 </div>
 <div class="col-2">
-    <canvas data-type="linear-gauge"
+    <canvas id="storage" data-type="linear-gauge"
     title="Server Storage Usage"
     data-width="120"
     data-height="500"
@@ -146,43 +146,9 @@
 <script src="/static/plugins/chart.js/Chart.min.js"></script>
 <script>
 const areaChartData = {
-      labels  : ['10:00:00', '', '10:00:10', '10:00:10', '10:00:10', '10:00:10', '10:00:10'],
+      labels  : [],
       title: 'Ping (ms)',
-      datasets: [
-        {
-          label               : 'AWS',
-          backgroundColor     : 'rgba(60,141,188,0.9)',
-          borderColor         : 'rgba(60,141,188,0.8)',
-          pointRadius          : false,
-          pointColor          : '#3b8bba',
-          pointStrokeColor    : 'rgba(60,141,188,1)',
-          pointHighlightFill  : '#fff',
-          pointHighlightStroke: 'rgba(60,141,188,1)',
-          data                : [28, 48, 40, 19, 86, 27, 90]
-        },
-        {
-          label               : 'Google',
-          backgroundColor     : 'rgba(100,41,88,0.9)',
-          borderColor         : 'rgba(100,41,88,0.8)',
-          pointRadius          : false,
-          pointColor          : '#4b5baa',
-          pointStrokeColor    : 'rgba(100,41,88,1)',
-          pointHighlightFill  : '#fff',
-          pointHighlightStroke: 'rgba(100,41,88,1)',
-          data                : [25, 45, 45, 15, 85, 25, 95]
-        },
-        {
-          label               : 'Custom',
-          backgroundColor     : 'rgba(30,241,128,0.9)',
-          borderColor         : 'rgba(30,241,128,0.8)',
-          pointRadius          : false,
-          pointColor          : '#1a4fcd',
-          pointStrokeColor    : 'rgba(30,241,128,1)',
-          pointHighlightFill  : '#fff',
-          pointHighlightStroke: 'rgba(30,241,128,1)',
-          data                : [20, 40, 40, 10, 80, 20, 90]
-        }
-      ]
+      datasets: []
     };
 
     const areaChartOptions = {
@@ -205,12 +171,9 @@ const areaChartData = {
       }
     }
 
-    const lineChartCanvas = $('#lineChart').get(0).getContext('2d')
+    const lineChartCanvas = $('#pingChart').get(0).getContext('2d')
     const lineChartOptions = jQuery.extend(true, {}, areaChartOptions)
     const lineChartData = jQuery.extend(true, {}, areaChartData)
-    lineChartData.datasets[0].fill = false;
-    lineChartData.datasets[1].fill = false;
-    lineChartData.datasets[2].fill = false;
     lineChartOptions.datasetFill = false
 
     const lineChart = new Chart(lineChartCanvas, { 
@@ -218,6 +181,82 @@ const areaChartData = {
       data: lineChartData, 
       options: lineChartOptions
     });
+
+    function getDataset(element) {
+      const r = Math.floor(Math.random() * 256);
+      const g = Math.floor(Math.random() * 256);
+      const b = Math.floor(Math.random() * 256);
+      return {
+          label               : element.name,
+          backgroundColor     : `rgba(${r},${g},${b},0.9)`,
+          borderColor         : `rgba(${r},${g},${b},0.8)`,
+          pointRadius         : false,
+          pointColor          : '#3b8bba',
+          pointStrokeColor    : `rgba(${r},${g},${b},1)`,
+          pointHighlightFill  : '#fff',
+          fill                : false,
+          pointHighlightStroke: `rgba(${r},${g},${b},1)`,
+          data                : [ element.ping ]
+      }
+    }
+
+    function getCurrentTime() 
+    {
+        const now = new Date();
+
+        let hours = now.getHours();
+        const minutes = now.getMinutes();
+        const seconds = now.getSeconds();
+
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+
+        hours = hours % 12;
+        hours = hours ? hours : 12;
+
+        const minutesFormatted = minutes < 10 ? '0' + minutes : minutes;
+        const secondsFormatted = seconds < 10 ? '0' + seconds : seconds;
+
+        return `${hours}:${minutesFormatted}:${secondsFormatted} ${ampm}`;
+    }
+
+    function UpdateMetrics()
+    {
+      $.ajax({
+        "url": "/health/",
+        "method": "GET",
+        "timeout": 0,
+      }).done(function (response) {
+        $("#processor").attr("data-value", response['processor']);
+        $("#memory").attr("data-value", response['memory']);
+        $("#storage").attr("data-value", response['storage']);
+        $("#temperature").attr("data-value", response['temperature']);
+
+        const pings = response['ping'];
+        lineChart.data.labels.push(getCurrentTime());
+
+        if (lineChart.data.datasets.length == 0)
+        {
+            pings.forEach(element => 
+            {
+              lineChart.data.datasets.push(getDataset(element));
+            });
+        }
+        else
+        {
+          pings.forEach(element => {
+            const matchingDataset = lineChart.data.datasets.find(dataset => dataset.label === element.name);
+
+            if (matchingDataset)
+              matchingDataset.data.push(element.ping);
+          });
+        }
+
+        lineChart.update();
+        setTimeout(UpdateMetrics, 7000);
+      });
+    }
+
+    UpdateMetrics();
 </script>
 
 {% endblock %}

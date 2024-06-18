@@ -24,6 +24,7 @@ from urllib.parse import parse_qs
 from datetime import datetime
 from app.util.logger import logger
 from app.models.Call import Call
+from app.models.Config import Config
 from app.util.database import LocalStorage
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
@@ -157,7 +158,42 @@ async def amd_detect(request: Request):
 
 @router.get("/health")
 async def health():
-    return {"status": "ok"}
+    import psutil, ping3
+    ls = LocalStorage()
+    configs = ls.GetAll(Config, True)
+    configs = { c['name']: c['value'] for c in configs }
+
+    domains = json.loads(configs.get("PingDomains")) if 'PingDomains' in configs else []
+    domains.extend([
+        { "name": "AWS", "domain": 'ec2.amazonaws.com'},
+        { "name": "Google", "domain": 'google.com'},
+        { "name": "Twilio", "domain": "chunderw-gll.twilio.com"}
+    ])
+
+    try:
+        temperatures = psutil.sensors_temperatures()
+        if temperatures:
+            temperature = temperatures['coretemp'][0].current
+        else:
+            temperature = False
+    except (AttributeError, KeyError):
+        temperature = False
+    
+    pings = []
+    for domain in domains:
+        ping = ping3.ping(domain["domain"])
+        ping = int(ping * 1000) if ping is not None else False
+        pings.append({ "domain": domain["domain"], "ping": ping, "name": domain["name"] })
+
+    metrics = {
+        'processor': psutil.cpu_percent(interval=1),
+        'memory': psutil.virtual_memory().percent,
+        'storage': psutil.disk_usage('/').percent,
+        'temperature': temperature,
+        'ping': pings
+    }
+    
+    return metrics
 
 
 @router.post("/make_call")

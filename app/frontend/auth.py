@@ -5,8 +5,8 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from app.util.database import LocalStorage
 from fastapi.responses import RedirectResponse
-from fastapi import APIRouter, HTTPException, Depends
-from app.models.User import User, Token, UserInDB, UserInLogin
+from fastapi import APIRouter, HTTPException, Depends, Form
+from app.models.User import User, Token, UserInDB, UserInLogin, UserInSignup
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 SECRET_KEY = os.environ["SECRET"]
@@ -39,15 +39,15 @@ def create_access_token(data: dict, expires_delta: timedelta):
     return encoded_jwt
 
 @router.post("/signup/")
-async def signup(user: UserInLogin):
+async def signup(language: str = Form(...), username: str = Form(...), password: str = Form(...)):
     ls = LocalStorage()
-    users = ls.GetAll(User)
-    if len(users) == 0:
-        hashed_password = pwd_context.hash(user.password)
-        user = User(username=user.username, password=hashed_password)
-        user = ls.Insert(user)
+    if len(ls.GetAll(User)) == 0:
+        hashed_password = pwd_context.hash(password)
+        user = ls.Insert(User(username=username, password=hashed_password))
+        if hasattr(user, 'id'):
+            ls.Insert(Config(name="Lang", value=language))
 
-    return RedirectResponse("/admin", status_code=302)
+    return RedirectResponse("/admin/", status_code=302)
 
 @router.post("/login/")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):

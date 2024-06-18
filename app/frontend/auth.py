@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from app.util.database import LocalStorage
 from fastapi.responses import RedirectResponse
 from fastapi import APIRouter, HTTPException, Depends, Form
-from app.models.User import User, Token, UserInDB, UserInLogin, UserInSignup
+from app.models.User import User, Token, UserInDB, UserInLogin
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 SECRET_KEY = os.environ["SECRET"]
@@ -55,7 +55,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     users = ls.GetAll(User)
     user = authenticate_user(users, form_data.username, form_data.password)
     if not user:
-        return RedirectResponse('/admin', status_code=302)
+        return RedirectResponse('/admin?msg=invalid%20Username%20or%20Password', status_code=302)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.id}, expires_delta=access_token_expires)
     

@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="/static/plugins/overlayScrollbars/css/OverlayScrollbars.min.css">
   <link rel="stylesheet" href="/static/plugins/daterangepicker/daterangepicker.css">
   <link rel="stylesheet" href="/static/plugins/summernote/summernote-bs4.css">
+  <link rel="stylesheet" type="text/css" href="/static/css/toast.css">
   <link href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:300,400,400i,700" rel="stylesheet">
 </head>
 <body class="hold-transition sidebar-mini layout-fixed">
@@ -145,18 +146,43 @@
 <script src="https://kit.fontawesome.com/578fff4073.js" crossorigin="anonymous"></script>
 <script src="/static/js/gauges.min.js"></script>
 <script src="/static/js/adminlte.min.js"></script>
+<script src="/static/js/toast.js"></script>
 
 <script>
-  $(document).ready(function(){
+  const toasts = new Toasts({
+    	offsetX: 20,
+    	offsetY: 20,
+    	gap: 20,
+    	width: 300,
+    	timing: 'ease',
+    	duration: '.5s',
+    	dimOld: true,
+    	position: 'top-right'
+	});
+
+  $(document).ready(function()
+  {
       var url = window.location.pathname;
-      $('.nav-link').each(function(){
+      $('.nav-link').each(function()
+      {
           var href = $(this).attr('href');
-          if(url.endsWith(href)){
+          if(url.endsWith(href))
+          {
               $(this).addClass('active');
           }
       });
   });
-  </script>
+
+	function Toast(title, msg, type='success') {
+		toasts.push({
+    		title: title,
+    		content: msg,
+    		style: type,
+			  closeButton: false,
+			  dismissAfter: '3s'
+		});
+	}
+</script>
 
 </body>
 </html>

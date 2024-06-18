@@ -1,3 +1,14 @@
+const toasts = new Toasts({
+    offsetX: 20,
+    offsetY: 20,
+    gap: 20,
+    width: 300,
+    timing: 'ease',
+    duration: '.5s',
+    dimOld: true,
+    position: 'top-right'
+});
+
 $(document).ready(function()
 {
     $(".btn").click(function()
@@ -16,7 +27,13 @@ $("form").submit(function(event)
     const confirmPassword = $("#cpassword").val();
     if (password !== confirmPassword) 
     {
-        alert("not matched");
+        toasts.push({
+            title: "Oops",
+            content: "Password & Confirm Password not matched",
+            style: "error",
+            closeButton: false,
+            dismissAfter: '3s'
+        });
         return;
     }
 

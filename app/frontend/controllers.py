@@ -23,6 +23,10 @@ class Context:
             "error": len([c for c in calls if 'error' in c['callStatus'].lower() ])
         }
 
+    def __logs(self, **kwargs):
+        call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
+        return { "logs": call['callLogs'] }
+
     def __script(self, **kwargs):
         call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
         return {

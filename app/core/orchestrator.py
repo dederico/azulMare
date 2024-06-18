@@ -16,16 +16,20 @@ class Orchestrator:
         llm_service: LLMService,
         tts_service: TTSService,
     ):
-        self.stats = { "Logs": "", "Script": [], "Status": "COMPLETED" }
+        self.stats = { "Logs": [], "Script": [], "Status": "COMPLETED" }
         self.stt_service = stt_service
         self.llm_service = llm_service
         self.tts_service = tts_service
         self.websocket_handler = websocket_handler
-        logger.debug("Orchestrator for new call has been initialized")
+        self.log("Orchestrator for new call has been initialized")
+
+    def log(self, msg):
+        logger.debug(msg)
+        self.stats["Logs"].append(msg)
 
     async def process_audio_stream(self):
         try:
-            logger.debug("Greeting the caller")
+            self.log("Greeting the caller")
             await self.greet()
 
             await self.stt_service.start_transcription()
@@ -34,12 +38,11 @@ class Orchestrator:
             async for audio_chunk in self.websocket_handler.process_stream():
                 await self.stt_service.transcribe(audio_chunk)
             await self.stt_service.finish_transcription()
-            logger.debug("Call ended Gracefully")
+            self.log("Call ended Gracefully")
         except Exception as e:
-            logger.critical(e)
-            self.stats["Logs"] += str(e)
+            self.log(str(e))
             self.stats["Status"] = "COMPLETED_WITH_ERROR"
-        
+
         return self.stats
 
     async def handler(self, transcription: dict) -> None:
@@ -55,7 +58,7 @@ class Orchestrator:
     async def process_transcript(self, transcript: str) -> None:
         buffer = ""
 
-        logger.debug("Generating response from LLM service")
+        self.log("Generating response from LLM service")
         generator = self.llm_service.generate_response(transcript)
 
         async for token in generator:  # type:ignore
@@ -66,7 +69,7 @@ class Orchestrator:
             buffer = await self.process_buffer(buffer)
 
         if buffer:
-            logger.debug("Invoking TTS engine on LLM response")
+            self.log("Invoking TTS engine on LLM response")
             await self.synthesize_and_send(buffer)
 
     async def process_buffer(self, buffer: str) -> str:
@@ -108,7 +111,7 @@ class Orchestrator:
             ¿Con quién tengo el gusto de hablar?
         """
 
-        logger.debug("GREETING: {}".format(greeting))
+        self.log("GREETING: {}".format(greeting))
         await self.synthesize_and_send(greeting)
         self.llm_service.add_to_conversation("assistant", greeting)
         await self.websocket_handler.send_mark("listening")

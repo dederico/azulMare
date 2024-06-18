@@ -4,6 +4,7 @@ import logging
 import urllib.parse
 import os
 import json
+from io import StringIO
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,7 +23,7 @@ from app.services.functions.function_manager import FunctionManager
 from twilio.rest import Client
 from urllib.parse import parse_qs
 from datetime import datetime
-from app.util.logger import logger
+from app.util.logger import logger, get_thread_log_handler, cleanup_call_logger
 from app.models.Call import Call
 from app.models.Config import Config
 from app.util.database import LocalStorage
@@ -39,7 +40,6 @@ AWS_REGION = os.environ.get("AWS_REGION")
 
 router = APIRouter()
 
-
 @router.post("/")
 async def post(request: Request):
     response = VoiceResponse()
@@ -54,6 +54,8 @@ async def post(request: Request):
 
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
+    logHandler = get_thread_log_handler()
+
     logger.info("Got new INCOMING_CALL")
     db = LocalStorage()
     websocket_handler = WebSocketHandler(ws)
@@ -68,7 +70,7 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language="es-US",
+        language="es-US"
     )
 
     function_manager = FunctionManager(registered_functions)
@@ -130,12 +132,14 @@ async def websocket_endpoint(ws: WebSocket):
     logger.debug("Starting a conversation with caller")
     stats = await orchestrator.process_audio_stream()
         
-    call.callLogs = stats['Logs']
+    call.callLogs = logHandler.stream.getvalue()
     call.callScript = json.dumps(stats['Script'])
     call.callStatus = stats['Status']
     
     call.callDuration = (datetime.now() - now).seconds
     db.Update(call)
+
+    cleanup_call_logger()
 
 
 @router.post("/amd_detect")

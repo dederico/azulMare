@@ -17,6 +17,8 @@ class WebSocketHandler:
 
     async def connect(self):
         await self.websocket.accept()
+
+        logger.debug("Customer call connected processing audio channel")
         async for _ in self.process_stream():
             if self.stream_sid:
                 break
@@ -24,13 +26,16 @@ class WebSocketHandler:
     async def process_stream(self):
         try:
             while True:
+                logger.debug("Waiting for customer Audio_Message")
                 data = await self.websocket.receive_json()
+
+                logger.debug("Received customer audio, processing chunk")
                 chunk = await self.handle_event(data)
                 if chunk:
                     yield chunk
 
         except WebSocketDisconnect:
-            logger.warning("WebSocket disconnected")
+            logger.warning("WebSocket disconnected reason unknown")
             raise WebSocketDisconnect
 
         except Exception as e:
@@ -40,6 +45,7 @@ class WebSocketHandler:
             raise e
 
     async def handle_event(self, data):
+        logger.debug("Received mark event '{}' from {}".format(data["event"], data["streamSid"]))
         if data["event"] == "start":
             self.initial_data = data["start"]
             self.stream_sid = data["streamSid"]
@@ -52,24 +58,32 @@ class WebSocketHandler:
             self.switch = data["mark"]["name"]
 
     async def process_media_event(self, data):
+        logger.debug("Received media chunk from customer")
         audio_payload = data["media"]["payload"]
+
+        logger.debug("Attempting to decode to audio frame from B64 message")
         audio_content = base64.b64decode(audio_payload)
         raw_audio_data = audioop.ulaw2lin(audio_content, 2)
         rms = audioop.rms(raw_audio_data, 2)
 
         if rms > 300 and (self.switch == "listening" or self.switch is None):
+            logger.debug("Robot is listening forwarding decoded audio frame")
             return raw_audio_data
         else:
+            logger.debug("Model is Not_Listening hence skipping decoded audio frame")
             raw_audio_data = await self.generate_silence()
             return raw_audio_data
 
     async def generate_silence(self, sample_width=2, sample_rate=8000):
+        logger.debug("Generating and forwarding silence frame")
         num_samples = int(self.duration * sample_rate)
         silence_data = b"\x00" * (num_samples * sample_width)
         return audioop.lin2ulaw(silence_data, sample_width)
 
     async def send_audio(self, audio_data):
+        logger.debug("Received audio frame from Robot")
         if self.is_connected:
+            logger.debug("Socket is connected, sending audio frame to customer")
             await self.websocket.send_json(
                 {
                     "event": "media",
@@ -77,8 +91,11 @@ class WebSocketHandler:
                     "media": {"payload": audio_data},
                 }
             )
+        else:
+            logger.debug("User is not connected anymore skipping audio sending to customer")
 
     async def send_mark(self, mark):
+        logger.debug("Sending {} mark to Twilio".format(mark))
         if self.is_connected:
             await self.websocket.send_json(
                 {
@@ -87,6 +104,8 @@ class WebSocketHandler:
                     "mark": {"name": mark},
                 }
             )
+        else:
+            logger.debug("Socket not connected hence mark Not_Sent")
 
     @property
     def is_connected(self):

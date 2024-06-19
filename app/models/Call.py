@@ -5,6 +5,7 @@ class Call:
     callNumber: str
     callStatus: str
     callType: str
+    callDirection: str
     callDuration: int
     callScript: str
     callLogs: str

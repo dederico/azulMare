@@ -81,6 +81,7 @@ async def websocket_endpoint(ws: WebSocket):
         callTime = now.strftime("%d-%m-%Y %T"),
         callSource = "Twillio",
         callType = "IP",
+        callDirection = "IN_COMING",
         callStatus = "IN_PROGRESS",
         callNumber = websocket_handler.call_sid
     )
@@ -164,8 +165,8 @@ async def amd_detect(request: Request):
 async def health():
     import psutil, ping3
     ls = LocalStorage()
-    configs = ls.GetAll(Config, True)
-    configs = { c['name']: c['value'] for c in configs }
+    configs = ls.GetAll(Config)
+    configs = { c.name: c.value for c in configs }
 
     domains = json.loads(configs.get("PingDomains")) if 'PingDomains' in configs else []
     domains.extend([

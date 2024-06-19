@@ -1,0 +1,66 @@
+{% extends 'layout.html' %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+
+<table id="notifications" class="table table-bordered table-striped">
+    <thead>
+    <tr>
+      <th>Type</th>
+      <th>Category</th>
+      <th>Notification</th>
+      <th>Acknowledged</th>
+      <th>Timestamp</th>
+      <th>Action</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for notif in data['notifications'] %}
+        <tr>
+        <td>{{ notif['nType'] }}</td>
+        <td>{{ notif['nCategory'] }}</td>
+        <td>{{ notif['nBody'] }}</td>
+        <td>{{ notif['nAck'] }}</td>
+        <td>{{ notif['nTime'] }}</td>
+        <td>
+            <a href="#"><i title="Remove" class="fas fa-trash text-danger"></i></a>
+        </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<div class="modal" id="content">
+    <div class="modal-dialog modal-sm">
+      <div class="modal-content">
+  
+        <div class="modal-header">
+          <h4 class="modal-title">Content</h4>
+          <button type="button" class="close" data-dismiss="modal">&times;</button>
+        </div>
+
+        <div class="modal-body" id="nContent">
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="/static/plugins/jquery/jquery.min.js"></script>
+<script src="https://cdn.datatables.net/2.0.8/js/dataTables.js" defer></script>
+<script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap4.js"></script>
+
+<script>
+    $(document).ready(function()
+    {
+        $('#notifications').DataTable({
+            "paging": true,
+            "lengthChange": false,
+            "searching": false,
+            "ordering": true,
+            "info": true,
+            "autoWidth": false,
+            "responsive": true,
+        });
+    });
+</script>
+
+{% endblock %}

@@ -61,38 +61,38 @@
     </div>
 
     <div class="row">
-      <section class="col-lg-7 connectedSortable">
+      <section class="col-lg-8 connectedSortable">
         <div class="card">
           <div class="card-header">
             <h3 class="card-title">
-              <i class="fas fa-chart-pie mr-1"></i>
-              Sales
+              <i style="font-size: 25px;" class="fas fa-chart-pie mr-1"></i>
             </h3>
             <div class="card-tools">
-              <ul class="nav nav-pills ml-auto">
+              <ul class="nav nav-tabs">
                 <li class="nav-item">
-                  <a class="nav-link active" href="#revenue-chart" data-toggle="tab">Area</a>
+                  <a class="nav-link active" data-toggle="tab" href="#trends">Trend Chart</a>
                 </li>
                 <li class="nav-item">
-                  <a class="nav-link" href="#sales-chart" data-toggle="tab">Donut</a>
+                  <a class="nav-link" data-toggle="tab" href="#donut">Donut Chart</a>
+                </li>
+                <li class="nav-item">
+                  <a class="nav-link" data-toggle="tab" href="#bars">Bar Chart</a>
                 </li>
               </ul>
             </div>
           </div>
           <div class="card-body">
             <div class="tab-content p-0">
-              <div class="chart tab-pane active" id="revenue-chart"
-                   style="position: relative; height: 300px;">
-                  <canvas id="revenue-chart-canvas" height="300" style="height: 300px;"></canvas>                         
-               </div>
-              <div class="chart tab-pane" id="sales-chart" style="position: relative; height: 300px;">
-                <canvas id="sales-chart-canvas" height="300" style="height: 300px;"></canvas>                         
-              </div>  
+              <div class="tab-pane container active" id="trends">
+                <canvas title="Trend Chart" id="trendChart" style="height: 100%; width: 100%;"></canvas> 
+              </div>
+              <div class="tab-pane container fade" id="donut"><label>donuts</label></div>
+              <div class="tab-pane container fade" id="bars"><label>bars</label></div>
             </div>
           </div>
         </div>
       </section>
-      <section class="col-lg-5 connectedSortable">
+      <section class="col-lg-4 connectedSortable">
         <div class="card bg-gradient-primary">
           <div class="card-header border-0">
             <h3 class="card-title">
@@ -139,7 +139,7 @@
     </div>
   </div>
 
-<script src="/static/js/dashboard.js"></script>
+<script src="/static/plugins/jquery/jquery.min.js"></script>
 <script src="/static/plugins/chart.js/Chart.min.js"></script>
 <script src="/static/plugins/sparklines/sparkline.js"></script>
 <script src="/static/plugins/jqvmap/jquery.vmap.min.js"></script>
@@ -149,5 +149,6 @@
 <script src="/static/plugins/daterangepicker/daterangepicker.js"></script>
 <script src="/static/plugins/tempusdominus-bootstrap-4/js/tempusdominus-bootstrap-4.min.js"></script>
 <script src="/static/plugins/summernote/summernote-bs4.min.js"></script>
+<script src="/static/js/dashboard.js"></script>
 
   {% endblock %}

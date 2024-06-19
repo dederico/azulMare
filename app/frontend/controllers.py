@@ -1,5 +1,6 @@
 import json
 from app.models.Call import Call
+from app.models.Notification import Notification
 from app.util.database import LocalStorage
 
 class Context:
@@ -14,7 +15,9 @@ class Context:
         return {}
     
     def __dashboard(self, **kwargs):
-        calls = self.__ls.GetAll(Call, True)
+        q = "SELECT * FROM calls WHERE DATE(callTime) = DATE('now');"
+        calls = self.__ls.GetAll(Call, q, True)
+
         return {
             "title": "Dashboard",
             "inProgress": len([c for c in calls if 'progress' in c['callStatus'].lower() ]),
@@ -49,4 +52,10 @@ class Context:
         return {
             "title": "Call Logs",
             "logs": logs
+        }
+    
+    def __notifications(self, **kwargs):
+        return {
+            "title": "Notifications",
+            "notifications": self.__ls.GetAll(Notification, json=True)
         }

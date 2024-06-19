@@ -4,17 +4,17 @@ from .logger import logger
 from app.models.Call import Call
 from app.models.Config import Config
 from app.models.User import User
+from app.models.Notification import Notification
 
 class LocalStorage:
     def __init__(self, dbName='my-db.db'):
+        tables = [Call, User, Config, Notification]
         self.filename = dbName
         logger.debug("Preparing local storage")
-        if not os.path.exists(self.filename):
-            self.__create_table(Call)
-            self.__create_table(User)
-            self.__create_table(Config)
 
-            logger.info("New Local DB has been created Successfully")
+        for table in tables:
+            self.__create_table(table)
+
         logger.debug("Local storage has been initialized")
 
     def __create_table(self, model_cls):
@@ -23,7 +23,7 @@ class LocalStorage:
             cursor = conn.cursor()
 
             table_name = f"{model_cls.__name__.lower()}s"
-            logger.debug("Creating table " + table_name)
+            logger.debug("Creating/Checking table " + table_name)
             fields = ', '.join([f"{field} {data_type.__name__}" for field, data_type in model_cls.__annotations__.items()])
             query = f'''
                 CREATE TABLE IF NOT EXISTS {table_name} (
@@ -32,8 +32,6 @@ class LocalStorage:
                 )
             '''
 
-            logger.warning("Executing query")
-            logger.warning(query)
             cursor.execute(query)
 
             conn.commit()
@@ -60,12 +58,12 @@ class LocalStorage:
             logger.error(e)
             return None
 
-    def GetAll(self, model, json=False):
+    def GetAll(self, model, rawQuery=False, json=False):
         try:
             conn = sqlite3.connect(self.filename)
             cursor = conn.cursor()
 
-            cursor.execute(f"SELECT * FROM {model.__name__.lower()}s")
+            cursor.execute(rawQuery or f"SELECT * FROM {model.__name__.lower()}s")
             column_names = [column[0] for column in cursor.description]
 
             records = []

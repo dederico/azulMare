@@ -113,7 +113,7 @@
 }
 </style>
 
-<table id="calllogs" class="table table-bordered table-striped">
+<table id="calllogs">
     <thead>
     <tr>
       <th>Name</th>
@@ -174,21 +174,31 @@
     </div>
   </div>
 
-<script src="/static/plugins/jquery/jquery.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.js" defer></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap4.js"></script>
+<script src="/static/js/jquery.js"></script>
+<script src="/static/js/jquery.dataTables.min.js"></script>
+<script src="/static/js/dataTables.buttons.min.js"></script>
+<script src="/static/js/jszip.min.js"></script>
+<script src="/static/js/pdfmake.min.js"></script>
+<script src="/static/js/vfs_fonts.js"></script>
+<script src="/static/js/buttons.html5.min.js"></script>
+<script src="/static/js/buttons.print.min.js"></script>
+
 
 <script>
     $(document).ready(function()
     {
-        $('#calllogs').DataTable({
-            "paging": true,
-            "lengthChange": false,
-            "searching": false,
-            "ordering": true,
-            "info": true,
-            "autoWidth": false,
-            "responsive": true,
+        new DataTable('#calllogs', {
+            paging: true,
+            lengthChange: true,
+            searching: true,
+            ordering: true,
+            info: true,
+            autoWidth: false,
+            responsive: true,
+            dom: 'Bfrtip',
+            buttons: [
+                'copy', 'csv', 'excel', 'pdf'
+            ]
         });
     });
 

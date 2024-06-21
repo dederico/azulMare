@@ -83,10 +83,12 @@
           </div>
           <div class="card-body">
             <div class="tab-content p-0">
-              <div class="tab-pane container active" id="trends">
-                <canvas title="Trend Chart" id="trendChart" style="height: 100%; width: 100%;"></canvas> 
+              <div style="height: 40vh;" class="tab-pane container active" id="trends">
+                <canvas title="Trend Chart" id="trendChart"></canvas> 
               </div>
-              <div class="tab-pane container fade" id="donut"><label>donuts</label></div>
+              <div class="tab-pane container fade" id="donut">
+                <canvas title="Doughnut Chart" id="doughnutChart"></canvas> 
+              </div>
               <div class="tab-pane container fade" id="bars"><label>bars</label></div>
             </div>
           </div>
@@ -149,6 +151,91 @@
 <script src="/static/plugins/daterangepicker/daterangepicker.js"></script>
 <script src="/static/plugins/tempusdominus-bootstrap-4/js/tempusdominus-bootstrap-4.min.js"></script>
 <script src="/static/plugins/summernote/summernote-bs4.min.js"></script>
-<script src="/static/js/dashboard.js"></script>
+
+<script>
+
+function getRandomColor(a=1){
+  const r = Math.floor(Math.random() * 256);
+  const g = Math.floor(Math.random() * 256);
+  const b = Math.floor(Math.random() * 256);
+  return `rgba(${r},${g},${b}, ${a})`;
+}
+
+function getDataset(element) {
+  const col = getRandomColor(0.9);
+  return {
+      label               : element.type,
+      backgroundColor     : col,
+      borderColor         : col,
+      pointRadius         : false,
+      pointColor          : '#3b8bba',
+      pointStrokeColor    : col,
+      pointHighlightFill  : '#fff',
+      fill                : false,
+      pointHighlightStroke: col,
+      data                : element.records.reduce((acc, obj) => { acc.push(obj.totalCalls); return acc; }, [])
+  }
+}
+
+  const callsData = JSON.parse('{{ data["graphs"] | tojson }}');
+  const areaChartData = {
+    labels  : callsData[0].records.reduce((acc, obj) => { acc.push(obj.callDate); return acc; }, []),
+    title: 'Past Call Stats',
+    datasets: callsData.map(x => getDataset(x) )
+  };
+
+const areaChartOptions = {
+  maintainAspectRatio : false,
+  responsive : true,
+  legend: {
+    display: true
+  },
+  scales: {
+    xAxes: [{
+      gridLines : {
+        display : true,
+      }
+    }],
+    yAxes: [{
+      gridLines : {
+        display : true,
+      }
+    }]
+  }
+};
+
+const doughnutChartData = {
+  labels: callsData.reduce((acc, obj) => { acc.push(obj.type); return acc; }, []),
+  datasets: [{
+    label: 'Calls Highlight of Last 7 Days',
+    data: callsData.reduce((acc, obj) => { const total = obj.records.reduce((t, i) => t + i.totalCalls, 0); acc.push(total); return acc; }, []),
+    backgroundColor: [
+      getRandomColor(),
+      getRandomColor(),
+      getRandomColor()
+    ],
+    hoverOffset: 4
+  }]
+};
+
+const lineChartCanvas = $('#trendChart').get(0).getContext('2d')
+const doughnutChartCanvas = $('#doughnutChart').get(0).getContext('2d')
+const lineChartOptions = jQuery.extend(true, {}, areaChartOptions)
+const lineChartData = jQuery.extend(true, {}, areaChartData)
+lineChartOptions.datasetFill = false
+
+const trendChart = new Chart(lineChartCanvas, { 
+  type: 'line',
+  data: lineChartData, 
+  options: lineChartOptions
+});
+
+const doughnutChart = new Chart(doughnutChartCanvas, { 
+  type: 'doughnut',
+  data: doughnutChartData
+});
+
+
+</script>
 
   {% endblock %}

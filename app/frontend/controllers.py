@@ -17,14 +17,21 @@ class Context:
     def __dashboard(self, **kwargs):
         q = "SELECT * FROM calls WHERE DATE(callTime) = DATE('now');"
         calls = self.__ls.GetAll(Call, q, True)
-
-        return {
+        response = {
             "title": "Dashboard",
+            "graphs": [],
             "inProgress": len([c for c in calls if 'progress' in c['callStatus'].lower() ]),
             "completed": len([c for c in calls if 'COMPLETED' == c['callStatus'] ]),
             "hanged": len([c for c in calls if 'hanged' in c['callStatus'].lower() ]),
             "error": len([c for c in calls if 'error' in c['callStatus'].lower() ])
         }
+
+        days = kwargs.get("days") or "15"
+        q = "SELECT DATE(callTime) AS callDate, COUNT(*) AS totalCalls FROM calls WHERE callStatus = '{}' AND DATE(callTime) >= DATE('now', '-{} days') GROUP BY callDate ORDER BY callDate DESC;"
+        for status in ['COMPLETED', 'HANGED_UP', 'COMPLETED_WITH_ERROR']:
+            response['graphs'].append({ "type": status, "records": self.__ls.GetAll(Call, q.format(status, days), True) })
+
+        return response
 
     def __logs(self, **kwargs):
         call = self.__ls.GetByPK(Call, kwargs['id'], json=True)

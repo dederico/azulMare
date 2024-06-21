@@ -2,7 +2,7 @@
 {% block title %}Notifications{% endblock %}
 {% block content %}
 
-<table id="notifications" class="table table-bordered table-striped">
+<table id="notifications">
     <thead>
     <tr>
       <th>Type</th>
@@ -44,14 +44,13 @@
     </div>
   </div>
 
-<script src="/static/plugins/jquery/jquery.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.js" defer></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap4.js"></script>
+  <script src="/static/js/jquery.js"></script>
+  <script src="/static/js/jquery.dataTables.min.js"></script>
 
 <script>
     $(document).ready(function()
     {
-        $('#notifications').DataTable({
+        new DataTable('#notifications', {
             "paging": true,
             "lengthChange": false,
             "searching": false,

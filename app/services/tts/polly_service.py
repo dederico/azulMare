@@ -22,12 +22,14 @@ class AmazonTTSService(TTSService):
         secret_key: str,
         region_name: str,
         stream_results: bool = False,
+        language: str = None
     ):
         self.client = None
         self.stream_results = stream_results
         self.access_key = access_key
         self.secret_key = secret_key
         self.region_name = region_name
+        self.lang = language
 
     async def initialize_client(self):
         session = AioSession()
@@ -49,11 +51,6 @@ class AmazonTTSService(TTSService):
 
         :param text: Text to be converted to speech.
         """
-
-        ls = LocalStorage()
-        config = { c.name: c.value for c in ls.GetAll(Config) }
-        lang = config.get("Lang") or "es-US"
-
         if not self.client:
             await self.initialize_client()
 
@@ -65,7 +62,7 @@ class AmazonTTSService(TTSService):
                 VoiceId="Lupe",
                 SampleRate=str(SAMPLE_RATE),
                 Engine="neural",
-                LanguageCode=lang,
+                LanguageCode=self.lang,
             )  # type: ignore
             mulaw_audio = await synth["AudioStream"].read()
             audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)

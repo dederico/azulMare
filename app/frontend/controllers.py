@@ -17,9 +17,15 @@ class Context:
     def __dashboard(self, **kwargs):
         q = "SELECT * FROM calls WHERE DATE(callTime) = DATE('now');"
         calls = self.__ls.GetAll(Call, q, True)
+        inp = [c for c in calls if 'progress' in c['callStatus'].lower() ]
+
+        for c in inp:
+            c['callTime'] = c['callTime'].split(' ')[1] 
+
         response = {
             "title": "Dashboard",
             "graphs": [],
+            "calls": inp,
             "inProgress": len([c for c in calls if 'progress' in c['callStatus'].lower() ]),
             "completed": len([c for c in calls if 'COMPLETED' == c['callStatus'] ]),
             "hanged": len([c for c in calls if 'hanged' in c['callStatus'].lower() ]),
@@ -50,6 +56,9 @@ class Context:
         excluded = ['callScript', 'callLogs']
         logs = self.__ls.GetAll(Call, json=True)
         for log in logs:
+            if log['callDuration'] == None:
+                continue
+
             minutes = log['callDuration'] // 60
             seconds = log['callDuration'] % 60
             log['callDuration'] = f"{minutes:02d}:{seconds:02d}"
@@ -58,7 +67,7 @@ class Context:
 
         return {
             "title": "Call Logs",
-            "logs": logs
+            "logs": reversed(logs)
         }
     
     def __notifications(self, **kwargs):

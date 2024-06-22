@@ -50,7 +50,7 @@ async def dashboard(request: Request, fragment):
             fragment = "404"
 
         if all([ k not in fragment.lower() for k in ['login', 'signup']]):
-            context = { "request": request, "data": Context(fragment).prepare() }
+            context = { "request": request, "data": Context(fragment).prepare(**request.query_params) }
             response = templates.TemplateResponse(f"{fragment}.html", context)
             if fragment == 'logout':
                 response.delete_cookie(key='beholder')
@@ -73,7 +73,7 @@ async def dashboard(request: Request, fragment, id):
             fragment = "404"
 
         if all([ k not in fragment.lower() for k in ['login', 'signup']]):
-            context = { "request": request, "data": Context(fragment).prepare(id=id) }
+            context = { "request": request, "data": Context(fragment).prepare(id=id, **request.query_params) }
             return templates.TemplateResponse(f"subpages/{fragment}.html", context)
         else:
             return RedirectResponse("/admin/dashboard")

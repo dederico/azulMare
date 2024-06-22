@@ -3,239 +3,146 @@
 {% block content %}
 
 <div class="container-fluid">
-    <div class="row">
-      <div class="col-lg-3 col-6">
-        <div class="small-box bg-info">
-          <div class="inner">
-            <h3>{{ data["inProgress"] }}</h3>
+  <div class="row">
+    <div class="col-lg-3 col-6">
+      <div class="small-box bg-info">
+        <div class="inner">
+          <h3>{{ data["inProgress"] }}</h3>
 
-            <p>In Progress</p>
-          </div>
-          <div class="icon">
-            <i class="fas fa-phone-volume"></i>
-          </div>
-          <a href="/admin/calls?filter=IN_PROGRESS" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
+          <p>In Progress</p>
         </div>
-      </div>
-
-      <div class="col-lg-3 col-6">
-        <div class="small-box bg-success">
-          <div class="inner">
-            <h3>{{ data["completed"] }}</h3>
-
-            <p>Completed</p>
-          </div>
-          <div class="icon">
-            <i class="fas fa-phone"></i>
-          </div>
-          <a href="/admin/calls?filter=COMPLETED" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
+        <div class="icon">
+          <i class="fas fa-phone-volume"></i>
         </div>
-      </div>
-
-      <div class="col-lg-3 col-6">
-        <div class="small-box bg-warning">
-          <div class="inner">
-            <h3>{{ data["hanged"] }}</h3>
-
-            <p>Hanged Up</p>
-          </div>
-          <div class="icon">
-            <i class="fas fa-phone-slash"></i>
-          </div>
-          <a href="/admin/calls?filter=HANGED_UP" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
-        </div>
-      </div>
-      <div class="col-lg-3 col-6">
-        <div class="small-box bg-danger">
-          <div class="inner">
-            <h3>{{ data["error"] }}</h3>
-
-            <p>Completed with Error</p>
-          </div>
-          <div class="icon">
-            <i class="fas fa-phone-flip"></i>
-          </div>
-          <a href="/admin/calls?filter=COMPLETED_WITH_ERROR" class="small-box-footer">More info <i class="fas fa-arrow-circle-right"></i></a>
-        </div>
+        <a href="/admin/calls?filter=IN_PROGRESS" class="small-box-footer">More info <i
+            class="fas fa-arrow-circle-right"></i></a>
       </div>
     </div>
 
-    <div class="row">
-      <section class="col-lg-8 connectedSortable">
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">
-              <i style="font-size: 25px;" class="fas fa-chart-pie mr-1"></i>
-            </h3>
-            <div class="card-tools">
-              <ul class="nav nav-tabs">
-                <li class="nav-item">
-                  <a class="nav-link active" data-toggle="tab" href="#trends">Trend Chart</a>
-                </li>
-                <li class="nav-item">
-                  <a class="nav-link" data-toggle="tab" href="#donut">Donut Chart</a>
-                </li>
-                <li class="nav-item">
-                  <a class="nav-link" data-toggle="tab" href="#bars">Bar Chart</a>
-                </li>
-              </ul>
-            </div>
-          </div>
-          <div class="card-body">
-            <div class="tab-content p-0">
-              <div style="height: 40vh;" class="tab-pane container active" id="trends">
-                <canvas title="Trend Chart" id="trendChart"></canvas> 
-              </div>
-              <div class="tab-pane container fade" id="donut">
-                <canvas title="Doughnut Chart" id="doughnutChart"></canvas> 
-              </div>
-              <div class="tab-pane container fade" id="bars"><label>bars</label></div>
-            </div>
-          </div>
+    <div class="col-lg-3 col-6">
+      <div class="small-box bg-success">
+        <div class="inner">
+          <h3>{{ data["completed"] }}</h3>
+
+          <p>Completed</p>
         </div>
-      </section>
-      <section class="col-lg-4 connectedSortable">
-        <div class="card bg-gradient-primary">
-          <div class="card-header border-0">
-            <h3 class="card-title">
-              <i class="fas fa-map-marker-alt mr-1"></i>
-              Visitors
-            </h3>
-            <div class="card-tools">
-              <button type="button"
-                      class="btn btn-primary btn-sm daterange"
-                      data-toggle="tooltip"
-                      title="Date range">
-                <i class="far fa-calendar-alt"></i>
-              </button>
-              <button type="button"
-                      class="btn btn-primary btn-sm"
-                      data-card-widget="collapse"
-                      data-toggle="tooltip"
-                      title="Collapse">
-                <i class="fas fa-minus"></i>
-              </button>
-            </div>
-          </div>
-          <div class="card-body">
-            <div id="world-map" style="height: 250px; width: 100%;"></div>
-          </div>
-          <div class="card-footer bg-transparent">
-            <div class="row">
-              <div class="col-4 text-center">
-                <div id="sparkline-1"></div>
-                <div class="text-white">Visitors</div>
-              </div>
-              <div class="col-4 text-center">
-                <div id="sparkline-2"></div>
-                <div class="text-white">Online</div>
-              </div>
-              <div class="col-4 text-center">
-                <div id="sparkline-3"></div>
-                <div class="text-white">Sales</div>
-              </div>
-            </div>
-          </div>
+        <div class="icon">
+          <i class="fas fa-phone"></i>
         </div>
-      </section>
+        <a href="/admin/calls?filter=COMPLETED" class="small-box-footer">More info <i
+            class="fas fa-arrow-circle-right"></i></a>
+      </div>
+    </div>
+
+    <div class="col-lg-3 col-6">
+      <div class="small-box bg-warning">
+        <div class="inner">
+          <h3>{{ data["hanged"] }}</h3>
+
+          <p>Hanged Up</p>
+        </div>
+        <div class="icon">
+          <i class="fas fa-phone-slash"></i>
+        </div>
+        <a href="/admin/calls?filter=HANGED_UP" class="small-box-footer">More info <i
+            class="fas fa-arrow-circle-right"></i></a>
+      </div>
+    </div>
+    <div class="col-lg-3 col-6">
+      <div class="small-box bg-danger">
+        <div class="inner">
+          <h3>{{ data["error"] }}</h3>
+
+          <p>Completed with Error</p>
+        </div>
+        <div class="icon">
+          <i class="fas fa-phone-flip"></i>
+        </div>
+        <a href="/admin/calls?filter=COMPLETED_WITH_ERROR" class="small-box-footer">More info <i
+            class="fas fa-arrow-circle-right"></i></a>
+      </div>
     </div>
   </div>
 
+  <div class="row">
+    <section class="col-lg-8 connectedSortable">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">
+            <select id="days" class="form-control">
+              <option value="3">Last 3 Days</option>
+              <option value="7">Last 7 Days</option>
+              <option value="15" selected>Last 15 Days</option>
+              <option value="30">Last 30 Days</option>
+            </select>
+          </h3>
+          <div class="card-tools">
+            <ul class="nav nav-tabs">
+              <li class="nav-item">
+                <a class="nav-link active" data-toggle="tab" href="#trends">Trend Chart</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" data-toggle="tab" href="#donut">Donut Chart</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" data-toggle="tab" href="#bars">Bar Chart</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="tab-content p-0">
+            <div style="height: 40vh;" class="tab-pane container active" id="trends">
+              <canvas title="Trend Chart" id="trendChart"></canvas>
+            </div>
+            <div style="height: 40vh;" class="tab-pane container fade" id="donut">
+              <canvas title="Doughnut Chart" id="doughnutChart"></canvas>
+            </div>
+            <div style="height: 40vh;" class="tab-pane container fade" id="bars">
+              <canvas title="Bar Chart" id="barChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="col-lg-4 connectedSortable">
+      <div class="card bg-gradient-secondary">
+        <div class="card-header border-0">
+          <h3 class="card-title">
+            <i class="fas fa-phone mr-1"></i>
+            <strong>Active Calls</strong>
+          </h3>
+        </div>
+        <div class="card-body">
+          <table style="height: 46vh;padding: 0px;margin-top: -30px;" class="table">
+            <thead>
+            <tr>
+              <th>Name</th>
+              <th>Time</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for call in data['calls'] %}
+                <tr>
+                    <td><a class="text-white" href="/admin/calls?person={{ call['callerName'] }}">{{ call['callerName'] }}</a></td>
+                    <td>{{ call['callTime'] }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
 <script src="/static/plugins/jquery/jquery.min.js"></script>
 <script src="/static/plugins/chart.js/Chart.min.js"></script>
-<script src="/static/plugins/sparklines/sparkline.js"></script>
-<script src="/static/plugins/jqvmap/jquery.vmap.min.js"></script>
-<script src="/static/plugins/jqvmap/maps/jquery.vmap.usa.js"></script>
-<script src="/static/plugins/jquery-knob/jquery.knob.min.js"></script>
-<script src="/static/plugins/moment/moment.min.js"></script>
-<script src="/static/plugins/daterangepicker/daterangepicker.js"></script>
-<script src="/static/plugins/tempusdominus-bootstrap-4/js/tempusdominus-bootstrap-4.min.js"></script>
-<script src="/static/plugins/summernote/summernote-bs4.min.js"></script>
 
 <script>
-
-function getRandomColor(a=1){
-  const r = Math.floor(Math.random() * 256);
-  const g = Math.floor(Math.random() * 256);
-  const b = Math.floor(Math.random() * 256);
-  return `rgba(${r},${g},${b}, ${a})`;
-}
-
-function getDataset(element) {
-  const col = getRandomColor(0.9);
-  return {
-      label               : element.type,
-      backgroundColor     : col,
-      borderColor         : col,
-      pointRadius         : false,
-      pointColor          : '#3b8bba',
-      pointStrokeColor    : col,
-      pointHighlightFill  : '#fff',
-      fill                : false,
-      pointHighlightStroke: col,
-      data                : element.records.reduce((acc, obj) => { acc.push(obj.totalCalls); return acc; }, [])
-  }
-}
-
   const callsData = JSON.parse('{{ data["graphs"] | tojson }}');
-  const areaChartData = {
-    labels  : callsData[0].records.reduce((acc, obj) => { acc.push(obj.callDate); return acc; }, []),
-    title: 'Past Call Stats',
-    datasets: callsData.map(x => getDataset(x) )
-  };
-
-const areaChartOptions = {
-  maintainAspectRatio : false,
-  responsive : true,
-  legend: {
-    display: true
-  },
-  scales: {
-    xAxes: [{
-      gridLines : {
-        display : true,
-      }
-    }],
-    yAxes: [{
-      gridLines : {
-        display : true,
-      }
-    }]
-  }
-};
-
-const doughnutChartData = {
-  labels: callsData.reduce((acc, obj) => { acc.push(obj.type); return acc; }, []),
-  datasets: [{
-    label: 'Calls Highlight of Last 7 Days',
-    data: callsData.reduce((acc, obj) => { const total = obj.records.reduce((t, i) => t + i.totalCalls, 0); acc.push(total); return acc; }, []),
-    backgroundColor: [
-      getRandomColor(),
-      getRandomColor(),
-      getRandomColor()
-    ],
-    hoverOffset: 4
-  }]
-};
-
-const lineChartCanvas = $('#trendChart').get(0).getContext('2d')
-const doughnutChartCanvas = $('#doughnutChart').get(0).getContext('2d')
-const lineChartOptions = jQuery.extend(true, {}, areaChartOptions)
-const lineChartData = jQuery.extend(true, {}, areaChartData)
-lineChartOptions.datasetFill = false
-
-const trendChart = new Chart(lineChartCanvas, { 
-  type: 'line',
-  data: lineChartData, 
-  options: lineChartOptions
-});
-
-const doughnutChart = new Chart(doughnutChartCanvas, { 
-  type: 'doughnut',
-  data: doughnutChartData
-});
-
-
 </script>
 
-  {% endblock %}
+<script src="/static/js/dashboard.js"></script>
+
+{% endblock %}

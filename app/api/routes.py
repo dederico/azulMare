@@ -58,6 +58,8 @@ async def websocket_endpoint(ws: WebSocket):
 
     logger.info("Got new INCOMING_CALL")
     db = LocalStorage()
+    config = { conf.name: conf.value for conf in db.GetAll(Config) }
+
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
 
@@ -70,7 +72,7 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language="es-US"
+        language=config["Lang"]
     )
 
     function_manager = FunctionManager(registered_functions)
@@ -103,7 +105,7 @@ async def websocket_endpoint(ws: WebSocket):
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager,
         #model="gpt-4-1106-preview",
-        model="gpt-3.5-turbo-1106",
+        model="gpt-3.5-turbo-1106"
     )
 
     # tts_service = ElevenTTSService(
@@ -120,6 +122,7 @@ async def websocket_endpoint(ws: WebSocket):
         secret_key=AWS_SECRET_ACCESS_KEY,
         region_name=AWS_REGION,
         stream_results=False,
+        language=config["Lang"]
     )
 
     logger.debug("Initializing orchestrator for the call")

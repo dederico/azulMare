@@ -1,5 +1,6 @@
 import json
 import asyncio
+from app.util.logger import logger
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -41,7 +42,7 @@ async def find_by_phone_number(phone_number):
             name = row[0]  # Assuming the name is in the first column
             return name
 
-    return "Name not found for the given phone number."
+    return "Unknown"
 
 
 async def get_customer_identity(call_sid):
@@ -61,8 +62,9 @@ async def get_customer_identity(call_sid):
         phone_number = call.to
 
         return await find_by_phone_number(phone_number)
-    except:
-        return "Name not FOUND"
+    except Exception as e:
+        logger.exception(e)
+        return "Unknown"
 
 
 # async def main():

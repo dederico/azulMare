@@ -59,6 +59,10 @@ async def websocket_endpoint(ws: WebSocket):
     logger.info("Got new INCOMING_CALL")
     db = LocalStorage()
     config = { conf.name: conf.value for conf in db.GetAll(Config) }
+    if config["Power"] == "false":
+        ws.close()
+        logger.warning("We just dropped the call as Robot is not active")
+        return
 
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
@@ -80,7 +84,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Get the current date and time
     now = datetime.now()
     call = Call(
-        callTime = now.strftime("%d-%m-%Y %T"),
+        callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
         callSource = "Twillio",
         callType = "IP",
         callDirection = "IN_COMING",

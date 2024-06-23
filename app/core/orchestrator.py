@@ -41,7 +41,7 @@ class Orchestrator:
             self.log("Call ended Gracefully")
         except Exception as e:
             self.log(str(e))
-            self.stats["Status"] = "COMPLETED_WITH_ERROR"
+            self.stats["Status"] = "PARTIAL_COMPLETED"
 
         return self.stats
 

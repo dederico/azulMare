@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="/static/plugins/daterangepicker/daterangepicker.css">
   <link rel="stylesheet" href="/static/plugins/summernote/summernote-bs4.css">
   <link rel="stylesheet" type="text/css" href="/static/css/toast.css">
+  <link rel="stylesheet" type="text/css" href="/static/css/notifications.css">
   <link href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:300,400,400i,700" rel="stylesheet">
 </head>
 <body class="hold-transition sidebar-mini layout-fixed">
@@ -31,33 +32,12 @@
       </div>
     </form>
 
-    <ul class="navbar-nav ml-auto">
-      <li class="nav-item dropdown">
-        <a class="nav-link" data-toggle="dropdown" href="#">
-          <i class="fa-regular fa-bell fa-2x"></i>
-        </a>
-        <div class="dropdown-menu dropdown-menu-lg dropdown-menu-right">
-          <span class="dropdown-item dropdown-header">15 Notifications</span>
-          <div class="dropdown-divider"></div>
-          <a href="#" class="dropdown-item">
-            <i class="fas fa-envelope mr-2"></i> 4 new messages
-            <span class="float-right text-muted text-sm">3 mins</span>
-          </a>
-          <div class="dropdown-divider"></div>
-          <a href="#" class="dropdown-item">
-            <i class="fas fa-users mr-2"></i> 8 friend requests
-            <span class="float-right text-muted text-sm">12 hours</span>
-          </a>
-          <div class="dropdown-divider"></div>
-          <a href="#" class="dropdown-item">
-            <i class="fas fa-file mr-2"></i> 3 new reports
-            <span class="float-right text-muted text-sm">2 days</span>
-          </a>
-          <div class="dropdown-divider"></div>
-          <a href="#" class="dropdown-item dropdown-footer">See All Notifications</a>
-        </div>
-      </li>
-    </ul>
+    <div style="width: 100%;">
+      <a data-toggle="modal" data-target="#powerModal" style="float: right;" href="#"><i class="fa-solid fa-power-off fa-2x {% if data['power'] %}text-danger{% else %}text-success{% endif %} pr-2"></i></a>
+      <a style="float: right;" href="/admin/notifications/">
+        <i class="fa-regular fa-bell fa-2x pr-3 {% if data['hasNotifications'] == 'true' %}notification-bell text-warning{% endif %}" id="bell"></i>
+      </a>    
+    </div>
   </nav>
 
   <aside class="main-sidebar sidebar-dark-primary elevation-4">
@@ -129,7 +109,7 @@
           </div>
           <div class="col-sm-6">
             <ol class="breadcrumb float-sm-right">
-              <li class="breadcrumb-item"><a href="#">Home</a></li>
+              <li class="breadcrumb-item"><a href="/admin/dashboard">Home</a></li>
               <li class="breadcrumb-item active">{{ data['title'] }}</li>
             </ol>
           </div>
@@ -143,7 +123,61 @@
   <aside class="control-sidebar control-sidebar-dark"></aside>
 </div>
 
-<script src="/static/plugins/jquery/jquery.min.js"></script>
+{% if data["power"] %}
+<div class="modal fade" id="powerModal" tabindex="-1" role="dialog" aria-labelledby="shutdownModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered" role="document">
+    <div class="modal-content">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title" id="shutdownModalLabel">
+          <i class="fas fa-exclamation-triangle mr-2"></i> Shutdown Confirmation
+        </h5>
+        <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to shut down the Robot?</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">
+          <i class="fas fa-times-circle mr-1"></i> Cancel
+        </button>
+        <button onclick="togglePower(0)" type="button" class="btn btn-danger">
+          <i class="fas fa-power-off mr-1"></i> Shutdown
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="modal fade" id="powerModal" tabindex="-1" role="dialog" aria-labelledby="powerOnModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered" role="document">
+    <div class="modal-content">
+      <div class="modal-header bg-success text-white">
+        <h5 class="modal-title" id="powerOnModalLabel">
+          <i class="fas fa-power-off mr-2"></i> Power On Confirmation
+        </h5>
+        <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to power on the Robot?</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">
+          <i class="fas fa-times-circle mr-1"></i> Cancel
+        </button>
+        <button onclick="togglePower(1)" type="button" class="btn btn-success">
+          <i class="fas fa-power-off mr-1"></i> Power On
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script src="/static/js/jquery.js"></script>
 <script src="/static/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="/static/plugins/overlayScrollbars/js/jquery.overlayScrollbars.min.js"></script>
 
@@ -186,6 +220,29 @@
 			  dismissAfter: '3s'
 		});
 	}
+
+  function togglePower(status) 
+  {
+        $.ajax({
+            url: '/admin/power/' + status + '?json=true',
+            type: 'GET',
+            xhrFields: {
+                withCredentials: true
+            },
+            success: function(response) {
+                if (response.status === true) {
+                    $('#powerModal').modal('hide');
+                    Toast('System!', 'Power command Successfull!');
+                    setTimeout(()=>{
+                      window.location.reload();
+                    }, 2000);
+                }
+            },
+            error: function(xhr, status, error) {
+                Toast('Ooops!', 'Power command failed!', 'error');
+            }
+        });
+    }
 </script>
 
 </body>

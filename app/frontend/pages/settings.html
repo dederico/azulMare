@@ -1,0 +1,80 @@
+{% extends 'layout.html' %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+
+<style>
+    .nav-tabs-custom .nav-link {
+        color: black; /* Set the text color */
+        background-color: #f8f9fa; /* Set the background color of the menu */
+        border-color: #dee2e6; /* Optional: Set border color if needed */
+    }
+    
+    .nav-tabs-custom .nav-link.active {
+        background-color: white; /* Set active tab background color */
+    }
+    
+    .nav-tabs-custom .nav-link .nav-icon {
+        margin-right: 5px; /* Adjust spacing between icon and text */
+    }
+</style>
+
+<ul class="nav nav-tabs nav-tabs-custom">
+    <li class="nav-item col-2">
+        <a class="nav-link active d-flex align-items-center" data-toggle="tab" href="#general">
+            <i class="fas fa-cog fa-lg nav-icon"></i>
+            General
+        </a>
+    </li>
+    <li class="nav-item col-2">
+        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#locale">
+            <i class="fas fa-globe fa-lg nav-icon"></i>
+            Locale
+        </a>
+    </li>
+    <li class="nav-item col-2">
+        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#outcalls">
+            <i class="fas fa-phone fa-lg nav-icon"></i>
+            Calls
+        </a>
+    </li>
+    <li class="nav-item col-2">
+        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#tts">
+            <i class="fas fa-volume-up fa-lg nav-icon"></i>
+            TTS
+        </a>
+    </li>
+    <li class="nav-item col-2">
+        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#stt">
+            <i class="fas fa-microphone fa-lg nav-icon"></i>
+            STT
+        </a>
+    </li>
+    <li class="nav-item col-2">
+        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#llm">
+            <i class="fas fa-book fa-lg nav-icon"></i>
+            LLM
+        </a>
+    </li>
+</ul>
+
+<div class="tab-content p-0">
+    <div class="tab-pane container active" id="general">
+        <label>General Settings</label>
+    </div>
+    <div class="tab-pane container" id="locale">
+        <label>Locale Settings</label>
+    </div>
+    <div class="tab-pane container" id="outcalls">
+        <label>Outbound Calls Settings</label>
+    </div>
+    <div class="tab-pane container" id="tts">
+        <label>TTS Service Settings</label>
+    </div>
+    <div class="tab-pane container" id="stt">
+        <label>STT Service Settings</label>
+    </div>
+    <div class="tab-pane container" id="llm">
+        <label>LLM Service Settings</label>
+    </div>
+</div>
+{% endblock %}

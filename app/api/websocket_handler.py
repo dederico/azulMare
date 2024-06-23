@@ -5,7 +5,6 @@ from app.util.logger import logger
 from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
 
-
 class WebSocketHandler:
     duration = 0.02
 
@@ -45,7 +44,6 @@ class WebSocketHandler:
             raise e
 
     async def handle_event(self, data):
-        logger.debug("Received mark event '{}' from {}".format(data["event"], data["streamSid"]))
         if data["event"] == "start":
             self.initial_data = data["start"]
             self.stream_sid = data["streamSid"]
@@ -58,19 +56,14 @@ class WebSocketHandler:
             self.switch = data["mark"]["name"]
 
     async def process_media_event(self, data):
-        logger.debug("Received media chunk from customer")
         audio_payload = data["media"]["payload"]
-
-        logger.debug("Attempting to decode to audio frame from B64 message")
         audio_content = base64.b64decode(audio_payload)
         raw_audio_data = audioop.ulaw2lin(audio_content, 2)
         rms = audioop.rms(raw_audio_data, 2)
 
         if rms > 300 and (self.switch == "listening" or self.switch is None):
-            logger.debug("Robot is listening forwarding decoded audio frame")
             return raw_audio_data
         else:
-            logger.debug("Model is Not_Listening hence skipping decoded audio frame")
             raw_audio_data = await self.generate_silence()
             return raw_audio_data
 

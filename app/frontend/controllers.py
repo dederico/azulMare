@@ -1,5 +1,6 @@
 import json
 from app.models.Call import Call
+from app.models.Config import Config
 from app.models.Notification import Notification
 from app.util.database import LocalStorage
 
@@ -9,10 +10,16 @@ class Context:
         self.__ls = LocalStorage()
     
     def prepare(self, **kwargs):
+        configs = { c.name:c.value for c in self.__ls.GetAll(Config) }
+        q = "SELECT CASE WHEN MAX(CASE WHEN nAck = 0 THEN 1 ELSE 0 END) = 1 THEN 'true' ELSE 'false' END AS hasNotifications FROM notifications;"
+        response = self.__ls.GetAll(Notification, q, True)[0]
+        response["power"] = (configs.get("Power") or "false") == "true"
+
+
         if hasattr(self, f"_Context__{self.__fragment}"):
-            return getattr(self, f"_Context__{self.__fragment}")(**kwargs)
+            response.update(getattr(self, f"_Context__{self.__fragment}")(**kwargs))
         
-        return {}
+        return response
     
     def __dashboard(self, **kwargs):
         q = "SELECT * FROM calls WHERE DATE(callTime) = DATE('now');"
@@ -29,12 +36,12 @@ class Context:
             "inProgress": len([c for c in calls if 'progress' in c['callStatus'].lower() ]),
             "completed": len([c for c in calls if 'COMPLETED' == c['callStatus'] ]),
             "hanged": len([c for c in calls if 'hanged' in c['callStatus'].lower() ]),
-            "error": len([c for c in calls if 'error' in c['callStatus'].lower() ])
+            "error": len([c for c in calls if 'partial' in c['callStatus'].lower() ])
         }
 
         days = kwargs.get("days") or "15"
         q = "SELECT DATE(callTime) AS callDate, COUNT(*) AS totalCalls FROM calls WHERE callStatus = '{}' AND DATE(callTime) >= DATE('now', '-{} days') GROUP BY callDate ORDER BY callDate DESC;"
-        for status in ['COMPLETED', 'HANGED_UP', 'COMPLETED_WITH_ERROR']:
+        for status in ['COMPLETED', 'HANGED_UP', 'PARTIAL_COMPLETED']:
             response['graphs'].append({ "type": status, "records": self.__ls.GetAll(Call, q.format(status, days), True) })
 
         return response
@@ -69,9 +76,21 @@ class Context:
             "title": "Call Logs",
             "logs": reversed(logs)
         }
-    
+
+    def __settings(self, **kwargs):
+        return {
+            "title": "Robot Configurations",
+            "configs": { c.name:c.value for c in self.__ls.GetAll(Config) }
+        }
+
     def __notifications(self, **kwargs):
         return {
             "title": "Notifications",
             "notifications": self.__ls.GetAll(Notification, json=True)
         }
+    
+    def __power(self, **kwargs):
+        power = [ c for c in self.__ls.GetAll(Config) if c.name == 'Power' ][0]
+        power.value = str(kwargs['id'] == 1).lower()
+        self.__ls.Update(power)
+        return { "status": True }

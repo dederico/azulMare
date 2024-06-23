@@ -1,6 +1,8 @@
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse
 import os
+from app.models.Config import Config
+from app.util.database import LocalStorage
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -20,8 +22,11 @@ async def hangup(call_sid):
         string: Mensaje de confirmacion.
     """
 
+    ls = LocalStorage()
+    config = { c.name:c.value for c in ls.GetAll(Config)}
+
     response = VoiceResponse()
-    response.say("Gracias por tu tiempo.", voice="Polly.Lupe-Neural", language="es-US")
+    response.say("Gracias por tu tiempo.", voice="Polly.Lupe-Neural", language=config["Lang"])
     response.pause(length=5)
     client.calls(call_sid).update(twiml=response.to_xml())
     client.calls(call_sid).update(status="completed")

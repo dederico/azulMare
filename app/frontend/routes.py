@@ -1,17 +1,18 @@
 
 import os
 import json
-from fastapi.responses import RedirectResponse, JSONResponse
-from subprocess import check_output
-from fastapi import APIRouter, Request, Response, Depends, Cookie
-from app.models.Config import Config
+from fastapi import FastAPI
 from app.models.User import User
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-from app.util.database import LocalStorage
-from fastapi.security import OAuth2PasswordBearer
 from .controllers import Context
 from app.util.logger import logger
+from subprocess import check_output
+from app.models.Config import Config
+from app.util.database import LocalStorage
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.security import OAuth2PasswordBearer
+from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi import APIRouter, Request, Response, Depends, Cookie
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/frontend/pages")
@@ -50,7 +51,7 @@ async def dashboard(request: Request, fragment):
             fragment = "404"
 
         if all([ k not in fragment.lower() for k in ['login', 'signup']]):
-            context = { "request": request, "data": Context(fragment).prepare(**request.query_params) }
+            context = { "request": request, "data": Context(fragment, request.method).prepare(**request.query_params) }
             if not request.query_params.get("json"):
                 response = templates.TemplateResponse(f"{fragment}.html", context)
                 if fragment == 'logout':
@@ -64,8 +65,8 @@ async def dashboard(request: Request, fragment):
         context = { "request": request, "data": {} }
         return templates.TemplateResponse(f"500.html", context)
 
-@router.get("/{fragment}/{id}", response_class=HTMLResponse)
-async def dashboard(request: Request, fragment, id:int):
+@router.api_route("/{fragment}/{id}", methods=["GET", "POST", "DELETE"], response_class=HTMLResponse)
+async def dashboard(request: Request, fragment : str, id : str):
     try:
         if request.cookies.get('beholder') is None:
             #TODO Need to check here if token is valid
@@ -75,9 +76,19 @@ async def dashboard(request: Request, fragment, id:int):
             fragment = "404"
 
         if all([ k not in fragment.lower() for k in ['login', 'signup']]):
-            context = { "request": request, "data": Context(fragment).prepare(id=id, **request.query_params) }
+            payload = await request.form()
+
+            if payload and 'file' in payload:
+                with open(f'uploads/{payload["file"].filename}', "wb") as f:
+                    f.write(await payload["file"].read())
+                    logger.info("File '{}' upload completed Successfully!".format(payload["file"].filename))
+
+            payload = {k: v for k, v in payload.items() } if payload else None
+            context = { "request": request, "data": Context(fragment, request.method, payload).prepare(id=id, **request.query_params) }
+
             if not request.query_params.get("json"):
                 return templates.TemplateResponse(f"subpages/{fragment}.html", context)
+
             return JSONResponse(context["data"])
         else:
             return RedirectResponse("/admin/dashboard")

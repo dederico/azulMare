@@ -5,16 +5,19 @@ from app.models.Notification import Notification
 from app.util.database import LocalStorage
 
 class Context:
-    def __init__(self, fragment):
+    def __init__(self, fragment, method, payload=None):
         self.__fragment = fragment
         self.__ls = LocalStorage()
+        self.method = method
+        self.payload = payload
+        if self.payload and 'file' in self.payload:
+            self.payload['file'] = self.payload['file'].filename
     
     def prepare(self, **kwargs):
         configs = { c.name:c.value for c in self.__ls.GetAll(Config) }
         q = "SELECT CASE WHEN MAX(CASE WHEN nAck = 0 THEN 1 ELSE 0 END) = 1 THEN 'true' ELSE 'false' END AS hasNotifications FROM notifications;"
         response = self.__ls.GetAll(Notification, q, True)[0]
         response["power"] = (configs.get("Power") or "false") == "true"
-
 
         if hasattr(self, f"_Context__{self.__fragment}"):
             response.update(getattr(self, f"_Context__{self.__fragment}")(**kwargs))
@@ -80,6 +83,8 @@ class Context:
     def __settings(self, **kwargs):
         return {
             "title": "Robot Configurations",
+            "body": self.payload,
+            "args": kwargs,
             "configs": { c.name:c.value for c in self.__ls.GetAll(Config) }
         }
 
@@ -91,6 +96,6 @@ class Context:
     
     def __power(self, **kwargs):
         power = [ c for c in self.__ls.GetAll(Config) if c.name == 'Power' ][0]
-        power.value = str(kwargs['id'] == 1).lower()
+        power.value = str(kwargs['id'] == '1').lower()
         self.__ls.Update(power)
         return { "status": True }

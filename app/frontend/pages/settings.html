@@ -3,78 +3,245 @@
 {% block content %}
 
 <style>
-    .nav-tabs-custom .nav-link {
-        color: black; /* Set the text color */
-        background-color: #f8f9fa; /* Set the background color of the menu */
-        border-color: #dee2e6; /* Optional: Set border color if needed */
-    }
-    
-    .nav-tabs-custom .nav-link.active {
-        background-color: white; /* Set active tab background color */
-    }
-    
-    .nav-tabs-custom .nav-link .nav-icon {
-        margin-right: 5px; /* Adjust spacing between icon and text */
-    }
+  .nav-tabs-custom .nav-link {
+    color: black;
+    background-color: #f8f9fa;
+    border-color: rgb(227, 223, 223);
+  }
+
+  .nav-tabs-custom .nav-link.active {
+    background-color: rgb(197, 193, 193);
+  }
+
+  .nav-tabs-custom .nav-link .nav-icon {
+    margin-right: 5px;
+  }
+
+  .nav-item {
+    padding: 0px;
+  }
 </style>
 
 <ul class="nav nav-tabs nav-tabs-custom">
-    <li class="nav-item col-2">
-        <a class="nav-link active d-flex align-items-center" data-toggle="tab" href="#general">
-            <i class="fas fa-cog fa-lg nav-icon"></i>
-            General
-        </a>
-    </li>
-    <li class="nav-item col-2">
-        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#locale">
-            <i class="fas fa-globe fa-lg nav-icon"></i>
-            Locale
-        </a>
-    </li>
-    <li class="nav-item col-2">
-        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#outcalls">
-            <i class="fas fa-phone fa-lg nav-icon"></i>
-            Calls
-        </a>
-    </li>
-    <li class="nav-item col-2">
-        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#tts">
-            <i class="fas fa-volume-up fa-lg nav-icon"></i>
-            TTS
-        </a>
-    </li>
-    <li class="nav-item col-2">
-        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#stt">
-            <i class="fas fa-microphone fa-lg nav-icon"></i>
-            STT
-        </a>
-    </li>
-    <li class="nav-item col-2">
-        <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#llm">
-            <i class="fas fa-book fa-lg nav-icon"></i>
-            LLM
-        </a>
-    </li>
+  <li class="nav-item col-2">
+    <a class="nav-link active d-flex align-items-center" data-toggle="tab" href="#general">
+      <i class="fas fa-cog fa-lg nav-icon"></i>
+      General
+    </a>
+  </li>
+  <li class="nav-item col-2">
+    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#locale">
+      <i class="fas fa-globe fa-lg nav-icon"></i>
+      Locale
+    </a>
+  </li>
+  <li class="nav-item col-2">
+    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#outcalls">
+      <i class="fas fa-phone fa-lg nav-icon"></i>
+      Calls
+    </a>
+  </li>
+  <li class="nav-item col-2">
+    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#tts">
+      <i class="fas fa-volume-up fa-lg nav-icon"></i>
+      TTS
+    </a>
+  </li>
+  <li class="nav-item col-2">
+    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#stt">
+      <i class="fas fa-microphone fa-lg nav-icon"></i>
+      STT
+    </a>
+  </li>
+  <li class="nav-item col-2">
+    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#llm">
+      <i class="fas fa-book fa-lg nav-icon"></i>
+      LLM
+    </a>
+  </li>
 </ul>
 
 <div class="tab-content p-0">
-    <div class="tab-pane container active" id="general">
-        <label>General Settings</label>
+  <div class="tab-pane container active" id="general">
+    <div class="container mt-5">
+      <form>
+        <div class="row">
+          <div class="col-6">
+            <div class="form-group">
+              <label for="name">Agent Name</label>
+              <input type="text" class="form-control" id="name" name="name" placeholder="e.g Mike">
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="form-group">
+              <label for="phone">Agent Phone Number</label>
+              <input type="tel" class="form-control" id="phone" name="phone" placeholder="e.g. 1234567890">
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="greeting">Greeting Message</label>
+          <textarea class="form-control" id="greeting" name="greeting" rows="5"
+            placeholder="e.g. Default greetings for customer"></textarea>
+        </div>
+        <button style="float: right;" type="submit" class="btn btn-primary">Update</button>
+      </form>
     </div>
-    <div class="tab-pane container" id="locale">
-        <label>Locale Settings</label>
+  </div>
+  <div class="tab-pane container" id="locale">
+    <div class="container mt-5">
+      <form>
+        <div class="form-group">
+          <label for="datetime">Choose Date and Time</label>
+          <input type="datetime-local" class="form-control" id="datetime" name="datetime">
+        </div>
+        <div class="form-group">
+          <label for="language">Select Language</label>
+          <select name="language" id="language" class="form-control">
+            <option value="arb">Arabic</option>
+            <option value="ar-AE">Arabic (Gulf)</option>
+            <option value="ca-ES">Catalan</option>
+            <option value="yue-CN">Chinese (Cantonese)</option>
+            <option value="cmn-CN">Chinese (Mandarin)</option>
+            <option value="da-DK">Danish</option>
+            <option value="nl-BE">Dutch (Belgian)</option>
+            <option value="nl-NL">Dutch</option>
+            <option value="en-AU">English (Australian)</option>
+            <option value="en-GB">English (British)</option>
+            <option value="en-IN">English (Indian)</option>
+            <option value="en-NZ">English (New Zealand)</option>
+            <option value="en-ZA">English (South African)</option>
+            <option value="en-US" selected>English (US)</option>
+            <option value="en-GB-WLS">English (Welsh)</option>
+            <option value="fi-FI">Finnish</option>
+            <option value="fr-FR">French</option>
+            <option value="fr-BE">French (Belgian)</option>
+            <option value="fr-CA">French (Canadian)</option>
+            <option value="hi-IN">Hindi</option>
+            <option value="de-DE">German</option>
+            <option value="de-AT">German (Austrian)</option>
+            <option value="is-IS">Icelandic</option>
+            <option value="it-IT">Italian</option>
+            <option value="ja-JP">Japanese</option>
+            <option value="ko-KR">Korean</option>
+            <option value="nb-NO">Norwegian</option>
+            <option value="pl-PL">Polish</option>
+            <option value="pt-BR">Portuguese (Brazilian)</option>
+            <option value="pt-PT">Portuguese (European)</option>
+            <option value="ro-RO">Romanian</option>
+            <option value="ru-RU">Russian</option>
+            <option value="es-ES">Spanish (European)</option>
+            <option value="es-MX">Spanish (Mexican)</option>
+            <option value="es-US">Spanish (US)</option>
+            <option value="sv-SE">Swedish</option>
+            <option value="tr-TR">Turkish</option>
+            <option value="cy-GB">Welsh</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="timezone">Select Time Zone</label>
+          <select class="form-control" id="timezone" name="timezone">
+            <option value="UTC-12:00">UTC-12:00</option>
+            <option value="UTC-11:00">UTC-11:00</option>
+            <option value="UTC-10:00">UTC-10:00</option>
+            <option value="UTC-09:00">UTC-09:00</option>
+            <option value="UTC-08:00">UTC-08:00</option>
+            <option value="UTC-07:00">UTC-07:00</option>
+            <option value="UTC-06:00">UTC-06:00</option>
+            <option value="UTC-05:00">UTC-05:00</option>
+            <option value="UTC-04:00">UTC-04:00</option>
+            <option value="UTC-03:00">UTC-03:00</option>
+            <option value="UTC-02:00">UTC-02:00</option>
+            <option value="UTC-01:00">UTC-01:00</option>
+            <option value="UTC+00:00">UTC+00:00</option>
+            <option value="UTC+01:00">UTC+01:00</option>
+            <option value="UTC+02:00">UTC+02:00</option>
+            <option value="UTC+03:00">UTC+03:00</option>
+            <option value="UTC+04:00">UTC+04:00</option>
+            <option value="UTC+05:00">UTC+05:00</option>
+            <option value="UTC+06:00">UTC+06:00</option>
+            <option value="UTC+07:00">UTC+07:00</option>
+            <option value="UTC+08:00">UTC+08:00</option>
+            <option value="UTC+09:00">UTC+09:00</option>
+            <option value="UTC+10:00">UTC+10:00</option>
+            <option value="UTC+11:00">UTC+11:00</option>
+            <option value="UTC+12:00">UTC+12:00</option>
+          </select>
+        </div>
+        <button style="float: right;" type="submit" class="btn btn-primary">Update</button>
+      </form>
     </div>
-    <div class="tab-pane container" id="outcalls">
-        <label>Outbound Calls Settings</label>
+  </div>
+  <div class="tab-pane container" id="outcalls">
+    <div class="container mt-5">
+      <form>
+        <div class="card">
+          <div class="card-header bg-purple">
+            <strong style="float: right;">Global Call Configurations</strong>
+          </div>
+          <div class="card-body">
+            <div class="form-group">
+              <label for="rawLogs">Call Logs Details</label>
+              <select class="form-control" id="rawLogs">
+                <option value="everything">Everything</option>
+                <option value="warnings">Only Warnings</option>
+                <option value="errors">Only Errors</option>
+              </select>
+            </div>
+            <button style="float: right;" type="submit" class="btn btn-primary mt-3">Update</button>
+          </div>
+        </div>
+      </form>
+        <form method="post" enctype="multipart/form-data" action="/admin/settings/outbound?json=true">
+          <div class="card">
+            <div class="card-header bg-purple">
+              <strong style="float: right;">Outbound Calls Configurations</strong>
+            </div>
+            <div class="card-body">
+              <div class="form-group">
+                <label for="file">Upload Callers List</label>
+                <input type="file" class="form-control" name="file" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
+              </div>
+              <div class="custom-control custom-switch">
+                <input type="checkbox" class="custom-control-input" id="recordCallsOutbound" name="recordCallsOutbound">
+                <label class="custom-control-label" for="recordCallsOutbound">Record Calls</label>
+              </div>
+              <div class="custom-control custom-switch">
+                <input type="checkbox" class="custom-control-input" id="saveScriptOutbound" name="saveScriptOutbound">
+                <label class="custom-control-label" for="saveScriptOutbound">Save Conversation</label>
+              </div>
+              <button style="float: right;" type="submit" class="btn btn-primary mt-3">Update</button>
+            </div>
+          </div>
+        </form>
+        <form>
+          <div class="card mt-3">
+            <div class="card-header bg-purple">
+              <strong style="float: right;">Inbound Calls Configurations</strong>
+            </div>
+            <div class="card-body">
+              <div class="custom-control custom-switch">
+                <input type="checkbox" class="custom-control-input" id="saveScriptInbound">
+                <label class="custom-control-label" for="saveScriptInbound">Save Conversation</label>
+              </div>
+              <div class="custom-control custom-switch mb-3">
+                <input type="checkbox" class="custom-control-input" id="recordCallsInbound">
+                <label class="custom-control-label" for="recordCallsInbound">Record Calls</label>
+              </div>
+              <button style="float: right;" type="submit" class="btn btn-primary mt-3">Update</button>
+            </div>
+          </div>
+        </form>
     </div>
-    <div class="tab-pane container" id="tts">
-        <label>TTS Service Settings</label>
-    </div>
-    <div class="tab-pane container" id="stt">
-        <label>STT Service Settings</label>
-    </div>
-    <div class="tab-pane container" id="llm">
-        <label>LLM Service Settings</label>
-    </div>
+  </div>
+  <div class="tab-pane container" id="tts">
+    <label>TTS Service Settings</label>
+  </div>
+  <div class="tab-pane container" id="stt">
+    <label>STT Service Settings</label>
+  </div>
+  <div class="tab-pane container" id="llm">
+    <label>LLM Service Settings</label>
+  </div>
 </div>
 {% endblock %}

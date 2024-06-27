@@ -10,6 +10,7 @@ class Call:
     callScript: str
     callLogs: str
     callTime: str
+    callUid: str
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():

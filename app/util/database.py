@@ -57,6 +57,28 @@ class LocalStorage:
         except Exception as e:
             logger.error(e)
             return None
+    
+    def Search(self, model, single=False, json=False):
+        try:
+            conn = sqlite3.connect(self.filename)
+            cursor = conn.cursor()
+
+            attributes = {attr: getattr(model, attr) for attr in model.__dict__.keys() if not attr.startswith("_")}
+            query = f"SELECT * FROM {model.__name__.lower()}s WHERE " + " AND ".join([f"{attr} = :{attr}" for attr in attributes])
+            column_names = [column[0] for column in cursor.description]
+
+            records = cursor.fetchall() if not single else cursor.fetchone()
+            if not single:
+                for record in records:
+                    record = model(**dict(zip(column_names, record))) if not json else dict(zip(column_names, record))
+            else:
+                records = model(**dict(zip(column_names, records))) if not json else dict(zip(column_names, records))
+
+            conn.close()
+            return records
+        except Exception as e:
+            logger.error(e)
+            return None
 
     def GetAll(self, model, rawQuery=False, json=False):
         try:

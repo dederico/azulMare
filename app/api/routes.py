@@ -83,15 +83,22 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Get the current date and time
     now = datetime.now()
-    call = Call(
-        callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
-        callSource = "Twillio",
-        callType = "IP",
-        callDirection = "IN_COMING",
-        callStatus = "IN_PROGRESS",
-        callNumber = websocket_handler.call_sid
-    )
-    call = db.Insert(call)
+    call = db.Search(Call(callUid = websocket_handler.call_sid))
+    if len(call) > 0:
+        call = call[0]
+        call.callStatus = "IN_PROGRESS"
+        db.Update(call)
+    else:
+        call = Call(
+            callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
+            callSource = "Twillio",
+            callType = "IP",
+            callDirection = "IN_COMING",
+            callStatus = "IN_PROGRESS",
+            callNumber = "Not Available",
+            callUid = websocket_handler.call_sid
+        )
+        call = db.Insert(call)
 
     # Format the date as a string
     date_string = now.strftime("%Y-%m-%d")

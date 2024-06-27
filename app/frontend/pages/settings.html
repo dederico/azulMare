@@ -64,25 +64,25 @@
 <div class="tab-content p-0">
   <div class="tab-pane container active" id="general">
     <div class="container mt-5">
-      <form>
+      <form method="post" action="/admin/configs/update?json=true">
         <div class="row">
           <div class="col-6">
             <div class="form-group">
               <label for="name">Agent Name</label>
-              <input type="text" class="form-control" id="name" name="name" placeholder="e.g Mike">
+              <input type="text" class="form-control" name="agent_name" placeholder="e.g Mike" value="{{data['configs']['agent_name']}}">
             </div>
           </div>
           <div class="col-6">
             <div class="form-group">
               <label for="phone">Agent Phone Number</label>
-              <input type="tel" class="form-control" id="phone" name="phone" placeholder="e.g. 1234567890">
+              <input type="tel" class="form-control" name="from_phone_number" placeholder="e.g. 1234567890" value="{{data['configs']['from_phone_number']}}">
             </div>
           </div>
         </div>
         <div class="form-group">
           <label for="greeting">Greeting Message</label>
-          <textarea class="form-control" id="greeting" name="greeting" rows="5"
-            placeholder="e.g. Default greetings for customer"></textarea>
+          <textarea class="form-control" name="greeting_message" rows="5"
+            placeholder="e.g. Default greetings for customer">{{ data["configs"]["greeting_message"] }}</textarea>
         </div>
         <button style="float: right;" type="submit" class="btn btn-primary">Update</button>
       </form>
@@ -202,6 +202,19 @@
                 <label for="file">Upload Callers List</label>
                 <input type="file" class="form-control" name="file" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
               </div>
+              {% if data['files'] | length > 0 %}
+              <div class="form-group">
+                <label for="file">Initiate Calls on File</label>
+                <ul id="available-files" class="list-group">
+                  {% for file in data['files'] %}
+                    <li class="list-group-item">{{ file }} 
+                      <a onclick="removeFile('{{file}}')" href="#"><i style="font-size: 16pt;" class="fas fa-trash float-right ml-2 text-danger"></i></a>
+                      <a onclick="callFile('{{file}}')" href="#"><i style="font-size: 16pt;" class="fas fa-phone float-right text-info"></i></a>
+                    </li>
+                  {% endfor %}
+                </ul>
+              </div>
+              {% endif %}
               <div class="custom-control custom-switch">
                 <input type="checkbox" class="custom-control-input" id="recordCallsOutbound" name="recordCallsOutbound">
                 <label class="custom-control-label" for="recordCallsOutbound">Record Calls</label>
@@ -244,4 +257,84 @@
     <label>LLM Service Settings</label>
   </div>
 </div>
+
+<script src="/static/js/jquery.js"></script>
+<script>
+  $(document).ready(function() 
+  {
+    $("#available-files li").click(function() {
+        $(this).siblings().removeClass("bg-secondary");
+        $(this).addClass("bg-secondary");
+    });
+
+    $('form').on('submit', function(event) 
+    {
+                event.preventDefault();
+                
+                const form = $(this);
+                const actionUrl = form.attr('action');
+                const method = form.attr('method').toUpperCase();
+                const formData = new FormData(this);
+
+                $.ajax({
+                    url: actionUrl,
+                    method: method,
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    xhrFields: {
+                        withCredentials: true
+                    },
+                    success: function(response) {
+                      Toast("Hurah!", "Settings Updated Successfully!");
+                    },
+                    error: function(xhr, status, error) {
+                      Toast("Oops", error, 'error');
+                    }
+                });
+            });
+  });
+
+  function removeFile(f) 
+  {
+      $.ajax({
+          url: "/admin/remfiles/" + f + "?json=true",
+          type: "GET",
+          xhrFields: {
+              withCredentials: true
+          },
+          success: function (response) 
+          {
+            Toast("Success", "Operation Performed!");
+            $("#available-files").empty();
+
+            $.each(response.files, function(index, filename) {
+              $("#available-files").append($("<li class='list-group-item'>" + filename + "<a onclick=\"removeFile('" + filename + "')\" href=\"#\"><i style=\"font-size: 16pt;\" class=\"fas fa-trash float-right ml-2 text-danger\"></i></a><a onclick=\"callFile('" + filename + "')\" href=\"#\"><i style=\"font-size: 16pt;\" class=\"fas fa-phone float-right text-info\"></i></a></li>"));
+            }); 
+          },
+          error: function (xhr, status, error) {
+            Toast("Oops", error, 'error');
+          }
+      });
+  }
+
+  function callFile(f) 
+  {
+      $.ajax({
+          url: "/admin/callfiles/" + f + "?json=true",
+          type: "GET",
+          xhrFields: {
+              withCredentials: true
+          },
+          success: function (response) {
+              Toast("Success", response['message']);
+          },
+          error: function (xhr, status, error) {
+            Toast("Oops", error, 'error');
+          }
+      });
+  }
+
+</script>
+
 {% endblock %}

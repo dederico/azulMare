@@ -1,8 +1,11 @@
 import json
+import os
+from threading import Thread
 from app.models.Call import Call
 from app.models.Config import Config
 from app.models.Notification import Notification
 from app.util.database import LocalStorage
+from app.outbound import InitOutboundCalls
 
 class Context:
     def __init__(self, fragment, method, payload=None):
@@ -61,6 +64,16 @@ class Context:
 
     def __health(self, **kwargs):
         return { "title": "System Health"}
+    
+    def __callfiles(self, **kwargs):
+        Thread(target=InitOutboundCalls, args=(kwargs['id'], )).start()
+        return { "message": "The call initialization process has been started in BACKGROUND!" }
+    
+    def __remfiles(self, **kwargs):
+        os.remove("uploads/{}".format(kwargs['id']))
+        return {
+            "files": os.listdir("uploads")
+        }
 
     def __calls(self, **kwargs):
         excluded = ['callScript', 'callLogs']
@@ -83,8 +96,7 @@ class Context:
     def __settings(self, **kwargs):
         return {
             "title": "Robot Configurations",
-            "body": self.payload,
-            "args": kwargs,
+            "files": [f for f in os.listdir("uploads") if f.endswith('.xls') or f.endswith(".xlsx")],
             "configs": { c.name:c.value for c in self.__ls.GetAll(Config) }
         }
 
@@ -99,3 +111,16 @@ class Context:
         power.value = str(kwargs['id'] == '1').lower()
         self.__ls.Update(power)
         return { "status": True }
+    
+    def __configs(self, **kwargs):
+        if self.payload:
+            for key, value in self.payload.items():
+                config = Config(name=key)
+                config = self.__ls.Search(config, True, False)
+                if config:
+                    config.value = value
+                    self.__ls.Update(config)
+                else:
+                    self.__ls.Insert(Config(name=key, value=value))
+        return { "status": True }
+

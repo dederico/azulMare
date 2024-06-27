@@ -107,7 +107,7 @@ class Orchestrator:
         ls = LocalStorage()
         config = { conf.name: conf.value for conf in ls.GetAll(Config) }
         await self.websocket_handler.send_mark("not_listening")
-        greeting = config.get("Greeting") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
+        greeting = config.get("greeting_message") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
             ¿Con quién tengo el gusto de hablar?
         """
 

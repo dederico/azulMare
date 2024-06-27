@@ -135,7 +135,7 @@
             <td>{{ log['callDuration'] }}</td>
             <td>{{ log['callTime'] }}</td>
             <td>
-                {% if log['callStatus'] != 'IN_PROGRESS' %}
+                {% if log['callStatus'] not in ('IN_PROGRESS', 'INITIATED') %}
                 <a href="#"><i title="Remove" class="fas fa-trash text-danger"></i></a>
                 <a href="#" onclick="loadScript({{ log['id'] }})" data-toggle="modal" data-target="#script"><i
                         title="View Script" class="fas fa-users text-primary"></i></a>
@@ -254,7 +254,8 @@
         });
     });
 
-    function loadScript(id) {
+    function loadScript(id) 
+    {
         $.ajax({
             url: "/admin/script/" + id,
             type: "GET",

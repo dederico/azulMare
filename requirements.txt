@@ -74,3 +74,4 @@ jinja2
 python-multipart
 psutil
 ping3
+openpyxl

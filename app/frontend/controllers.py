@@ -1,5 +1,8 @@
 import json
 import os
+import platform
+from openai import OpenAI
+from datetime import datetime
 from threading import Thread
 from app.models.Call import Call
 from app.models.Config import Config
@@ -20,7 +23,7 @@ class Context:
         configs = { c.name:c.value for c in self.__ls.GetAll(Config) }
         q = "SELECT CASE WHEN MAX(CASE WHEN nAck = 0 THEN 1 ELSE 0 END) = 1 THEN 'true' ELSE 'false' END AS hasNotifications FROM notifications;"
         response = self.__ls.GetAll(Notification, q, True)[0]
-        response["power"] = (configs.get("Power") or "false") == "true"
+        response["power"] = (configs.get("power") or "false") == "true"
 
         if hasattr(self, f"_Context__{self.__fragment}"):
             response.update(getattr(self, f"_Context__{self.__fragment}")(**kwargs))
@@ -94,10 +97,25 @@ class Context:
         }
 
     def __settings(self, **kwargs):
+        configs = { c.name:c.value for c in self.__ls.GetAll(Config) }
+        configs["datetime"] = datetime.now().strftime('%Y-%m-%dT%H:%M')
+        configs["models"] = []
+
+
+
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        for model in client.models.list().data:
+            model_dict = {
+                'id': model.id,
+                'created_at': model.created if hasattr(model, 'created') else '',
+                'owner': model.owned_by if hasattr(model, 'owned_by') else ''
+            }
+            configs["models"].append(model_dict)
+        
         return {
             "title": "Robot Configurations",
             "files": [f for f in os.listdir("uploads") if f.endswith('.xls') or f.endswith(".xlsx")],
-            "configs": { c.name:c.value for c in self.__ls.GetAll(Config) }
+            "configs": configs
         }
 
     def __notifications(self, **kwargs):
@@ -107,13 +125,24 @@ class Context:
         }
     
     def __power(self, **kwargs):
-        power = [ c for c in self.__ls.GetAll(Config) if c.name == 'Power' ][0]
+        power = [ c for c in self.__ls.GetAll(Config) if c.name == 'power' ][0]
         power.value = str(kwargs['id'] == '1').lower()
         self.__ls.Update(power)
         return { "status": True }
     
     def __configs(self, **kwargs):
         if self.payload:
+            if "datetime" in self.payload:
+                datetime_obj = datetime.strptime(self.payload["datetime"], '%Y-%m-%dT%H:%M')
+                if platform.system() == 'Windows':
+                    formatted_time = datetime_obj.strftime('%m-%d-%Y %H:%M:%S')
+                    os.system(f'date {formatted_time.split()[0]}')
+                    os.system(f'time {formatted_time.split()[1]}')
+                else:
+                    formatted_time = datetime_obj.strftime('%Y-%m-%d %H:%M:%S')
+                    os.system(f'date -s "{formatted_time}"')
+                del self.payload["datetime"]
+
             for key, value in self.payload.items():
                 config = Config(name=key)
                 config = self.__ls.Search(config, True, False)

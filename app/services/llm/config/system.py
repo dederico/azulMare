@@ -1,11 +1,17 @@
-hello_message = """
+from app.util.database import LocalStorage
+from app.models.Config import Config
+
+ls = LocalStorage()
+configs = { c.name:c.value for c in ls.GetAll(Config) }
+
+hello_message = configs.get("greeting_message") or """
     "Hola! 
     Mi nombre es Julieta Perez, nos comunicamos de SWITCH en colaboración con AMERICAN EXPRESS. 
     ¿Me comunico con {customer_name}?"
 """
 
 
-system_message = """
+system_message =  configs.get("prompt") or """
 El indicativo unico de la llamada es call_sid = {call_sid}
 Tu nombre es Robotino. Eres un operador/asistente de llamadas del grupo Azul-Mar-e.
 Tu proposito es servir, ser muy amigable y contestar como un agente comercial y no como un modelo.

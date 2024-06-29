@@ -59,7 +59,7 @@ async def websocket_endpoint(ws: WebSocket):
     logger.info("Got new INCOMING_CALL")
     db = LocalStorage()
     config = { conf.name: conf.value for conf in db.GetAll(Config) }
-    if config["Power"] == "false":
+    if config["power"] == "false":
         ws.close()
         logger.warning("We just dropped the call as Robot is not active")
         return
@@ -76,16 +76,15 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language=config["Lang"]
+        language=config["language"]
     )
 
     function_manager = FunctionManager(registered_functions)
 
     # Get the current date and time
     now = datetime.now()
-    call = db.Search(Call(callUid = websocket_handler.call_sid))
-    if len(call) > 0:
-        call = call[0]
+    call = db.Search(Call(callUid = websocket_handler.call_sid), True)
+    if call:
         call.callStatus = "IN_PROGRESS"
         db.Update(call)
     else:
@@ -115,8 +114,7 @@ async def websocket_endpoint(ws: WebSocket):
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager,
-        #model="gpt-4-1106-preview",
-        model="gpt-3.5-turbo-1106"
+        model=configs.get("model") or "gpt-3.5-turbo-1106"
     )
 
     # tts_service = ElevenTTSService(
@@ -133,7 +131,7 @@ async def websocket_endpoint(ws: WebSocket):
         secret_key=AWS_SECRET_ACCESS_KEY,
         region_name=AWS_REGION,
         stream_results=False,
-        language=config["Lang"]
+        language=config["language"]
     )
 
     logger.debug("Initializing orchestrator for the call")

@@ -81,7 +81,7 @@
         </div>
         <div class="form-group">
           <label for="greeting">Greeting Message</label>
-          <textarea class="form-control" name="greeting_message" rows="5"
+          <textarea id="greeting" class="form-control" name="greeting_message" rows="5"
             placeholder="e.g. Default greetings for customer">{{ data["configs"]["greeting_message"] }}</textarea>
         </div>
         <button style="float: right;" type="submit" class="btn btn-primary">Update</button>
@@ -90,14 +90,14 @@
   </div>
   <div class="tab-pane container" id="locale">
     <div class="container mt-5">
-      <form>
+      <form method="POST" action="/admin/configs/locale?json=true">
         <div class="form-group">
           <label for="datetime">Choose Date and Time</label>
-          <input type="datetime-local" class="form-control" id="datetime" name="datetime">
+          <input type="datetime-local" class="form-control" value="{{data['configs']['datetime']}}" name="datetime">
         </div>
         <div class="form-group">
           <label for="language">Select Language</label>
-          <select name="language" id="language" class="form-control">
+          <select id="language" name="language" class="form-control">
             <option value="arb">Arabic</option>
             <option value="ar-AE">Arabic (Gulf)</option>
             <option value="ca-ES">Catalan</option>
@@ -111,7 +111,7 @@
             <option value="en-IN">English (Indian)</option>
             <option value="en-NZ">English (New Zealand)</option>
             <option value="en-ZA">English (South African)</option>
-            <option value="en-US" selected>English (US)</option>
+            <option value="en-US">English (US)</option>
             <option value="en-GB-WLS">English (Welsh)</option>
             <option value="fi-FI">Finnish</option>
             <option value="fr-FR">French</option>
@@ -253,15 +253,34 @@
   <div class="tab-pane container" id="stt">
     <label>STT Service Settings</label>
   </div>
-  <div class="tab-pane container" id="llm">
-    <label>LLM Service Settings</label>
+  <div class="tab-pane container" id="llm">  
+    <form method="POST" action="/admin/configs/llm?json=true">
+      <div class="form-group">
+        <label for="model">AI Model</label>
+        <select name="model" id="model" class="form-control">
+        {% for model in data["configs"]["models"] %}
+        <option value="{{model['id']}}">{{model["id"]}}</option>
+        {% endfor %}
+      </select>
+      </div>
+      <div class="form-group">
+        <label for="prompt">System Prompt</label>
+        <textarea rows="13" class="form-control" id="prompt" name="prompt" placeholder="Enter your prompt here...">{{ data["configs"]["prompt"] }}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary float-right">Update</button>
+    </form>
   </div>
 </div>
 
 <script src="/static/js/jquery.js"></script>
+
 <script>
   $(document).ready(function() 
   {
+    $("#language").val('{{data["configs"]["language"]}}');
+    $("#timezone").val('{{data["configs"]["timezone"]}}');
+    $("#model").val('{{data["configs"]["model"]}}');
+
     $("#available-files li").click(function() {
         $(this).siblings().removeClass("bg-secondary");
         $(this).addClass("bg-secondary");
@@ -269,30 +288,30 @@
 
     $('form').on('submit', function(event) 
     {
-                event.preventDefault();
+        event.preventDefault();
                 
-                const form = $(this);
-                const actionUrl = form.attr('action');
-                const method = form.attr('method').toUpperCase();
-                const formData = new FormData(this);
+        const form = $(this);
+        const actionUrl = form.attr('action');
+        const method = form.attr('method').toUpperCase();
+        const formData = new FormData(this);
 
-                $.ajax({
-                    url: actionUrl,
-                    method: method,
-                    data: formData,
-                    processData: false,
-                    contentType: false,
-                    xhrFields: {
-                        withCredentials: true
-                    },
-                    success: function(response) {
-                      Toast("Hurah!", "Settings Updated Successfully!");
-                    },
-                    error: function(xhr, status, error) {
-                      Toast("Oops", error, 'error');
-                    }
-                });
-            });
+        $.ajax({
+            url: actionUrl,
+            method: method,
+            data: formData,
+            processData: false,
+            contentType: false,
+            xhrFields: {
+                withCredentials: true
+            },
+            success: function(response) {
+                Toast("Hurah!", "Settings Updated Successfully!");
+            },
+            error: function(xhr, status, error) {
+                Toast("Oops", error, 'error');
+            }
+        });
+    });
   });
 
   function removeFile(f) 

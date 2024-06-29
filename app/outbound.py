@@ -1,8 +1,8 @@
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse
 from twilio.base.exceptions import TwilioRestException
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 import openpyxl
 from datetime import datetime
 from app.util.logger import logger
@@ -21,7 +21,7 @@ def make_twilio_call(to_phone_number, from_phone_number):
     call = client.calls.create(
         to=to_phone_number,
         from_=from_phone_number,
-        url=f"{NGROK_URL}/amd_detect",
+        url=f"{NGROK_URL}/",
         machine_detection="Enable",
         async_amd="Enable",
         async_amd_status_callback=f"{NGROK_URL}/amd_detect",

@@ -170,6 +170,12 @@ async def amd_detect(request: Request):
         client = Client(account_sid, auth_token)
         client.calls(call_sid).update(status="completed")
 
+        db = LocalStorage()
+        call = db.Search(Call(callUid = call_sid), True)
+        if call:
+            call.callStatus = "AMD_DETECTED"
+            db.Update(call)
+
         logger.warning(f"Machine - {answered_by} detected for: {call_sid}")
 
 

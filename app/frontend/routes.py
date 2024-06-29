@@ -33,7 +33,7 @@ async def index(request: Request):
     if not request.cookies.get('beholder'):
         ls = LocalStorage()
         config = { c.name: c.value for c in ls.GetAll(Config) }
-        fragment = "login.html" if "Lang" in config else "signup.html"
+        fragment = "login.html" if "language" in config else "signup.html"
         with open(page(fragment), "r") as file:
             content = file.read()
         return content

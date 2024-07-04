@@ -81,6 +81,13 @@ class Context:
     def __calls(self, **kwargs):
         excluded = ['callScript', 'callLogs']
         logs = self.__ls.GetAll(Call, json=True)
+
+        if "person" in kwargs:
+            logs = [ log for log in logs if log["callerName"] == kwargs["person"]]
+        
+        if "filter" in kwargs:
+            logs = [ log for log in logs if log["callStatus"] == kwargs["filter"]]
+
         for log in logs:
             if log['callDuration'] == None:
                 continue

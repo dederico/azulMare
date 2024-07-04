@@ -7,7 +7,10 @@ from app.models.Call import Call
 from app.models.Config import Config
 from app.models.User import User
 from app.models.File import File
+from dotenv import load_dotenv
 from app.models.Notification import Notification
+
+load_dotenv()
 
 class LocalStorage:
     def __init__(self, dbName='callgpt', user='postgres', password='', host='localhost', port='5432'):

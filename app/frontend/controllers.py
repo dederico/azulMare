@@ -32,7 +32,7 @@ class Context:
         return response
     
     def __dashboard(self, **kwargs):
-        q = "SELECT * FROM calls WHERE DATE(callTime) = DATE('now');"
+        q = "SELECT * FROM calls WHERE DATE(\"callTime\") = DATE('now');"
         calls = self.__ls.GetAll(Call, q, True)
         inp = [c for c in calls if 'progress' in c['callStatus'].lower() ]
 
@@ -50,7 +50,7 @@ class Context:
         }
 
         days = kwargs.get("days") or "15"
-        q = "SELECT DATE(callTime) AS callDate, COUNT(*) AS totalCalls FROM calls WHERE callStatus = '{}' AND DATE(callTime) >= CURRENT_DATE - INTERVAL '{} days' GROUP BY callDate ORDER BY callDate DESC"
+        q = "SELECT DATE(\"callTime\") AS callDate, COUNT(*) AS totalCalls FROM calls WHERE \"callStatus\" = '{}' AND DATE(\"callTime\") >= CURRENT_DATE - INTERVAL '{} days' GROUP BY callDate ORDER BY callDate DESC"
         for status in ['COMPLETED', 'NO_CONTACT', 'AMD']:
             response['graphs'].append({ "type": status, "records": self.__ls.GetAll(Call, q.format(status, days), True) })
 

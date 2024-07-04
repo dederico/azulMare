@@ -19,13 +19,12 @@ class LocalStorage:
         self.password = os.environ.get("DB_PASSWORD") or password
         self.host = os.environ.get("DB_HOST") or host
         self.port = os.environ.get("DB_PORT") or port
-        tables = [Call, User, Config, Notification, File]
-        logger.debug("Preparing local storage")
+        logger.debug("Local storage has been initialized")
 
+    def migrate(self):
+        tables = [Call, User, Config, Notification, File]
         for table in tables:
             self.__create_table(table)
-
-        logger.debug("Local storage has been initialized")
 
     def __create_table(self, model_cls):
         try:
@@ -89,7 +88,7 @@ class LocalStorage:
             cursor = conn.cursor()
 
             attributes = {attr: getattr(model, attr) for attr in model.__dict__.keys() if not attr.startswith("_")}
-            query = sql.SQL("SELECT * FROM {table} WHERE " + " AND ".join([f"{sql.Identifier(attr).string} = %s" for attr in attributes])).format(
+            query = sql.SQL("SELECT * FROM {table} WHERE " + " AND ".join([f"\"{sql.Identifier(attr).string}\" = %s" for attr in attributes])).format(
                 table=sql.Identifier(model.__class__.__name__.lower() + 's'))
             cursor.execute(query, list(attributes.values()))
 
@@ -142,7 +141,7 @@ class LocalStorage:
             table_name = f"{type(data).__name__.lower()}s"
             payload = { field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' }
 
-            fields = ', '.join([sql.Identifier(field).string for field in payload.keys() ])
+            fields = ', '.join([f'"{sql.Identifier(field).string}"' for field in payload.keys() ])
             placeholders = ', '.join(['%s' for _ in range(len(payload))])
             
             query = sql.SQL('''
@@ -179,7 +178,7 @@ class LocalStorage:
 
             table_name = f"{type(data).__name__.lower()}s"
             payload = { field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' }
-            fields = ', '.join([f"{sql.Identifier(field).string} = %s" for field in payload.keys() ])
+            fields = ', '.join([f"\"{sql.Identifier(field).string}\" = %s" for field in payload.keys() ])
 
             query = sql.SQL('''
                 UPDATE {table}
@@ -212,7 +211,7 @@ class LocalStorage:
     
             table_name = f"{type(data).__name__.lower()}s"
             payload = {field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' and field != 'id'}
-            fields = ' AND '.join([f"{sql.Identifier(field).string} = %s" for field in payload.keys()])
+            fields = ' AND '.join([f"\"{sql.Identifier(field).string}\" = %s" for field in payload.keys()])
     
             query = sql.SQL('''
                 DELETE FROM {table}

@@ -1,11 +1,13 @@
 import os
 from fastapi import FastAPI
 from urllib.parse import quote
+from app.util.database import LocalStorage
 from fastapi.staticfiles import StaticFiles
 from app.api.routes import router as api_router
 from app.frontend.auth import router as auth_router
 from app.frontend.routes import router as view_router
 
+LocalStorage().migrate()
 APP_NAME = "call-gpt"
 
 app = FastAPI(title=APP_NAME, version="0.1.0")

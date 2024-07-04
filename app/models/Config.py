@@ -1,4 +1,6 @@
-class Config:
+from .meta import DirtyTrackingMeta
+
+class Config(metaclass=DirtyTrackingMeta):
     name: str
     value: str
 

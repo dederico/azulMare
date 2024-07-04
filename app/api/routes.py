@@ -26,6 +26,7 @@ from datetime import datetime
 from app.util.logger import logger, get_thread_log_handler, cleanup_call_logger
 from app.models.Call import Call
 from app.models.Config import Config
+from app.util.factory import Hooks
 from app.util.database import LocalStorage
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
@@ -59,10 +60,6 @@ async def websocket_endpoint(ws: WebSocket):
     logger.info("Got new INCOMING_CALL")
     db = LocalStorage()
     config = { conf.name: conf.value for conf in db.GetAll(Config) }
-    if config["power"] == "false":
-        ws.close()
-        logger.warning("We just dropped the call as Robot is not active")
-        return
 
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
@@ -114,7 +111,7 @@ async def websocket_endpoint(ws: WebSocket):
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager,
-        model=configs.get("model") or "gpt-3.5-turbo-1106"
+        model=config.get("model") or "gpt-3.5-turbo-1106"
     )
 
     # tts_service = ElevenTTSService(
@@ -144,13 +141,23 @@ async def websocket_endpoint(ws: WebSocket):
 
     logger.debug("Starting a conversation with caller")
     stats = await orchestrator.process_audio_stream()
-        
+
+    # Sync the call record in case of AMD detection event was triggered
+    call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     call.callLogs = logHandler.stream.getvalue()
     call.callScript = json.dumps(stats['Script'])
-    call.callStatus = stats['Status']
-    
+    if call.callStatus != "AMD":
+        # (VERY IMPORTANT) only update status if AMD is not detected
+        call.callStatus = stats['Status']
+
     call.callDuration = (datetime.now() - now).seconds
     db.Update(call)
+    
+    hooks = Hooks()
+    for hook in hooks.Get(True):
+        if hook["type"] == "POST_CALL":
+            logger.debug("Hook found for call executing function " + hook["name"])
+            hook["function"](call, config)
 
     cleanup_call_logger()
 
@@ -173,8 +180,15 @@ async def amd_detect(request: Request):
         db = LocalStorage()
         call = db.Search(Call(callUid = call_sid), True)
         if call:
-            call.callStatus = "AMD_DETECTED"
+            call.callStatus = "AMD"
             db.Update(call)
+
+            hooks = Hooks()
+            config = { c.name : c.value for c in db.GetAll(Config) }
+            for hook in hooks.Get(True):
+                if hook["type"] == "POST_CALL":
+                    logger.debug("Hook found for call executing")
+                    hook["function"](call, config)
 
         logger.warning(f"Machine - {answered_by} detected for: {call_sid}")
 

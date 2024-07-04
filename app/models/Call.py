@@ -1,4 +1,6 @@
-class Call:
+from .meta import DirtyTrackingMeta
+
+class Call(metaclass=DirtyTrackingMeta):
     callerName: str
     callerAddress: str
     callSource: str

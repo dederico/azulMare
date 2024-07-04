@@ -75,3 +75,6 @@ python-multipart
 psutil
 ping3
 openpyxl
+datefinder
+psycopg2-binary
+nltk

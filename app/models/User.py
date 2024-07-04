@@ -1,6 +1,7 @@
 from pydantic import BaseModel
+from .meta import DirtyTrackingMeta
 
-class User:
+class User(metaclass=DirtyTrackingMeta):
     username: str
     password: str
 

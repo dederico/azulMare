@@ -1,4 +1,6 @@
-class Notification:
+from .meta import DirtyTrackingMeta
+
+class Notification(metaclass=DirtyTrackingMeta):
     nType: str
     nCategory: str
     nTitle: str

@@ -21,7 +21,7 @@ class Context:
     
     def prepare(self, **kwargs):
         configs = { c.name:c.value for c in self.__ls.GetAll(Config) }
-        q = "SELECT CASE WHEN MAX(CASE WHEN nAck = 0 THEN 1 ELSE 0 END) = 1 THEN 'true' ELSE 'false' END AS hasNotifications FROM notifications;"
+        q = "SELECT CASE WHEN EXISTS (SELECT 1 FROM notifications WHERE \"nAck\" = false) THEN 'true' ELSE 'false' END AS \"hasNotifications\""
         response = self.__ls.GetAll(Notification, q, True)[0]
         response["power"] = (configs.get("power") or "false") == "true"
 
@@ -43,14 +43,14 @@ class Context:
             "graphs": [],
             "calls": inp,
             "inProgress": len([c for c in calls if 'progress' in c['callStatus'].lower() ]),
-            "completed": len([c for c in calls if 'COMPLETED' == c['callStatus'] ]),
-            "hanged": len([c for c in calls if 'hanged' in c['callStatus'].lower() ]),
-            "error": len([c for c in calls if 'partial' in c['callStatus'].lower() ])
+            "completed": len([c for c in calls if c['callStatus'] in ['COMPLETED', 'PARTIAL_COMPLETED'] ]),
+            "noContact": len([c for c in calls if 'NO_CONTACT' == c['callStatus'] ]),
+            "amd": len([c for c in calls if 'AMD' == c['callStatus'] ])
         }
 
         days = kwargs.get("days") or "15"
-        q = "SELECT DATE(callTime) AS callDate, COUNT(*) AS totalCalls FROM calls WHERE callStatus = '{}' AND DATE(callTime) >= DATE('now', '-{} days') GROUP BY callDate ORDER BY callDate DESC;"
-        for status in ['COMPLETED', 'HANGED_UP', 'PARTIAL_COMPLETED']:
+        q = "SELECT DATE(callTime) AS callDate, COUNT(*) AS totalCalls FROM calls WHERE callStatus = '{}' AND DATE(callTime) >= CURRENT_DATE - INTERVAL '{} days' GROUP BY callDate ORDER BY callDate DESC"
+        for status in ['COMPLETED', 'NO_CONTACT', 'AMD']:
             response['graphs'].append({ "type": status, "records": self.__ls.GetAll(Call, q.format(status, days), True) })
 
         return response
@@ -100,8 +100,6 @@ class Context:
         configs = { c.name:c.value for c in self.__ls.GetAll(Config) }
         configs["datetime"] = datetime.now().strftime('%Y-%m-%dT%H:%M')
         configs["models"] = []
-
-
 
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         for model in client.models.list().data:

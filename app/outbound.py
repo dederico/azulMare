@@ -58,7 +58,7 @@ def InitOutboundCalls(file):
                         callerName = name,
                         callSource = 'Twilio',
                         callNumber = phone_number,
-                        callStatus = 'INITIATED',
+                        callStatus = 'NO_CONTACT',
                         callType = 'IP',
                         callDirection = 'OUT_GOING',
                         callUid = call_sid,

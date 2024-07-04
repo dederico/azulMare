@@ -2,6 +2,7 @@ import json
 import re
 import os
 import datefinder
+import dateparser
 from datetime import datetime
 import nltk
 from app.util.database import LocalStorage
@@ -91,6 +92,15 @@ def extract_dates(text):
                                 dates.append(datetime.strptime(match, "%B %d, %Y"))
                             except ValueError:
                                 continue
+        
+        if len(dates) == 0:
+            # TODO: need to replace/add spanish words in below regex to make it compaitible with spanish language
+            date_keywords = re.findall(r'\b(today|tomorrow|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|next week|in \d+ days|in \d+ weeks)\b', text, re.IGNORECASE)
+            for keyword in date_keywords:
+                parsed_date = dateparser.parse(keyword)
+                if parsed_date:
+                    dates.append(parsed_date)
+
     return dates
 
 def preprocess(text, lang):

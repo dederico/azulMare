@@ -106,7 +106,9 @@ def preprocess(text, lang):
 def isAnnoying(messages):
     sia = SentimentIntensityAnalyzer()
     scores = [ sia.polarity_scores(m)["compound"] for m in messages ]
-    return (sum(scores)/len(scores)) <= -0.45
+    if len(scores) > 0:
+        return (sum(scores)/len(scores)) <= -0.45
+    return 0
 
 def keyword_matching(text, keywords, lang):
     tokens = preprocess(text, lang)
@@ -139,7 +141,7 @@ def Run(call, config):
         call.callStatus = "RECOVER"
     else:
         chat = json.loads(call.callScript)
-        chat = "\n".join([ m["dialog"] for m in chat if m['role'] == "CUSTOMER" ])
+        chat = [ m["dialog"] for m in chat if m['role'] == "CUSTOMER" ]
 
         schedule_keywords = {"schedule", "call", "reschedule", "time", "date", "afternoon", "tomorrow"}
 
@@ -148,7 +150,7 @@ def Run(call, config):
         elif keyword_matching("\n".join(chat), schedule_keywords, config["language"]) or context_matching("\n".join(chat), schedule_keywords, config["language"]):
             call.callStatus = "AGENDA"
         else:
-            dates = extract_dates(chat)
+            dates = extract_dates("\n".join(chat))
             if len(dates) > 0:
                 call.callStatus = "PROMISE ({})".format(dates[0].strftime("%Y-%m-%d"))
     

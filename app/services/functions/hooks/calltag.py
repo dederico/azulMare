@@ -139,7 +139,8 @@ def Run(call, config):
         call.callStatus = "RECOVER"
     else:
         chat = json.loads(call.callScript)
-        chat = [ m["dialog"] for m in chat if m['role'] == "CUSTOMER" ]
+        chat = "\n".join([ m["dialog"] for m in chat if m['role'] == "CUSTOMER" ])
+
         schedule_keywords = {"schedule", "call", "reschedule", "time", "date", "afternoon", "tomorrow"}
 
         if isAnnoying(chat):

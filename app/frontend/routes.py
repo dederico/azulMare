@@ -1,4 +1,3 @@
-
 import os
 import json
 from fastapi import FastAPI
@@ -13,6 +12,11 @@ from fastapi.templating import Jinja2Templates
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi import APIRouter, Request, Response, Depends, Cookie
+
+UPLOADS_DIR = 'uploads'
+
+if not os.path.exists(UPLOADS_DIR):
+    os.mkdir(UPLOADS_DIR)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/frontend/pages")
@@ -79,7 +83,7 @@ async def dashboard(request: Request, fragment : str, id : str):
             payload = await request.form()
 
             if payload and 'file' in payload:
-                with open(f'uploads/{payload["file"].filename}', "wb") as f:
+                with open(f'{UPLOADS_DIR}/{payload["file"].filename}', "wb") as f:
                     f.write(await payload["file"].read())
                     logger.info("File '{}' upload completed Successfully!".format(payload["file"].filename))
 

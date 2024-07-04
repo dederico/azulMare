@@ -6,17 +6,13 @@ from .controllers import Context
 from app.util.logger import logger
 from subprocess import check_output
 from app.models.Config import Config
+from app.models.File import File
 from app.util.database import LocalStorage
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi import APIRouter, Request, Response, Depends, Cookie
-
-UPLOADS_DIR = 'uploads'
-
-if not os.path.exists(UPLOADS_DIR):
-    os.mkdir(UPLOADS_DIR)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/frontend/pages")
@@ -83,9 +79,9 @@ async def dashboard(request: Request, fragment : str, id : str):
             payload = await request.form()
 
             if payload and 'file' in payload:
-                with open(f'{UPLOADS_DIR}/{payload["file"].filename}', "wb") as f:
-                    f.write(await payload["file"].read())
-                    logger.info("File '{}' upload completed Successfully!".format(payload["file"].filename))
+                db = LocalStorage()
+                db.Insert(File(name=payload["file"].filename, data=await payload["file"].read()))
+                logger.info("File '{}' upload completed Successfully!".format(payload["file"].filename))
 
             payload = {k: v for k, v in payload.items() } if payload else None
             context = { "request": request, "data": Context(fragment, request.method, payload).prepare(id=id, **request.query_params) }

@@ -4,9 +4,11 @@ from twilio.base.exceptions import TwilioRestException
 import os
 from dotenv import load_dotenv
 import openpyxl
+from io import BytesIO
 from datetime import datetime
 from app.util.logger import logger
 from app.models.Config import Config
+from app.models.File import File
 from app.models.Call import Call
 from app.util.database import LocalStorage
 
@@ -36,7 +38,9 @@ def InitOutboundCalls(file):
         logger.warning("Skipping outbound calls as FROM_PHONE_NO not configured yet")
         return False
 
-    workbook = openpyxl.load_workbook('uploads/{}'.format(file))
+    file = ls.Search(File(name=file), True)
+    file = BytesIO(file.data)
+    workbook = openpyxl.load_workbook(filename=file)
     worksheet = workbook.active
 
     header_values = [cell.value for cell in worksheet[1]]

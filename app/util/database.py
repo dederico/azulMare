@@ -1,10 +1,12 @@
 import os
 import psycopg2
+from psycopg2 import Binary
 from psycopg2 import sql
 from .logger import logger
 from app.models.Call import Call
 from app.models.Config import Config
 from app.models.User import User
+from app.models.File import File
 from app.models.Notification import Notification
 
 class LocalStorage:
@@ -14,7 +16,7 @@ class LocalStorage:
         self.password = os.environ.get("DB_PASSWORD") or password
         self.host = os.environ.get("DB_HOST") or host
         self.port = os.environ.get("DB_PORT") or port
-        tables = [Call, User, Config, Notification]
+        tables = [Call, User, Config, Notification, File]
         logger.debug("Preparing local storage")
 
         for table in tables:
@@ -55,7 +57,8 @@ class LocalStorage:
             int: 'INTEGER',
             str: 'TEXT',
             float: 'REAL',
-            bool: 'BOOLEAN'
+            bool: 'BOOLEAN',
+            bytes: 'BYTEA'
         }
         return type_mappings.get(python_type, 'TEXT')
 
@@ -148,7 +151,9 @@ class LocalStorage:
                 fields=sql.SQL(fields),
                 placeholders=sql.SQL(placeholders)
             )
-            cursor.execute(query, list(payload.values()))
+
+            values = [ Binary(v) if type(v) == bytes else v for v in list(payload.values())]
+            cursor.execute(query, values)
             data.id = cursor.fetchone()[0]
 
             conn.commit()
@@ -181,7 +186,8 @@ class LocalStorage:
                 table=sql.Identifier(table_name),
                 fields=sql.SQL(fields)
             )
-            cursor.execute(query, list(payload.values()) + [data.id])
+            values = [ Binary(v) if type(v) == bytes else v for v in list(payload.values())]
+            cursor.execute(query, values + [data.id])
 
             conn.commit()
             conn.close()

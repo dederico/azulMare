@@ -4,6 +4,7 @@ import platform
 from openai import OpenAI
 from datetime import datetime
 from threading import Thread
+from app.models.File import File
 from app.models.Call import Call
 from app.models.Config import Config
 from app.models.Notification import Notification
@@ -117,9 +118,11 @@ class Context:
             }
             configs["models"].append(model_dict)
         
+        files = [ f.name for f in self.__ls.GetAll(File)]
+
         return {
             "title": "Robot Configurations",
-            "files": [f for f in os.listdir("uploads") if f.endswith('.xls') or f.endswith(".xlsx")],
+            "files": files,
             "configs": configs
         }
 

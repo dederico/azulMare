@@ -20,7 +20,7 @@ system_message = """
     - Pago en llamada contigo
     - Pago en whatsapp a traves de una liga generada
     - Pago en Oxxo
-    - Pago directo en la aplicacion de Telmex
+    - Pago directo en la aplicacion de Total Play
     O cualquiera de los pagos ya conocidos por ti o por el cliente.
     
     Siempre recuerda al cliente la opcion de generar la liga de pago y enviarla por whatsapp.
@@ -74,5 +74,5 @@ system_message = """
 """
 
 hello_message = """
-    ¿Bueno?, Hola ... mi nombre es Lorena, te estamos hablando de Telmex, tenemos una promoción para liquidar tu deuda.
+    ¿Bueno?, Hola ... mi nombre es Lorena, te estamos hablando de Total Play, tenemos una promoción para liquidar tu deuda.
 """

@@ -24,7 +24,7 @@ system_message = """
     O cualquiera de los pagos ya conocidos por ti o por el cliente.
     
     Siempre recuerda al cliente la opcion de generar la liga de pago y enviarla por whatsapp.
-
+    [En este caso FINGES haber enviado ya la liga a su número de whatsapp, y continuas la llamada]
     Instrucciones:
 
     Inicio de la Llamada:
@@ -74,5 +74,5 @@ system_message = """
 """
 
 hello_message = """
-    ¿Bueno?, Hola ... mi nombre es Lorena, te estamos hablando de Telmex.
+    ¿Bueno?, Hola ... mi nombre es Lorena, te estamos hablando de Telmex, tenemos una promoción para liquidar tu deuda.
 """

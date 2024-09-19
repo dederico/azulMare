@@ -74,9 +74,13 @@ class Context:
         return { "message": "The call initialization process has been started in BACKGROUND!" }
     
     def __remfiles(self, **kwargs):
-        os.remove("uploads/{}".format(kwargs['id']))
+        file = self.__ls.Search(File(name=kwargs['id']), True)
+        
+        if file:
+            self.__ls.Remove(file)
+        
         return {
-            "files": os.listdir("uploads")
+            "files": self.__ls.GetAll(File, cols=['name', 'ftype'], json=True)
         }
 
     def __calls(self, **kwargs):
@@ -117,12 +121,10 @@ class Context:
                 'owner': model.owned_by if hasattr(model, 'owned_by') else ''
             }
             configs["models"].append(model_dict)
-        
-        files = [ f.name for f in self.__ls.GetAll(File)]
 
         return {
             "title": "Robot Configurations",
-            "files": files,
+            "files": self.__ls.GetAll(File, cols=['name', 'ftype'], json=True),
             "configs": configs
         }
 

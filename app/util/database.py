@@ -110,13 +110,16 @@ class LocalStorage:
             logger.error(e)
             return None
 
-    def GetAll(self, model, rawQuery=False, json=False):
+    def GetAll(self, model, rawQuery=False, json=False, cols=[]):
         try:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
-            cursor.execute(rawQuery or sql.SQL("SELECT * FROM {table}").format(
-                table=sql.Identifier(model.__name__.lower() + 's')))
+            cols = sql.SQL("*") if len(cols) == 0 else sql.SQL(", ").join(map(sql.Identifier, cols))
+            cursor.execute(rawQuery or sql.SQL("SELECT {cols} FROM {table}").format(
+                table=sql.Identifier(model.__name__.lower() + 's'),
+                cols=cols
+            ))
             column_names = [desc[0] for desc in cursor.description]
 
             records = []

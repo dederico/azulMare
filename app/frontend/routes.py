@@ -80,7 +80,8 @@ async def dashboard(request: Request, fragment : str, id : str):
 
             if payload and 'file' in payload:
                 db = LocalStorage()
-                db.Insert(File(name=payload["file"].filename, data=await payload["file"].read()))
+                ftype = "contacts" if fragment == 'settings' else 'kb'
+                db.Insert(File(name=payload["file"].filename, data=await payload["file"].read(), ftype=ftype))
                 logger.info("File '{}' upload completed Successfully!".format(payload["file"].filename))
 
             payload = {k: v for k, v in payload.items() } if payload else None

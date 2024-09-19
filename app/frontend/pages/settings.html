@@ -202,14 +202,14 @@
                 <label for="file">Upload Callers List</label>
                 <input type="file" class="form-control" name="file" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel">
               </div>
-              {% if data['files'] | length > 0 %}
+              {% if data['files'] | selectattr('ftype', 'equalto', 'contacts') | list | length > 0 %}
               <div class="form-group">
                 <label for="file">Initiate Calls on File</label>
                 <ul id="available-files" class="list-group">
-                  {% for file in data['files'] %}
-                    <li class="list-group-item">{{ file }} 
-                      <a onclick="removeFile('{{file}}')" href="#"><i style="font-size: 16pt;" class="fas fa-trash float-right ml-2 text-danger"></i></a>
-                      <a onclick="callFile('{{file}}')" href="#"><i style="font-size: 16pt;" class="fas fa-phone float-right text-info"></i></a>
+                  {% for file in data['files'] | selectattr('ftype', 'equalto', 'contacts') | list %}
+                    <li class="list-group-item">{{ file["name"] }} 
+                      <a onclick="removeFile('{{file.name}}')" href="#"><i style="font-size: 16pt;" class="fas fa-trash float-right ml-2 text-danger"></i></a>
+                      <a onclick="callFile('{{file.name}}')" href="#"><i style="font-size: 16pt;" class="fas fa-phone float-right text-info"></i></a>
                     </li>
                   {% endfor %}
                 </ul>
@@ -254,7 +254,7 @@
     <label>STT Service Settings</label>
   </div>
   <div class="tab-pane container" id="llm">  
-    <form method="POST" action="/admin/configs/llm?json=true">
+    <form method="POST" enctype="multipart/form-data" action="/admin/configs/llm?json=true">
       <div class="form-group">
         <label for="model">AI Model</label>
         <select name="model" id="model" class="form-control">
@@ -267,6 +267,22 @@
         <label for="prompt">System Prompt</label>
         <textarea rows="13" class="form-control" id="prompt" name="prompt" placeholder="Enter your prompt here...">{{ data["configs"]["prompt"] }}</textarea>
       </div>
+      <div class="form-group">
+        <label for="file">Upload Knowledge Base</label>
+        <input type="file" class="form-control" name="file" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel, application/pdf, .pdf">
+      </div>
+      {% if data['files'] | selectattr('ftype', 'equalto', 'kb') | list | length > 0 %}
+      <div class="form-group">
+        <label for="file">Uploaded Files</label>
+        <ul id="available-files" class="list-group">
+          {% for file in data['files'] | selectattr('ftype', 'equalto', 'kb') | list %}
+            <li class="list-group-item">{{ file["name"] }} 
+              <a onclick="removeFile('{{file.name}}')" href="#"><i style="font-size: 16pt;" class="fas fa-trash float-right ml-2 text-danger"></i></a>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
       <button type="submit" class="btn btn-primary float-right">Update</button>
     </form>
   </div>

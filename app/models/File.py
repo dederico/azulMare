@@ -2,6 +2,7 @@ from .meta import DirtyTrackingMeta
 
 class File(metaclass=DirtyTrackingMeta):
     name: str
+    ftype: str
     data: bytes
 
     def __init__(self, **kwargs):

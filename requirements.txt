@@ -78,3 +78,5 @@ openpyxl
 datefinder
 psycopg2-binary
 nltk
+python-docx
+PyMuPDF

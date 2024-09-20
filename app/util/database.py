@@ -24,34 +24,61 @@ class LocalStorage:
     def migrate(self):
         tables = [Call, User, Config, Notification, File]
         for table in tables:
-            self.__create_table(table)
+            self.__verify_schema(table)
 
-    def __create_table(self, model_cls):
+    def __verify_schema(self, model_cls):
         try:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
             table_name = f"{model_cls.__name__.lower()}s"
-            logger.debug("Creating/Checking table " + table_name)
-            fields = ', '.join([f"\"{sql.Identifier(field).string}\" {self.get_pg_data_type(data_type)}" for field, data_type in model_cls.__annotations__.items()])
-            query = sql.SQL('''
-                CREATE TABLE IF NOT EXISTS {table} (
-                    "id" SERIAL PRIMARY KEY,
-                    {fields}
-                )
-            '''.strip()).format(
-                table=sql.Identifier(table_name),
-                fields=sql.SQL(fields)
-            )
+            logger.debug("Creating/Checking/Updating table " + table_name)
 
-            cursor.execute(query)
+            cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}';")
+            existing_columns = [row[0] for row in cursor.fetchall()]
+
+            model_fields = model_cls.__annotations__
+
+            fields_to_add = []
+            fields_to_remove = []
+
+            for field, data_type in model_fields.items():
+                if field not in existing_columns:
+                    fields_to_add.append(f"ADD COLUMN \"{field}\" {self.get_pg_data_type(data_type)}")
+
+            for existing_column in existing_columns:
+                if existing_column != "id" and existing_column not in model_fields:
+                    fields_to_remove.append(f"DROP COLUMN \"{existing_column}\"")
+
+            cursor.execute(f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '{table_name}');")
+            table_exists = cursor.fetchone()[0]
+
+            if not table_exists:
+                logger.debug(f"Table {table_name} does not exist. Creating table.")
+                fields = ', '.join([f"\"{field}\" {self.get_pg_data_type(data_type)}" for field, data_type in model_fields.items()])
+                create_query = sql.SQL('''
+                    CREATE TABLE {table} (
+                        "id" SERIAL PRIMARY KEY,
+                        {fields}
+                    )
+                '''.strip()).format(
+                    table=sql.Identifier(table_name),
+                    fields=sql.SQL(fields)
+                )
+                cursor.execute(create_query)
+            elif fields_to_add or fields_to_remove:
+                logger.debug(f"Updating table {table_name}. Adding: {fields_to_add}, Removing: {fields_to_remove}")
+                alter_query = f"ALTER TABLE {table_name} " + ', '.join(fields_to_add + fields_to_remove)
+                cursor.execute(alter_query)
 
             conn.commit()
             conn.close()
             return True
+
         except Exception as e:
             logger.error(e)
             return False
+
 
     @staticmethod
     def get_pg_data_type(python_type):
@@ -116,6 +143,7 @@ class LocalStorage:
             cursor = conn.cursor()
 
             cols = sql.SQL("*") if len(cols) == 0 else sql.SQL(", ").join(map(sql.Identifier, cols))
+
             cursor.execute(rawQuery or sql.SQL("SELECT {cols} FROM {table}").format(
                 table=sql.Identifier(model.__name__.lower() + 's'),
                 cols=cols

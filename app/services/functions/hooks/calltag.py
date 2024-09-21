@@ -65,7 +65,7 @@ def get_nltk_language(language_code):
         "cy-GB": "welsh"
     }
 
-    return language_mapping.get(language_code, "english")
+    return language_mapping.get(language_code, "es-US")
 
 def extract_dates(text):
     dates = list(datefinder.find_dates(text))

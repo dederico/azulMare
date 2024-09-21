@@ -62,7 +62,8 @@ class AmazonTTSService(TTSService):
                 VoiceId="Lupe",
                 SampleRate=str(SAMPLE_RATE),
                 Engine="neural",
-                LanguageCode=self.lang,
+                languaeCode="es-US",
+                #LanguageCode=self.lang,
             )  # type: ignore
             mulaw_audio = await synth["AudioStream"].read()
             audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)

@@ -13,7 +13,8 @@ from app.models.Notification import Notification
 load_dotenv()
 
 class LocalStorage:
-    def __init__(self, dbName='callgpt', user='postgres', password='', host='localhost', port='5432'):
+    # Here we can switch to local storage Federico's computer "broxeldemo", Zain's computer "callgpt"
+    def __init__(self, dbName='broxeldemo', user='postgres', password='', host='localhost', port='5432'):
         self.dbName = os.environ.get("DATABASE") or dbName
         self.user = os.environ.get("DB_USERNAME") or user
         self.password = os.environ.get("DB_PASSWORD") or password

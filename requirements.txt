@@ -78,3 +78,4 @@ openpyxl
 datefinder
 psycopg2-binary
 nltk
+amazon-transcribe

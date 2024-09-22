@@ -12,14 +12,31 @@ from app.models.Notification import Notification
 
 load_dotenv()
 
+#class LocalStorage:
+    # Here we can switch to local storage Federico's computer "broxeldemo", Zain's computer "callgpt"
+    # def __init__(self, dbName='broxeldemo', user='postgres', password='', host='localhost', port='5432'):
+    #     self.dbName = os.environ.get("DATABASE") or dbName
+    #     self.user = os.environ.get("DB_USERNAME") or user
+    #     self.password = os.environ.get("DB_PASSWORD") or password
+    #     self.host = os.environ.get("DB_HOST") or host
+    #     self.port = os.environ.get("DB_PORT") or port
+    #     logger.debug("Local storage has been initialized")
+    
 class LocalStorage:
-    def __init__(self, dbName='callgpt', user='postgres', password='', host='localhost', port='5432'):
-        self.dbName = os.environ.get("DATABASE") or dbName
-        self.user = os.environ.get("DB_USERNAME") or user
-        self.password = os.environ.get("DB_PASSWORD") or password
-        self.host = os.environ.get("DB_HOST") or host
-        self.port = os.environ.get("DB_PORT") or port
-        logger.debug("Local storage has been initialized")
+    def __init__(self):
+        # Valores hardcoded
+        self.dbName = 'broxelconexion'
+        self.user = 'broxelconexion'
+        self.password = 'rC9NepsFcKJDWCQdvGq6LmDRq1UBUzZv'
+        self.host = 'dpg-cq3f6ljqf0us73dh0ef0-a.oregon-postgres.render.com'
+        self.port = '5432'
+        
+        # Agregar sslmode=require a la URL de conexión
+        self.connection_url = (
+            f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbName}?sslmode=require"
+        )
+
+        logger.debug(f"Local storage has been initialized with URL: {self.connection_url}")
 
     def migrate(self):
         tables = [Call, User, Config, Notification, File]
@@ -110,13 +127,16 @@ class LocalStorage:
             logger.error(e)
             return None
 
-    def GetAll(self, model, rawQuery=False, json=False):
+    def GetAll(self, model, rawQuery=False, json=False, cols=[]):
         try:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
-            cursor.execute(rawQuery or sql.SQL("SELECT * FROM {table}").format(
-                table=sql.Identifier(model.__name__.lower() + 's')))
+            cols = sql.SQL("*") if len(cols) == 0 else sql.SQL(", ").join(map(sql.Identifier, cols))
+            cursor.execute(rawQuery or sql.SQL("SELECT {cols} FROM {table}").format(
+                table=sql.Identifier(model.__name__.lower() + 's'),
+                cols=cols
+            ))
             column_names = [desc[0] for desc in cursor.description]
 
             records = []

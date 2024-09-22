@@ -39,7 +39,8 @@ def create_access_token(data: dict, expires_delta: timedelta):
     return encoded_jwt
 
 @router.post("/signup/")
-async def signup(language: str = Form(...), username: str = Form(...), password: str = Form(...)):
+#async def signup(language: str = Form(...), username: str = Form(...), password: str = Form(...)):
+async def signup(language: str = "es-US", username: str = Form(...), password: str = Form(...)):
     ls = LocalStorage()
     if len(ls.GetAll(User)) == 0:
         hashed_password = pwd_context.hash(password)

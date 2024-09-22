@@ -73,7 +73,8 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language=config["language"]
+        language="es-US"
+        #language=config["language"]
     )
 
     function_manager = FunctionManager(registered_functions)
@@ -128,7 +129,8 @@ async def websocket_endpoint(ws: WebSocket):
         secret_key=AWS_SECRET_ACCESS_KEY,
         region_name=AWS_REGION,
         stream_results=False,
-        language=config["language"]
+        language="es-US"
+        #language=config["language"]
     )
 
     logger.debug("Initializing orchestrator for the call")

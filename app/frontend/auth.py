@@ -46,7 +46,7 @@ async def signup(language: str = "es-US", username: str = Form(...), password: s
         hashed_password = pwd_context.hash(password)
         user = ls.Insert(User(username=username, password=hashed_password))
         if hasattr(user, 'id'):
-            ls.Insert(Config(name="language", value=language))
+            ls.Insert(Config(name="language", value="es-US"))
             ls.Insert(Config(name="power", value=False))
 
     return RedirectResponse("/admin/", status_code=302)

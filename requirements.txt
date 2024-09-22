@@ -78,3 +78,7 @@ openpyxl
 datefinder
 psycopg2-binary
 nltk
+amazon-transcribe
+google-auth-oauthlib
+google-api-python-client
+dateparser

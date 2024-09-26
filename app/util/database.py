@@ -12,31 +12,31 @@ from app.models.Notification import Notification
 
 load_dotenv()
 
-class LocalStorage:
+#class LocalStorage:
     #Here we can switch to local storage Federico's computer "broxeldemo", Zain's computer "callgpt"
-    def __init__(self, dbName='broxeldemo', user='postgres', password='', host='localhost', port='5432'):
-        self.dbName = os.environ.get("DATABASE") or dbName
-        self.user = os.environ.get("DB_USERNAME") or user
-        self.password = os.environ.get("DB_PASSWORD") or password
-        self.host = os.environ.get("DB_HOST") or host
-        self.port = os.environ.get("DB_PORT") or port
-        logger.debug("Local storage has been initialized")
+    # def __init__(self, dbName='broxeldemo', user='postgres', password='', host='localhost', port='5432'):
+    #     self.dbName = os.environ.get("DATABASE") or dbName
+    #     self.user = os.environ.get("DB_USERNAME") or user
+    #     self.password = os.environ.get("DB_PASSWORD") or password
+    #     self.host = os.environ.get("DB_HOST") or host
+    #     self.port = os.environ.get("DB_PORT") or port
+    #     logger.debug("Local storage has been initialized")
     
-# class LocalStorage:
-#     def __init__(self):
-#         # Valores hardcoded
-#         self.dbName = 'broxelconexion'
-#         self.user = 'broxelconexion'
-#         self.password = 'rC9NepsFcKJDWCQdvGq6LmDRq1UBUzZv'
-#         self.host = 'dpg-cq3f6ljqf0us73dh0ef0-a.oregon-postgres.render.com'
-#         self.port = '5432'
+class LocalStorage:
+    def __init__(self):
+        # Valores hardcoded
+        self.dbName = 'broxelconexion'
+        self.user = 'broxelconexion'
+        self.password = 'rC9NepsFcKJDWCQdvGq6LmDRq1UBUzZv'
+        self.host = 'dpg-cq3f6ljqf0us73dh0ef0-a.oregon-postgres.render.com'
+        self.port = '5432'
         
-#         # Agregar sslmode=require a la URL de conexión
-#         self.connection_url = (
-#             f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbName}?sslmode=require"
-#         )
+        # Agregar sslmode=require a la URL de conexión
+        self.connection_url = (
+            f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbName}?sslmode=require"
+        )
 
-#         logger.debug(f"Local storage has been initialized with URL: {self.connection_url}")
+        logger.debug(f"Local storage has been initialized with URL: {self.connection_url}")
 
     def migrate(self):
         tables = [Call, User, Config, Notification, File]

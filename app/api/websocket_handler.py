@@ -13,6 +13,7 @@ class WebSocketHandler:
         self.stream_sid = None
         self.initial_data = None
         self.switch = None
+        self.playsequence = []
 
     async def connect(self):
         await self.websocket.accept()
@@ -62,6 +63,7 @@ class WebSocketHandler:
         rms = audioop.rms(raw_audio_data, 2)
 
         if rms > 300 and (self.switch == "listening" or self.switch is None):
+            self.playsequence.append(audio_payload)
             return raw_audio_data
         else:
             raw_audio_data = await self.generate_silence()
@@ -77,6 +79,7 @@ class WebSocketHandler:
         logger.debug("Received audio frame from Robot")
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
+            self.playsequence.append(audio_data)
             await self.websocket.send_json(
                 {
                     "event": "media",
@@ -106,3 +109,7 @@ class WebSocketHandler:
             self.websocket.application_state == WebSocketState.CONNECTED
             and self.websocket.client_state == WebSocketState.CONNECTED
         )
+    
+    @property
+    def audio_sequence(self):
+        return self.playsequence

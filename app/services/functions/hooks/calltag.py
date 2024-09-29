@@ -149,7 +149,7 @@ def Run(call, config):
         call.callStatus = "BUZON"
     elif call.callDuration < 60:
         call.callStatus = "RECOVER"
-    else:
+    elif call.callScript:
         chat = json.loads(call.callScript)
         chat = [ m["dialog"] for m in chat if m['role'] == "CUSTOMER" ]
 

@@ -60,11 +60,19 @@ class Context:
         call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
         return { "logs": call['callLogs'] }
 
+    def __audio(self, **kwargs):
+        call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
+        if call["callPlayback"]:
+            return { "audios": json.loads(call['callPlayback']) }
+        
+        return { "audios": [] }
+    
     def __script(self, **kwargs):
         call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
-        return {
-            "script": json.loads(call['callScript'])
-        }
+        if call["callScript"]:
+            return { "script": json.loads(call['callScript']) }
+        
+        return { "script": [] }
 
     def __health(self, **kwargs):
         return { "title": "System Health"}
@@ -84,7 +92,7 @@ class Context:
         }
 
     def __calls(self, **kwargs):
-        excluded = ['callScript', 'callLogs']
+        excluded = ['callScript', 'callLogs', 'callPlayback']
         logs = self.__ls.GetAll(Call, json=True)
 
         if "person" in kwargs:
@@ -100,8 +108,14 @@ class Context:
             minutes = log['callDuration'] // 60
             seconds = log['callDuration'] % 60
             log['callDuration'] = f"{minutes:02d}:{seconds:02d}"
+
+            log["hasChat"] = log["callScript"] != None
+            log["hasLogs"] = log["callLogs"] != None
+            log["hasPlayback"] = log["callPlayback"] != None
+
             for col in excluded:
-                del log[col]
+                if col in log:
+                    del log[col]
 
         return {
             "title": "Call Logs",
@@ -109,7 +123,7 @@ class Context:
         }
 
     def __settings(self, **kwargs):
-        configs = { c.name:c.value for c in self.__ls.GetAll(Config) }
+        configs = { c.name:c.getval() for c in self.__ls.GetAll(Config) }
         configs["datetime"] = datetime.now().strftime('%Y-%m-%dT%H:%M')
         configs["models"] = []
 

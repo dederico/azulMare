@@ -11,11 +11,13 @@ from app.models.Config import Config
 class Orchestrator:
     def __init__(
         self,
+        config,
         websocket_handler: WebSocketHandler,
         stt_service: STTService,
         llm_service: LLMService,
         tts_service: TTSService,
     ):
+        self.config = config
         self.stats = { "Logs": [], "Script": [], "Status": "COMPLETED" }
         self.stt_service = stt_service
         self.llm_service = llm_service
@@ -104,10 +106,8 @@ class Orchestrator:
             return None, None
 
     async def greet(self):
-        ls = LocalStorage()
-        config = { conf.name: conf.value for conf in ls.GetAll(Config) }
         await self.websocket_handler.send_mark("not_listening")
-        greeting = config.get("greeting_message") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
+        greeting = self.config.get("greeting_message") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
             ¿Con quién tengo el gusto de hablar?
         """
 

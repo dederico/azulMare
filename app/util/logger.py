@@ -33,11 +33,11 @@ file_log_level = os.getenv('LOG_FILE_LOG_LEVEL')
 if file_log_level:
     file_handler.setLevel(file_log_level)
 
-def get_thread_log_handler():
+def get_thread_log_handler(level):
     if not hasattr(thread_local, 'log_stream'):
         thread_local.log_stream = StringIO()
         handler = logging.StreamHandler(thread_local.log_stream)
-        handler.setLevel(logging.DEBUG)
+        handler.setLevel(level)
         logger.addHandler(handler)
         thread_local.handler = handler
 
@@ -45,6 +45,6 @@ def get_thread_log_handler():
 
 def cleanup_call_logger():
     if hasattr(thread_local, 'handler'):
-        logger.removeHandler(get_thread_log_handler())
+        logger.removeHandler(get_thread_log_handler(10))
         del thread_local.handler
         del thread_local.log_stream

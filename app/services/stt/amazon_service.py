@@ -10,13 +10,9 @@ from amazon_transcribe.model import (
     StartStreamTranscriptionEventStream,
 )
 from app.models.Config import Config
-from app.util.database import LocalStorage
 
 class AmazonTranscribeService(STTService):
     def __init__(self, region, language="es-US", sample_rate=8000, enhanced=True):
-        ls = LocalStorage()
-        config = { c.name: c.value for c in ls.GetAll(Config) }
-        language = config.get("language") or language
         self.client = TranscribeStreamingClient(region="us-west-2")
         self.stream = None
         self.callback = None

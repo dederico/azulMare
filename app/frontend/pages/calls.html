@@ -137,12 +137,20 @@
             <td>
                 {% if log['callStatus'] not in ('IN_PROGRESS', 'INITIATED') %}
                 <a href="#"><i title="Remove" class="fas fa-trash text-danger"></i></a>
+                {% if log['hasChat'] %}
                 <a href="#" onclick="loadScript({{ log['id'] }})" data-toggle="modal" data-target="#script"><i
                         title="View Script" class="fas fa-users text-primary"></i></a>
+                {% endif %}
+                {% if log['hasLogs'] %}
                 <a href="#" onclick="loadLogs({{ log['id'] }})" data-toggle="modal" data-target="#logs"><i
                         title="View Raw Logs" class="fas fa-scroll text-secondary"></i></a>
                 {% endif %}
-                </td>
+                {% if log['hasPlayback'] %}
+                <a href="#" onclick="playCall({{ log['id'] }})" data-toggle="modal" data-target="#play"><i
+                        title="Call Playback" class="fas fa-headphones text-info"></i></a>
+                {% endif %}
+                {% endif %}
+            </td>
         </tr>
         {% endfor %}
     </tbody>
@@ -154,14 +162,16 @@
 
             <div class="modal-header">
                 <h4 class="modal-title">Call Script</h4>
-                <button type="button" class="btn btn-danger" data-dismiss="modal"><i title="Close Chat" class="fas fa-times"></i></button>
+                <button type="button" class="btn btn-danger" data-dismiss="modal"><i title="Close Chat"
+                        class="fas fa-times"></i></button>
             </div>
 
             <div class="modal-body">
                 <ul class="chat-list"></ul>
             </div>
             <div class="modal-footer">
-                <button id="export-btn" type="button" class="btn btn-secondary"><i title="Download Call Script" class="fas fa-download"></i> Download Script</button>
+                <button id="export-btn" type="button" class="btn btn-secondary"><i title="Download Call Script"
+                        class="fas fa-download"></i> Download Script</button>
             </div>
         </div>
     </div>
@@ -183,6 +193,22 @@
     </div>
 </div>
 
+<div class="modal fade" id="play" tabindex="-1" role="dialog" aria-labelledby="audioModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content" style="max-height: 170px;">
+            <div class="modal-header">
+                <h5 class="modal-title" id="audioModalLabel">Call Playback</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <audio style="width: 100%;" id="audioPlayer" controls></audio>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="/static/js/jquery.js"></script>
 <script src="/static/js/jquery.dataTables.min.js"></script>
 <script src="/static/js/dataTables.buttons.min.js"></script>
@@ -194,8 +220,7 @@
 
 
 <script>
-    $(document).ready(function () 
-    {
+    $(document).ready(function () {
         new DataTable('#calllogs', {
             order: [],
             paging: true,
@@ -234,10 +259,9 @@
             ]
         });
 
-        $('#export-btn').click(function()
-        {
+        $('#export-btn').click(function () {
             let chatText = '';
-            $('.chat-list li').each(function(){
+            $('.chat-list li').each(function () {
                 const role = $(this).find('h5').text();
                 const dialog = $(this).find('p').text();
                 chatText += role + ': ' + dialog + '\n';
@@ -254,8 +278,7 @@
         });
     });
 
-    function loadScript(id) 
-    {
+    function loadScript(id) {
         $.ajax({
             url: "/admin/script/" + id,
             type: "GET",
@@ -286,6 +309,115 @@
             }
         });
     }
+
+    function playCall(id) {
+        $.ajax({
+            url: "/admin/audio/" + id + "?json=true",
+            type: "GET",
+            xhrFields: {
+                withCredentials: true
+            },
+            success: function (res) {
+                playCombinedAudio(res["audios"]);
+            },
+            error: function (xhr, status, error) {
+                alert(error);
+            }
+        });
+    }
+
+    function decodeBase64(base64String) {
+        var binaryString = atob(base64String);
+        var binaryLen = binaryString.length;
+        var bytes = new Uint8Array(binaryLen);
+        for (var i = 0; i < binaryLen; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes;
+    }
+
+    function createWavHeader(sampleRate, numChannels, bitsPerSample, dataLength) {
+        var header = new ArrayBuffer(44);
+        var view = new DataView(header);
+
+        var blockAlign = numChannels * bitsPerSample / 8;
+        var byteRate = sampleRate * blockAlign;
+
+        view.setUint32(0, 0x52494646, false);
+        view.setUint32(4, 36 + dataLength, true);
+        view.setUint32(8, 0x57415645, false);
+
+        view.setUint32(12, 0x666d7420, false);
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, byteRate, true);
+        view.setUint16(32, blockAlign, true);
+        view.setUint16(34, bitsPerSample, true);
+
+        view.setUint32(36, 0x64617461, false);
+        view.setUint32(40, dataLength, true);
+
+        return new Uint8Array(header);
+    }
+
+    function combineAudioSegments(ulawSegments) {
+        const decodedSegments = ulawSegments.map(base64String => {
+            const ulawBytes = decodeBase64(base64String);
+            return decodeUlawToPcm(ulawBytes);
+        });
+
+        var totalPcmLength = decodedSegments.reduce((sum, segment) => sum + segment.length, 0) * 2; // 16-bit PCM = 2 bytes per sample
+
+        var sampleRate = 8000;
+        var numChannels = 1;
+        var bitsPerSample = 16;
+        var wavHeader = createWavHeader(sampleRate, numChannels, bitsPerSample, totalPcmLength);
+
+        var combinedPcmData = new Uint8Array(wavHeader.length + totalPcmLength);
+        combinedPcmData.set(wavHeader, 0);
+
+        var offset = wavHeader.length;
+        decodedSegments.forEach(segment => {
+            var lpcmBytes = new Uint8Array(segment.buffer);
+            combinedPcmData.set(lpcmBytes, offset);
+            offset += lpcmBytes.length;
+        });
+
+        var blob = new Blob([combinedPcmData], { type: 'audio/wav' });
+        return URL.createObjectURL(blob);
+    }
+
+    function ulaw2lin(ulawByte) {
+        var MULAW_BIAS = 200;
+
+        ulawByte = ~ulawByte;
+
+        var sign = (ulawByte & 0x80) ? -1 : 1;
+        var exponent = (ulawByte >> 4) & 0x07;
+        var mantissa = ulawByte & 0x0F;
+
+        var sample = ((mantissa << 4) + MULAW_BIAS) << exponent;
+        return sign * (sample - MULAW_BIAS);
+    }
+
+    function decodeUlawToPcm(ulawBytes) {
+        var pcmData = new Int16Array(ulawBytes.length);
+        for (var i = 0; i < ulawBytes.length; i++) {
+            pcmData[i] = ulaw2lin(ulawBytes[i]);
+        }
+        return pcmData;
+    }
+
+
+    function playCombinedAudio(response) {
+        const audioPlayer = document.getElementById('audioPlayer');
+        const combinedAudioUrl = combineAudioSegments(response);
+        audioPlayer.src = combinedAudioUrl;
+        audioPlayer.play();
+    }
+
 </script>
 
 {% endblock %}

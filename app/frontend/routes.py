@@ -79,10 +79,12 @@ async def dashboard(request: Request, fragment : str, id : str):
             payload = await request.form()
 
             if payload and 'file' in payload:
-                db = LocalStorage()
-                ftype = "contacts" if fragment == 'settings' else 'kb'
-                db.Insert(File(name=payload["file"].filename, data=await payload["file"].read(), ftype=ftype))
-                logger.info("File '{}' upload completed Successfully!".format(payload["file"].filename))
+                data = await payload["file"].read()
+                if len(data) > 0:
+                    db = LocalStorage()
+                    ftype = "contacts" if fragment == 'settings' else 'kb'
+                    db.Insert(File(name=payload["file"].filename, data=data, ftype=ftype))
+                    logger.info("File '{}' upload completed Successfully!".format(payload["file"].filename))
 
             payload = {k: v for k, v in payload.items() } if payload else None
             context = { "request": request, "data": Context(fragment, request.method, payload).prepare(id=id, **request.query_params) }

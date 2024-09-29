@@ -69,20 +69,20 @@
           <div class="col-6">
             <div class="form-group">
               <label for="name">Agent Name</label>
-              <input type="text" class="form-control" name="agent_name" placeholder="e.g Mike" value="{{data['configs']['agent_name']}}">
+              <input type="text" class="form-control" id="agent_name" name="agent_name" placeholder="e.g Mike">
             </div>
           </div>
           <div class="col-6">
             <div class="form-group">
               <label for="phone">Agent Phone Number</label>
-              <input type="tel" class="form-control" name="from_phone_number" placeholder="e.g. 1234567890" value="{{data['configs']['from_phone_number']}}">
+              <input type="tel" class="form-control" name="from_phone_number" id="from_phone_number" placeholder="e.g. 1234567890">
             </div>
           </div>
         </div>
         <div class="form-group">
-          <label for="greeting">Greeting Message</label>
-          <textarea id="greeting" class="form-control" name="greeting_message" rows="5"
-            placeholder="e.g. Default greetings for customer">{{ data["configs"]["greeting_message"] }}</textarea>
+          <label for="greeting_message">Greeting Message</label>
+          <textarea id="greeting_message" class="form-control" name="greeting_message" rows="5"
+            placeholder="e.g. Default greetings for customer"></textarea>
         </div>
         <button style="float: right;" type="submit" class="btn btn-primary">Update</button>
       </form>
@@ -93,7 +93,7 @@
       <form method="POST" action="/admin/configs/locale?json=true">
         <div class="form-group">
           <label for="datetime">Choose Date and Time</label>
-          <input type="datetime-local" class="form-control" value="{{data['configs']['datetime']}}" name="datetime">
+          <input type="datetime-local" class="form-control" id="datetime" name="datetime">
         </div>
         <div class="form-group">
           <label for="language">Select Language</label>
@@ -174,7 +174,7 @@
   </div>
   <div class="tab-pane container" id="outcalls">
     <div class="container mt-5">
-      <form>
+      <form method="POST" action="/admin/configs/globalcalls?json=true">
         <div class="card">
           <div class="card-header bg-purple">
             <strong style="float: right;">Global Call Configurations</strong>
@@ -182,17 +182,19 @@
           <div class="card-body">
             <div class="form-group">
               <label for="rawLogs">Call Logs Details</label>
-              <select class="form-control" id="rawLogs">
-                <option value="everything">Everything</option>
-                <option value="warnings">Only Warnings</option>
-                <option value="errors">Only Errors</option>
+              <select class="form-control" id="rawLogs" name="rawLogs">
+                <option value="" selected>No Logging</option>
+                <option value="10" selected>All Messages</option>
+                <option value="20">Info, Warnings & Errors</option>
+                <option value="30">Warnings & Errors</option>
+                <option value="40">Only Errors</option>
               </select>
             </div>
             <button style="float: right;" type="submit" class="btn btn-primary mt-3">Update</button>
           </div>
         </div>
       </form>
-        <form method="post" enctype="multipart/form-data" action="/admin/settings/outbound?json=true">
+        <form method="post" enctype="multipart/form-data" action="/admin/configs/outbound?json=true">
           <div class="card">
             <div class="card-header bg-purple">
               <strong style="float: right;">Outbound Calls Configurations</strong>
@@ -227,18 +229,18 @@
             </div>
           </div>
         </form>
-        <form>
+        <form method="POST" action="/admin/configs/inbound?json=true">
           <div class="card mt-3">
             <div class="card-header bg-purple">
               <strong style="float: right;">Inbound Calls Configurations</strong>
             </div>
             <div class="card-body">
               <div class="custom-control custom-switch">
-                <input type="checkbox" class="custom-control-input" id="saveScriptInbound">
+                <input type="checkbox" class="custom-control-input" id="saveScriptInbound" name="saveScriptInbound">
                 <label class="custom-control-label" for="saveScriptInbound">Save Conversation</label>
               </div>
               <div class="custom-control custom-switch mb-3">
-                <input type="checkbox" class="custom-control-input" id="recordCallsInbound">
+                <input type="checkbox" class="custom-control-input" id="recordCallsInbound" name="recordCallsInbound">
                 <label class="custom-control-label" for="recordCallsInbound">Record Calls</label>
               </div>
               <button style="float: right;" type="submit" class="btn btn-primary mt-3">Update</button>
@@ -265,8 +267,14 @@
       </div>
       <div class="form-group">
         <label for="prompt">System Prompt</label>
-        <textarea rows="13" class="form-control" id="prompt" name="prompt" placeholder="Enter your prompt here...">{{ data["configs"]["prompt"] }}</textarea>
+        <textarea rows="13" class="form-control" id="prompt" name="prompt" placeholder="Enter your prompt here..."></textarea>
       </div>
+      
+      <div class="custom-control custom-switch">
+        <input type="checkbox" class="custom-control-input" id="use_kb" name="use_kb">
+        <label class="custom-control-label" for="use_kb">Use Knowledge Base</label>
+      </div>
+
       <div class="form-group">
         <label for="file">Upload Knowledge Base</label>
         <input type="file" class="form-control" name="file" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel, application/pdf, .pdf">
@@ -293,9 +301,16 @@
 <script>
   $(document).ready(function() 
   {
-    $("#language").val('{{data["configs"]["language"]}}');
-    $("#timezone").val('{{data["configs"]["timezone"]}}');
-    $("#model").val('{{data["configs"]["model"]}}');
+    const config = JSON.parse('{{ data.configs|tojson|safe }}');
+    Object.keys(config).forEach(key => 
+    {
+        const $element = $(`#${key}`);
+        if ($element.is(':checkbox'))
+            $element.prop('checked', config[key]);
+        else
+            $element.val(config[key]);
+    });
+
 
     $("#available-files li").click(function() {
         $(this).siblings().removeClass("bg-secondary");
@@ -310,6 +325,14 @@
         const actionUrl = form.attr('action');
         const method = form.attr('method').toUpperCase();
         const formData = new FormData(this);
+
+        form.find('input[type="checkbox"]').each(function() 
+        {
+            const checkbox = $(this);
+            const checkboxName = checkbox.attr('name');
+        
+            formData.set(checkboxName, checkbox.is(':checked') ? 'true' : 'false');
+        });
 
         $.ajax({
             url: actionUrl,

@@ -10,6 +10,7 @@ class Call(metaclass=DirtyTrackingMeta):
     callDirection: str
     callDuration: int
     callScript: str
+    callPlayback: str
     callLogs: str
     callTime: str
     callUid: str

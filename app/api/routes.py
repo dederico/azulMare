@@ -55,11 +55,12 @@ async def post(request: Request):
 
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
-    logHandler = get_thread_log_handler()
+    db = LocalStorage()
+    config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
+
+    logHandler = get_thread_log_handler(config.get("rawLogs", 10))
 
     logger.info("Got new INCOMING_CALL")
-    db = LocalStorage()
-    config = { conf.name: conf.value for conf in db.GetAll(Config) }
 
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
@@ -80,8 +81,10 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Get the current date and time
     now = datetime.now()
+    callDirection = "Inbound"
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     if call:
+        callDirection = "Outbound"
         call.callStatus = "IN_PROGRESS"
         db.Update(call)
     else:
@@ -108,10 +111,10 @@ async def websocket_endpoint(ws: WebSocket):
 
     logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(
+        config=config,
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
-        function_manager=function_manager,
-        model=config.get("model") or "gpt-3.5-turbo-1106"
+        function_manager=function_manager
     )
 
     # tts_service = ElevenTTSService(
@@ -133,6 +136,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     logger.debug("Initializing orchestrator for the call")
     orchestrator = Orchestrator(
+        config=config,
         websocket_handler=websocket_handler,
         stt_service=stt_service,
         llm_service=llm_service,
@@ -145,7 +149,13 @@ async def websocket_endpoint(ws: WebSocket):
     # Sync the call record in case of AMD detection event was triggered
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     call.callLogs = logHandler.stream.getvalue()
-    call.callScript = json.dumps(stats['Script'])
+
+    if config.get(f"saveScript{callDirection}", False):
+        call.callScript = json.dumps(stats['Script'])
+    
+    if config.get(f"recordCalls{callDirection}", False):
+        call.callPlayback = json.dumps(websocket_handler.audio_sequence)
+    
     if call.callStatus != "AMD":
         # (VERY IMPORTANT) only update status if AMD is not detected
         call.callStatus = stats['Status']

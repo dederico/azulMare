@@ -4,29 +4,35 @@ import openai
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
+from app.util.database import VectorBase
 from app.services.functions.function_manager import FunctionManager
 
 
 class OpenAIService(LLMService):
     def __init__(
         self,
+        config,
         api_key: str | None,
         function_manager: FunctionManager,
-        system: str = "",
-        model: str = "gpt-4-1106-preview",
+        system: str = ""
     ):
+        self.config = config
         self.client = openai.AsyncClient(api_key=api_key)
-        self.model = model
         self.conversation_history = []
         self.conversation_history.append({"role": "system", "content": system})
         self.function_manager = function_manager
         self.functions = {}
         self.current_function_name = None
+        self.vectorbase = VectorBase(config.get("agent_name", None))
 
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         self.conversation_history.append({"role": role, "content": content, **kwargs})
 
     async def generate_response(self, user_input: str) -> AsyncGenerator[str, None]:
+        if self.config.get("use_kb"):
+            kb_context = self.vectorbase.Query(user_input)
+            user_input = f"Context:\n{kb_context}\n\nQuery:\n{user_input}"
+        
         self.add_to_conversation("user", user_input)
         generator = await self.llm_generator()
 
@@ -51,7 +57,7 @@ class OpenAIService(LLMService):
 
     async def llm_generator(self):
         generator = await self.client.chat.completions.create(
-            model=self.model,
+            model=self.config.get("model") or "gpt-3.5-turbo-1106",
             messages=self.conversation_history,
             stream=True,
             tool_choice="auto",

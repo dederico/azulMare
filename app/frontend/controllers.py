@@ -136,8 +136,13 @@ class Context:
             }
             configs["models"].append(model_dict)
 
+        prompt = configs.get("prompt", "")
+        if "prompt" in configs:
+            del configs["prompt"]
+
         return {
             "title": "Robot Configurations",
+            "prompt": prompt,
             "files": self.__ls.GetAll(File, cols=['name', 'ftype'], json=True),
             "configs": configs
         }

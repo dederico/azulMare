@@ -84,3 +84,4 @@ python-docx
 PyMuPDF
 fastapi-mail
 amazon_transcribe
+google-auth-oauthlib

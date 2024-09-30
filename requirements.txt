@@ -83,3 +83,4 @@ nltk
 python-docx
 PyMuPDF
 fastapi-mail
+amazon_transcribe

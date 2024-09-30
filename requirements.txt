@@ -82,3 +82,4 @@ psycopg2-binary
 nltk
 python-docx
 PyMuPDF
+fastapi-mail

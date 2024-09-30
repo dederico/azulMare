@@ -28,15 +28,21 @@ class VectorBase:
         if len(result['matches']) >= top_k:
             return result['matches'][0]['metadata']['text']+"\n"+result['matches'][1]['metadata']['text']
         return None
-
 class LocalStorage:
-    def __init__(self, dbName='callgpt', user='postgres', password='', host='localhost', port='5432'):
-        self.dbName = os.environ.get("DATABASE") or dbName
-        self.user = os.environ.get("DB_USERNAME") or user
-        self.password = os.environ.get("DB_PASSWORD") or password
-        self.host = os.environ.get("DB_HOST") or host
-        self.port = os.environ.get("DB_PORT") or port
-        logger.debug("Local storage has been initialized")
+    def __init__(self):
+        # Valores hardcoded
+        self.dbName = 'blackberry'
+        self.user = 'broxelconexion'
+        self.password = 'rC9NepsFcKJDWCQdvGq6LmDRq1UBUzZv'
+        self.host = 'dpg-cq3f6ljqf0us73dh0ef0-a.oregon-postgres.render.com'
+        self.port = '5432'
+        
+        # Agregar sslmode=require a la URL de conexión
+        self.connection_url = (
+            f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbName}?sslmode=require"
+        )
+
+        logger.debug(f"Local storage has been initialized with URL: {self.connection_url}")
 
     def migrate(self):
         tables = [Call, User, Config, Notification, File]

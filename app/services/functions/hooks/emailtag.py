@@ -1,11 +1,82 @@
 import smtplib
+import openai
+from app.util.logger import logger
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from app.util.database import LocalStorage
 import json
-import logging
 
-logging.basicConfig(level=logging.DEBUG)
+def Analyze(call, config):
+    try:
+        llm = openai.AsyncClient()
+        messages = [
+            {
+                "role": "system",
+                "content": """Analyze the conversation between customer and support engineer,
+                and generate the JSON object based on following template
+                {
+                    "title": "Short Issue Title",
+                    "description": "summary of issue disscused in conversation"
+                }
+                """,
+            },
+            {
+                "role": "user",
+                "content": call.callScript,
+            },
+        ]
+
+        response = await llm.chat.completions.create(
+            model=config.get("model", "gpt-4-0125-preview"),
+            temperature=0.1,
+            messages=messages,
+            response_format={"type": "json_object"},
+        )
+
+        return json.loads(response.choices[0].message.content)
+    except:
+        return False
+
+def send_ticket_email(body: str):
+    """Envía un correo electrónico con un mensaje fijo de ticket generado.
+    
+    Args:
+        email_to (string): Dirección de correo electrónico del destinatario.
+        
+    Returns:
+        string: Mensaje de confirmación sobre el envío del correo.
+    """
+    # Configuración del servidor SMTP
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+    smtp_username = "dederico@gmail.com"  # Cambia a tu dirección de correo
+    smtp_password = "beas ajht qlgb eshd"  # Cambia a tu contraseña de correo
+    email_to = "dederico@gmail.com,soporte@cybersecuritydemexico.com.mx,banxico@cybersecuritydemexico.com.mx,soporte_uem@cybersecuritydemexico.com.mx,asistencia@cybersecuritydemexico.com.mx" # Cambia a tu dirección
+
+    # Crear el mensaje de correo
+    msg = MIMEMultipart()
+    msg['From'] = smtp_username
+    msg['To'] = email_to
+    msg['Subject'] = "[BLACKBERRY] Ticket generado por DOMO ({})".format(data["ticket"])
+
+    # Cuerpo del correo
+    email_body = "Ticket generado exitosamente.\n"
+    for key, val in data.items():
+        email_body += f"{key} = {val}\n"
+
+    msg.attach(MIMEText(email_body, 'plain'))
+
+    # Conectar al servidor SMTP y enviar el correo
+    try:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()  # Habilitar TLS
+        server.login(smtp_username, smtp_password)  # Iniciar sesión en el servidor SMTP
+        server.send_message(msg)  # Enviar el mensaje
+        return "Correo electrónico enviado exitosamente."
+    except Exception as e:
+        return f"Error al enviar el correo: {e}"
+    finally:
+        server.quit()  # Cerrar la conexión con el servidor
 
 def Run(call, config):
     """
@@ -19,58 +90,14 @@ def Run(call, config):
     Logo URL: https://example.com/logo.png
     """
 
-    logging.debug(f"Objeto call: {call}")
+    logger.debug(f"Objeto call: {call}")
+    if call.callScript:
+        data = Analyze(call, config)
+        if data:
+            data["ticket"] = "BB-{}".format(str(call.id).zfill(4))
+            data["time"] = call.callTime
 
-    # Configuración del servidor SMTP
-    smtp_server = "smtp.gmail.com"
-    smtp_port = 587
-    smtp_username = "dederico@gmail.com"  # Cambia a tu dirección de correo
-    smtp_password = "beas ajht qlgb eshd"  # Cambia a tu contraseña de correo
-    email_to = "dederico@gmail.com,soporte@cybersecuritydemexico.com.mx,banxico@cybersecuritydemexico.com.mx,soporte_uem@cybersecuritydemexico.com.mx,asistencia@cybersecuritydemexico.com.mx"  # Cambia a tus direcciones
+            send_ticket_email(data)
 
-    # Lógica para etiquetar la llamada
-    if call.callStatus == "AMD":
-        call.callStatus = "BUZON"
-    elif call.callDuration < 60:
-        call.callStatus = "RECOVER"
-    elif call.callScript:
-        chat = json.loads(call.callScript)
-        chat = [m["dialog"] for m in chat if m['role'] == "CUSTOMER"]
-
-        schedule_keywords = {"schedule", "call", "reschedule", "time", "date", "afternoon", "tomorrow"}
-
-        # Aquí podrías añadir lógica similar a isAnnoying o keyword_matching si fuera necesario
-
-        # Si se encuentra un criterio específico, se marca con la etiqueta "AGENDA"
-        if any(keyword in " ".join(chat) for keyword in schedule_keywords):
-            call.callStatus = "AGENDA"
-
-    # Enviar correo electrónico si la llamada tiene cambios
-    if call.isDirty:
-        # Crear el mensaje de correo
-        msg = MIMEMultipart()
-        msg['From'] = smtp_username
-        msg['To'] = email_to
-        msg['Subject'] = f"Reporte de Llamada: {call.callStatus}"
-
-        # Cuerpo del correo
-        email_body = f"Detalles de la llamada:\n\nID de Llamada: {call.callID}\nEstado: {call.callStatus}\nDuración: {call.callDuration} segundos\n"
-        msg.attach(MIMEText(email_body, 'plain'))
-
-        # Conectar al servidor SMTP y enviar el correo
-        try:
-            server = smtplib.SMTP(smtp_server, smtp_port)
-            server.starttls()  # Habilitar TLS
-            server.login(smtp_username, smtp_password)  # Iniciar sesión en el servidor SMTP
-            server.send_message(msg)  # Enviar el mensaje
-        except Exception as e:
-            print(f"Error al enviar el correo: {e}")
-        finally:
-            server.quit()  # Cerrar la conexión con el servidor
-
-        # Guardar la llamada etiquetada en la base de datos
-        ls = LocalStorage()
-        ls.Update(call)
-        return True
-
+            return True
     return False

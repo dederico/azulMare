@@ -6,7 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from app.util.database import LocalStorage
 import json
 
-def Analyze(call, config):
+async def Analyze(call, config):
     try:
         llm = openai.AsyncClient()
         messages = [
@@ -32,12 +32,11 @@ def Analyze(call, config):
             messages=messages,
             response_format={"type": "json_object"},
         )
-
         return json.loads(response.choices[0].message.content)
     except:
         return False
 
-def send_ticket_email(body: str):
+def send_ticket_email(data: str):
     """Envía un correo electrónico con un mensaje fijo de ticket generado.
     
     Args:

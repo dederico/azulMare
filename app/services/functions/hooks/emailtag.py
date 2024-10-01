@@ -6,9 +6,10 @@ from email.mime.multipart import MIMEMultipart
 from app.util.database import LocalStorage
 import json
 
-async def Analyze(call, config):
+def Analyze(call, config):
     try:
-        llm = openai.AsyncClient()
+        llm = openai.Client()
+
         messages = [
             {
                 "role": "system",
@@ -16,7 +17,7 @@ async def Analyze(call, config):
                 and generate the JSON object based on following template
                 {
                     "title": "Short Issue Title",
-                    "description": "summary of issue disscused in conversation"
+                    "description": "summary of issue discussed in conversation"
                 }
                 """,
             },
@@ -26,14 +27,16 @@ async def Analyze(call, config):
             },
         ]
 
-        response = await llm.chat.completions.create(
+        response = llm.chat.completions.create(
             model=config.get("model", "gpt-4-0125-preview"),
             temperature=0.1,
             messages=messages,
             response_format={"type": "json_object"},
         )
+
         return json.loads(response.choices[0].message.content)
-    except:
+    except Exception as e:
+        print(e)
         return False
 
 def send_ticket_email(data: str):

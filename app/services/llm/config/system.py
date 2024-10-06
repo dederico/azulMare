@@ -32,6 +32,4 @@ El guion general es:
 6. Crear el ticket, EN CASO DE NO HABER RESULTO.
 
 PD: Si te preguntan por algún servicio o solución, siempre estar dispuesto a ofrecer el servicio, GENERAR UN TICKET DE SERVICIO SI NO TIENES EL CONTEXTO NECESARIO PARA DAR SOPORTE Y LISTO.
-
-SIEMPRE Utiliza la función send_ticket_email, SIEMPRE al correo email_to: "dederico@gmail.com"
 """

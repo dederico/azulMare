@@ -22,31 +22,43 @@ class AmazonTranscribeService(STTService):
         self.stream: StartStreamTranscriptionEventStream | None = None
 
     async def start_transcription(self):
-        self.stream = await self.client.start_stream_transcription(
-            language_code=self.language,
-            media_sample_rate_hz=8000,
-            media_encoding="pcm",
-            enable_partial_results_stabilization=False,
-        )
-        logging.getLogger("uvicorn").info(f"Correctly connected to Amazon Transcribe.")
+        try:
+            self.stream = await self.client.start_stream_transcription(
+                language_code=self.language,
+                media_sample_rate_hz=8000,
+                media_encoding="pcm",
+                enable_partial_results_stabilization=False,
+            )
+            logging.getLogger("uvicorn").info(f"Correctly connected to Amazon Transcribe.")
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Failed to start transcription: {e}")
 
     async def transcribe(self, audio_chunk):
-        if self.stream:
-            await self.stream.input_stream.send_audio_event(audio_chunk=audio_chunk)
+        try:
+            if self.stream:
+                await self.stream.input_stream.send_audio_event(audio_chunk=audio_chunk)
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Error during transcription: {e}")
 
     async def finish_transcription(self):
-        if self.stream:
-            await self.stream.input_stream.end_stream()
+        try:
+            if self.stream:
+                await self.stream.input_stream.end_stream()
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Error finishing transcription: {e}")
 
     async def set_transcript_received_callback(self, callback):
         self.callback = callback
         if self.stream:
-            handler = MyEventHandler(
-                self.stream.output_stream,
-                self.callback,
-                self.enhanced,
-            )
-            asyncio.create_task(handler.handle_events())
+            try:
+                handler = MyEventHandler(
+                    self.stream.output_stream,
+                    self.callback,
+                    self.enhanced,
+                )
+                asyncio.create_task(handler.handle_events())
+            except Exception as e:
+                logging.getLogger("uvicorn").error(f"Error setting transcript received callback: {e}")
 
 
 class MyEventHandler(TranscriptResultStreamHandler):
@@ -58,52 +70,64 @@ class MyEventHandler(TranscriptResultStreamHandler):
         self.enhanced = enhanced
 
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
-        if self.enhanced:
-            await self.enhanced_handle(transcript_event)
-        else:
-            await self.simple_handle(transcript_event)
+        try:
+            if self.enhanced:
+                await self.enhanced_handle(transcript_event)
+            else:
+                await self.simple_handle(transcript_event)
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Error handling transcript event: {e}")
 
     async def simple_handle(self, transcript_event: TranscriptEvent):
-        for result in transcript_event.transcript.results:
-            if not result.is_partial and result.alternatives:
-                transcript = result.alternatives[0].transcript
-                if self.callback:
-                    final_transcript = await self.normalize(transcript)
-                    await self.callback(final_transcript)
+        try:
+            for result in transcript_event.transcript.results:
+                if not result.is_partial and result.alternatives:
+                    transcript = result.alternatives[0].transcript
+                    if self.callback:
+                        final_transcript = await self.normalize(transcript)
+                        await self.callback(final_transcript)
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Error in simple_handle: {e}")
 
     async def enhanced_handle(self, transcript_event: TranscriptEvent):
-        if time.perf_counter() - self.last_time > 0.5 and self.buffer:
-            final_transcript = await self.normalize(self.buffer)
-            await self.callback(final_transcript)
-            self.buffer = ""
+        try:
+            if time.perf_counter() - self.last_time > 0.5 and self.buffer:
+                final_transcript = await self.normalize(self.buffer)
+                await self.callback(final_transcript)
+                self.buffer = ""
 
-        results = transcript_event.transcript.results
+            results = transcript_event.transcript.results
 
-        for result in results:
-            self.last_time = time.perf_counter()
-            if result.is_partial:
-                return
+            for result in results:
+                self.last_time = time.perf_counter()
+                if result.is_partial:
+                    return
 
-            if not result.alternatives:
-                return
+                if not result.alternatives:
+                    return
 
-            transcript = result.alternatives[0].transcript
-            self.buffer += transcript
+                transcript = result.alternatives[0].transcript
+                self.buffer += transcript
 
-            logging.getLogger("uvicorn").info(f"PARTIAL: {transcript}")
+                logging.getLogger("uvicorn").info(f"PARTIAL: {transcript}")
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Error in enhanced_handle: {e}")
 
     async def normalize(self, transcript):
-        final_transcript = {
-            "type": "Results",
-            "is_final": True,
-            "speech_final": True,
-            "channel": {
-                "alternatives": [
-                    {
-                        "transcript": transcript,
-                    }
-                ]
-            },
-        }
-
-        return final_transcript
+        try:
+            final_transcript = {
+                "type": "Results",
+                "is_final": True,
+                "speech_final": True,
+                "channel": {
+                    "alternatives": [
+                        {
+                            "transcript": transcript,
+                        }
+                    ]
+                },
+            }
+            return final_transcript
+        except Exception as e:
+            logging.getLogger("uvicorn").error(f"Error normalizing transcript: {e}")
+            return None

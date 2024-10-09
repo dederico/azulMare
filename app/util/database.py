@@ -31,7 +31,7 @@ class VectorBase:
 class LocalStorage:
     def __init__(self):
         # Valores hardcoded
-        self.dbName = 'blackberry'
+        self.dbName = 'silice_demos'
         self.user = 'broxelconexion'
         self.password = 'rC9NepsFcKJDWCQdvGq6LmDRq1UBUzZv'
         self.host = 'dpg-cq3f6ljqf0us73dh0ef0-a.oregon-postgres.render.com'

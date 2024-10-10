@@ -13,7 +13,7 @@ class OpenAIService(LLMService):
         api_key: str | None,
         function_manager: FunctionManager,
         system: str = "",
-        model: str = "gpt-4-1106-preview",
+        model: str = "gpt-4-0125-preview",
     ):
         self.client = openai.AsyncClient(api_key=api_key)
         self.model = model

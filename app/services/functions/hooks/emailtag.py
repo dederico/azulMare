@@ -53,7 +53,8 @@ def send_ticket_email(data: str):
     smtp_port = 587
     smtp_username = "dederico@gmail.com"  # Cambia a tu dirección de correo
     smtp_password = "beas ajht qlgb eshd"  # Cambia a tu contraseña de correo
-    email_to = "dederico@gmail.com,antonio.oviedo@silice.si,maruquel.henriquez@silice.si,barbra.monzon@silice.si" # Cambia a tu dirección
+    email_to = "dederico@gmail.com"
+    #"dederico@gmail.com,antonio.oviedo@silice.si,maruquel.henriquez@silice.si,barbra.monzon@silice.si" # Cambia a tu dirección
 
     # Crear el mensaje de correo
     msg = MIMEMultipart()

@@ -111,7 +111,7 @@ async def websocket_endpoint(ws: WebSocket):
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager,
-        model=config.get("model") or "gpt-3.5-turbo-1106"
+        model=config.get("model") or "gpt-4-0125-preview"
     )
 
     # tts_service = ElevenTTSService(

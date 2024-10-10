@@ -26,7 +26,7 @@ from datetime import datetime
 from app.util.logger import logger, get_thread_log_handler, cleanup_call_logger
 from app.models.Call import Call
 from app.models.Config import Config
-# from app.util.factory import Hooks
+from app.util.factory import Hooks
 from app.util.database import LocalStorage
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date

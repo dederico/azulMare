@@ -8,4 +8,4 @@ from .implementations.date import get_current_date
 
 
 #registered_functions = [get_current_date, get_customer_identity, get_credit_card_options, hangup, get_current_weather, create_google_event] #send_ticket_email]
-registered_functions = [hangup]
+#registered_functions = [hangup]

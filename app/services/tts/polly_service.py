@@ -22,7 +22,7 @@ class AmazonTTSService(TTSService):
         secret_key: str,
         region_name: str,
         stream_results: bool = False,
-        language: str = None
+        language: str = "es-US"
     ):
         self.client = None
         self.stream_results = stream_results

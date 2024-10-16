@@ -60,7 +60,7 @@ def send_ticket_email(data: str):
     msg = MIMEMultipart()
     msg['From'] = smtp_username
     msg['To'] = email_to
-    msg['Subject'] = "[SILICE] Ticket generado por DOMO ({})".format(data["ticket"])
+    msg['Subject'] = "[GUADALUPE] Ticket generado por DOMO ({})".format(data["ticket"])
 
     # Cuerpo del correo
     email_body = "Ticket generado exitosamente.\n"

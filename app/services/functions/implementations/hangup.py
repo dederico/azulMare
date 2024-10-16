@@ -26,7 +26,7 @@ async def hangup(call_sid):
     config = { c.name:c.value for c in ls.GetAll(Config)}
 
     response = VoiceResponse()
-    response.say("Gracias por tu tiempo.", voice="Polly.Lupe-Neural", language=config["language"])
+    response.say("Gracias por tu tiempo.", voice="Polly.Lupe-Neural", language="es-US")
     response.pause(length=5)
     client.calls(call_sid).update(twiml=response.to_xml())
     client.calls(call_sid).update(status="completed")

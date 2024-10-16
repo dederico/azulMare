@@ -5,7 +5,7 @@ from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
 from app.util.database import VectorBase
-from app.services.functions.function_manager import FunctionManager
+#from app.services.functions.function_manager import FunctionManager
 
 
 class OpenAIService(LLMService):
@@ -13,14 +13,14 @@ class OpenAIService(LLMService):
         self,
         config,
         api_key: str | None,
-        function_manager: FunctionManager,
+        #function_manager: FunctionManager,
         system: str = ""
     ):
         self.config = config
         self.client = openai.AsyncClient(api_key=api_key)
         self.conversation_history = []
         self.conversation_history.append({"role": "system", "content": system})
-        self.function_manager = function_manager
+        #self.function_manager = function_manager
         self.functions = {}
         self.current_function_name = None
         self.vectorbase = VectorBase(config.get("agent_name", None))
@@ -60,8 +60,8 @@ class OpenAIService(LLMService):
             model=self.config.get("model") or "gpt-3.5-turbo-1106",
             messages=self.conversation_history,
             stream=True,
-            tool_choice="auto",
-            tools=self.function_manager.get_function_definition(),
+            #tool_choice="auto",
+            #tools=self.function_manager.get_function_definition(),
         )
         return generator
 
@@ -93,17 +93,17 @@ class OpenAIService(LLMService):
                 logger.error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
                 continue
 
-            for func in self.function_manager.registered_functions:
-                if func.__name__ == k:
-                    try:
-                        response = await func(**arguments)
-                    except Exception as e:
-                        logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
-                        continue
+            # for func in self.function_manager.registered_functions:
+            #     if func.__name__ == k:
+            #         try:
+            #             response = await func(**arguments)
+            #         except Exception as e:
+            #             logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
+            #             continue
                     
-                    self.add_to_conversation(
-                        "function", content=response, name=func.__name__
-                    )
+            #         self.add_to_conversation(
+            #             "function", content=response, name=func.__name__
+            #         )
 
         generator = await self.llm_generator()
 

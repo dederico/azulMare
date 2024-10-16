@@ -17,9 +17,9 @@ from app.services.stt.amazon_service import AmazonTranscribeService
 from app.services.llm.openai_service import OpenAIService
 from app.services.tts.eleven_service import ElevenTTSService
 from app.services.tts.polly_service import AmazonTTSService
-from app.services.functions.function_registry import registered_functions
+#from app.services.functions.function_registry import registered_functions
 from app.services.llm.config.system import system_message
-from app.services.functions.function_manager import FunctionManager
+#from app.services.functions.function_manager import FunctionManager
 from twilio.rest import Client
 from urllib.parse import parse_qs
 from datetime import datetime
@@ -74,10 +74,10 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language=config["language"]
+        language="es-US"
     )
 
-    function_manager = FunctionManager(registered_functions)
+    #function_manager = FunctionManager(registered_functions)
 
     # Get the current date and time
     now = datetime.now()
@@ -114,7 +114,7 @@ async def websocket_endpoint(ws: WebSocket):
         config=config,
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
-        function_manager=function_manager
+        #function_manager=function_manager
     )
 
     # tts_service = ElevenTTSService(
@@ -131,7 +131,7 @@ async def websocket_endpoint(ws: WebSocket):
         secret_key=AWS_SECRET_ACCESS_KEY,
         region_name=AWS_REGION,
         stream_results=False,
-        language=config["language"]
+        language="es-US",
     )
 
     logger.debug("Initializing orchestrator for the call")

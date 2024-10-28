@@ -25,7 +25,7 @@ load_dotenv()
 class LocalStorage:
     def __init__(self):
         # Valores hardcoded
-        self.dbName = 'mexicANA'
+        self.dbName = 'senda'
         self.user = 'broxelconexion'
         self.password = 'rC9NepsFcKJDWCQdvGq6LmDRq1UBUzZv'
         self.host = 'dpg-cq3f6ljqf0us73dh0ef0-a.oregon-postgres.render.com'

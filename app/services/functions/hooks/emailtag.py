@@ -59,7 +59,7 @@ def send_ticket_email(data: str):
     msg = MIMEMultipart()
     msg['From'] = smtp_username
     msg['To'] = email_to
-    msg['Subject'] = "[mexicANA] Ticket generado por DOMO ({})".format(data["ticket"])
+    msg['Subject'] = "[SENDA] Ticket generado por DOMO ({})".format(data["ticket"])
 
     # Cuerpo del correo
     email_body = "Ticket generado exitosamente.\n"
@@ -96,7 +96,7 @@ def Run(call, config):
     if call.callScript:
         data = Analyze(call, config)
         if data:
-            data["ticket"] = "mexicANA-{}".format(str(call.id).zfill(4))
+            data["ticket"] = "SENDA-{}".format(str(call.id).zfill(4))
             data["time"] = call.callTime
 
             send_ticket_email(data)

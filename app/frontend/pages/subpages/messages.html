@@ -1,0 +1,13 @@
+{% for msg in data['script'] %}
+<li class="{% if msg['direction'] == 'outbound' %}in{% else %}out{% endif %}">
+    <div class="chat-img">
+        <img alt="Avtar" src="{% if msg['direction'] == 'outbound' %}/static/img/logo-medium.png{% else %}/static/img/avatar6.png{% endif %}">
+    </div>
+    <div class="chat-body">
+        <div class="chat-message">
+            <h5><label style="margin-right: 50px;">{{ msg["time"] }}</label> {% if msg['direction'] == 'outbound' %}Robot{% else %}Customer{% endif %}</h5>
+            <p>{{ msg['message'] }}</p>
+        </div>
+    </div>
+</li>
+{% endfor %}

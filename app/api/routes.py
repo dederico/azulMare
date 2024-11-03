@@ -25,6 +25,7 @@ from urllib.parse import parse_qs
 from datetime import datetime
 from app.util.logger import logger, get_thread_log_handler, cleanup_call_logger
 from app.models.Call import Call
+from app.models.Message import Message
 from app.models.Config import Config
 from app.util.factory import Hooks
 from app.util.database import LocalStorage
@@ -170,6 +171,53 @@ async def websocket_endpoint(ws: WebSocket):
             hook["function"](call, config)
 
     cleanup_call_logger()
+
+
+@router.get("/whatsapp")
+async def whatsapp(request: Request):
+    db = LocalStorage()
+    config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
+
+    args = request.query_params
+    
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    profile = args["ProfileName"]
+    body = args["Body"]
+    fromN = args["From"].split(":")[1]
+    toN = args["To"].split(":")[1]
+    uid = args["WaId"]
+    mtype = args["MessageType"]
+
+    messages = db.Search(Message(uid=uid, source="Whatsapp"), limit=50)
+    current_date = await get_current_date()
+    function_manager = FunctionManager(registered_functions)
+    now = datetime.now()
+
+    llm_service = OpenAIService(
+        config=config,
+        api_key=OPENAI_API_KEY,
+        system=system_message.format(customer_name=profile, call_sid=uid, date2=current_date, now=now, date=current_date),
+        function_manager=function_manager
+    )
+
+    response = llm_service.generate_response(body)
+    response = "".join([token async for token in response])
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    client = Client(account_sid, auth_token)
+
+    content = { "status": True, "message": "A response has been sent back to Sender via WhatsApp" }
+    try:
+        message = client.messages.create(
+            body=response,
+            from_=toN,
+            to=fromN
+        )
+    except Exception as e:
+        content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }
+
+    return Response(content=json.dumps(content), media_type="text/json")
 
 
 @router.post("/amd_detect")

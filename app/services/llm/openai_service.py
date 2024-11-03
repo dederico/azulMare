@@ -23,7 +23,8 @@ class OpenAIService(LLMService):
         self.function_manager = function_manager
         self.functions = {}
         self.current_function_name = None
-        self.vectorbase = VectorBase(config.get("agent_name", None))
+        if self.config.get("use_kb"):
+            self.vectorbase = VectorBase(config.get("agent_name", None))
 
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         self.conversation_history.append({"role": role, "content": content, **kwargs})
@@ -37,7 +38,6 @@ class OpenAIService(LLMService):
         generator = await self.llm_generator()
 
         full_message = ""
-
         async for chunk in generator:
             tool_call = chunk.choices[0].delta.tool_calls
             if tool_call:

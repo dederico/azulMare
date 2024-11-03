@@ -7,6 +7,7 @@ from app.models.Call import Call
 from app.models.Config import Config
 from app.models.User import User
 from app.models.File import File
+from app.models.Message import Message
 from dotenv import load_dotenv
 from app.models.Notification import Notification
 from pinecone import Pinecone
@@ -28,16 +29,15 @@ class VectorBase:
         if len(result['matches']) >= top_k:
             return result['matches'][0]['metadata']['text']+"\n"+result['matches'][1]['metadata']['text']
         return None
+
 class LocalStorage:
     def __init__(self):
-        # Valores hardcoded
-        self.dbName = 'blackberry'
-        self.user = 'broxelconexion'
-        self.password = 'rC9NepsFcKJDWCQdvGq6LmDRq1UBUzZv'
-        self.host = 'dpg-cq3f6ljqf0us73dh0ef0-a.oregon-postgres.render.com'
-        self.port = '5432'
-        
-        # Agregar sslmode=require a la URL de conexión
+        self.dbName = os.environ.get("DATABASE")
+        self.user = os.environ.get("DB_USERNAME")
+        self.password = os.environ.get("DB_PASSWORD")
+        self.host = os.environ.get("DB_HOST")
+        self.port = os.environ.get("DB_PORT")
+
         self.connection_url = (
             f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbName}?sslmode=require"
         )
@@ -45,7 +45,7 @@ class LocalStorage:
         logger.debug(f"Local storage has been initialized with URL: {self.connection_url}")
 
     def migrate(self):
-        tables = [Call, User, Config, Notification, File]
+        tables = [Call, User, Config, Notification, File, Message]
         for table in tables:
             self.__verify_schema(table)
 
@@ -132,14 +132,28 @@ class LocalStorage:
             logger.error(e)
             return None
 
-    def Search(self, model, single=False, json=False):
+    def Search(self, model, single=False, json=False, limit=0, order='desc', order_col='id'):
         try:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
             attributes = {attr: getattr(model, attr) for attr in model.__dict__.keys() if not attr.startswith("_")}
-            query = sql.SQL("SELECT * FROM {table} WHERE " + " AND ".join([f"\"{sql.Identifier(attr).string}\" = %s" for attr in attributes])).format(
-                table=sql.Identifier(model.__class__.__name__.lower() + 's'))
+
+            query_parts = [
+                "SELECT * FROM {table}",
+                "WHERE " + " AND ".join([f"\"{sql.Identifier(attr).string}\" = %s" for attr in attributes])
+            ]
+
+            if order.lower() in ['asc', 'desc']:
+                query_parts.append(f"ORDER BY {order_col} {order.upper()}")
+
+            if limit > 0:
+                query_parts.append(f"LIMIT {limit}")
+
+            query = sql.SQL(" ".join(query_parts)).format(
+                table=sql.Identifier(model.__class__.__name__.lower() + 's')
+            )
+
             cursor.execute(query, list(attributes.values()))
 
             column_names = [desc[0] for desc in cursor.description]

@@ -6,6 +6,7 @@ from datetime import datetime
 from threading import Thread
 from app.models.File import File
 from app.models.Call import Call
+from app.models.Message import Message
 from app.models.Config import Config
 from app.models.Notification import Notification
 from app.util.database import LocalStorage
@@ -73,6 +74,10 @@ class Context:
             return { "script": json.loads(call['callScript']) }
         
         return { "script": [] }
+    
+    def __messages(self, **kwargs):
+        messages = self.__ls.Search(Message(number=kwargs['id']), json=True, order='asc')
+        return { "script": messages }
 
     def __health(self, **kwargs):
         return { "title": "System Health"}
@@ -90,6 +95,12 @@ class Context:
         return {
             "files": self.__ls.GetAll(File, cols=['name', 'ftype'], json=True)
         }
+
+    def __chats(self, **kwargs):
+        q = 'SELECT "senderName", number, MAX(time) AS time FROM messages GROUP BY "senderName", number;'
+        messages = self.__ls.GetAll(Message, q, json=True)
+
+        return { "title": "Chat Records", "logs": messages }
 
     def __calls(self, **kwargs):
         excluded = ['callScript', 'callLogs', 'callPlayback']

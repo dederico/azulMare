@@ -174,7 +174,7 @@ async def websocket_endpoint(ws: WebSocket):
     cleanup_call_logger()
 
 
-@router.get("/whatsapp")
+@router.post("/whatsapp")
 async def whatsapp(request: Request):
     db = LocalStorage()
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }

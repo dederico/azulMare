@@ -23,6 +23,7 @@ from app.services.functions.function_manager import FunctionManager
 from twilio.rest import Client
 from urllib.parse import parse_qs
 from datetime import datetime
+from copy import deepcopy
 from app.util.logger import logger, get_thread_log_handler, cleanup_call_logger
 from app.models.Call import Call
 from app.models.Message import Message
@@ -179,16 +180,22 @@ async def whatsapp(request: Request):
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
 
     args = request.query_params
-    
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    profile = args["ProfileName"]
-    body = args["Body"]
-    fromN = args["From"].split(":")[1]
     toN = args["To"].split(":")[1]
-    uid = args["WaId"]
-    mtype = args["MessageType"]
 
-    messages = db.Search(Message(uid=uid, source="Whatsapp"), limit=50)
+    message = Message(
+        time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        senderName = args["ProfileName"],
+        message = args["Body"],
+        number = args["From"].split(":")[1],
+        uid = args["WaId"],
+        direction = "inbound",
+        mtype = args["MessageType"].split("/")[0],
+        source="Whatsapp"
+    )
+
+    messages = db.Search(Message(number=message.number, source="Whatsapp"), order='asc', limit=50) or []
+    messages.append(message)
+
     current_date = await get_current_date()
     function_manager = FunctionManager(registered_functions)
     now = datetime.now()
@@ -196,12 +203,22 @@ async def whatsapp(request: Request):
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=profile, call_sid=uid, date2=current_date, now=now, date=current_date),
+        system=system_message.format(customer_name=message.senderName, call_sid=message.uid, date2=current_date, now=now, date=current_date),
         function_manager=function_manager
     )
 
-    response = llm_service.generate_response(body)
+    for m in messages:
+        role = "assistant" if m.direction == "outbound" else "user"
+        llm_service.add_to_conversation(role, m.message)
+
+    response = llm_service.generate_response(message.message)
     response = "".join([token async for token in response])
+
+    reply = deepcopy(message)
+    reply.direction = "outbound"
+    reply.message = response
+    reply.mtype = "text"
+    reply.time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
@@ -210,12 +227,14 @@ async def whatsapp(request: Request):
     content = { "status": True, "message": "A response has been sent back to Sender via WhatsApp" }
     try:
         message = client.messages.create(
-            body=response,
+            body=reply.message,
             from_=toN,
-            to=fromN
+            to=reply.number
         )
     except Exception as e:
         content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }
+
+    db.Insert([message, reply])
 
     return Response(content=json.dumps(content), media_type="text/json")
 

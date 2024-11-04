@@ -206,30 +206,63 @@ class LocalStorage:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
-            table_name = f"{type(data).__name__.lower()}s"
-            payload = { field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' }
+            if isinstance(data, list):
+                if len(data) == 0:
+                    return False
 
-            fields = ', '.join([f'"{sql.Identifier(field).string}"' for field in payload.keys() ])
-            placeholders = ', '.join(['%s' for _ in range(len(payload))])
+                table_name = f"{type(data[0]).__name__.lower()}s"  # Use the type of the first element in the list
+                all_payloads = [
+                    {field: value for field, value in entry.__dict__.items() if field != '_dirty_attributes'}
+                    for entry in data
+                ]
             
-            query = sql.SQL('''
-                INSERT INTO {table} ({fields})
-                VALUES ({placeholders})
-                RETURNING id
-            ''').format(
-                table=sql.Identifier(table_name),
-                fields=sql.SQL(fields),
-                placeholders=sql.SQL(placeholders)
-            )
+                fields = ', '.join([f'"{sql.Identifier(field).string}"' for field in all_payloads[0].keys()])
+                placeholders = ', '.join(['%s' for _ in all_payloads[0].keys()])
 
-            values = [ Binary(v) if type(v) == bytes else v for v in list(payload.values())]
-            cursor.execute(query, values)
-            data.id = cursor.fetchone()[0]
+                query = sql.SQL('''
+                    INSERT INTO {table} ({fields})
+                    VALUES ({placeholders})
+                ''').format(
+                    table=sql.Identifier(table_name),
+                    fields=sql.SQL(fields),
+                    placeholders=sql.SQL(placeholders)
+                )
 
-            conn.commit()
-            conn.close()
-            logger.info("New record added successfully in Local Storage")
-            return data
+                values = [
+                    [Binary(v) if isinstance(v, bytes) else v for v in list(entry.values())]
+                    for entry in all_payloads
+                ]
+
+                cursor.executemany(query, values)
+                conn.commit()
+                conn.close()
+                logger.info("Bulk records added successfully in Local Storage")
+                return True
+            else:
+                table_name = f"{type(data).__name__.lower()}s"
+                payload = {field: value for field, value in data.__dict__.items() if field != '_dirty_attributes'}
+
+                fields = ', '.join([f'"{sql.Identifier(field).string}"' for field in payload.keys()])
+                placeholders = ', '.join(['%s' for _ in range(len(payload))])
+            
+                query = sql.SQL('''
+                    INSERT INTO {table} ({fields})
+                    VALUES ({placeholders})
+                    RETURNING id
+                ''').format(
+                    table=sql.Identifier(table_name),
+                    fields=sql.SQL(fields),
+                    placeholders=sql.SQL(placeholders)
+                )
+
+                values = [Binary(v) if isinstance(v, bytes) else v for v in list(payload.values())]
+                cursor.execute(query, values)
+                data.id = cursor.fetchone()[0]
+
+                conn.commit()
+                conn.close()
+                logger.info("New record added successfully in Local Storage")
+                return data
         except Exception as e:
             logger.error(e)
             return False

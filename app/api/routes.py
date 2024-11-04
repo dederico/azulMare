@@ -186,14 +186,14 @@ async def whatsapp(request: Request):
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName = args["ProfileName"],
         message = args["Body"],
-        number = args["From"].split(":")[1],
+        number = args["From"],
         uid = args["WaId"],
         direction = "inbound",
         mtype = args["MessageType"].split("/")[0],
         source="Whatsapp"
     )
 
-    messages = db.Search(Message(number=message.number, source="Whatsapp"), order='asc', limit=50) or []
+    messages = db.Search(Message(number=message.number, source="whatsapp"), order='asc', limit=50) or []
     messages.append(message)
 
     current_date = await get_current_date()

@@ -186,7 +186,7 @@ async def whatsapp(request: Request):
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName = args["ProfileName"],
         message = args["Body"],
-        number = args["From"],
+        number = args["From"].split(":")[1],
         uid = args["WaId"],
         direction = "inbound",
         mtype = args["MessageType"].split("/")[0],

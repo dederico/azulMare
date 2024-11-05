@@ -6,6 +6,8 @@ import os
 import json
 from io import StringIO
 from dotenv import load_dotenv
+from fastapi.responses import JSONResponse
+
 
 load_dotenv()
 from fastapi import APIRouter, Request, Response, WebSocket
@@ -186,7 +188,7 @@ async def whatsapp(request: Request):
         toN = toN.split(":")[1]
     else:
         print("The field 'To' is not on the args")
-        return {"error": "The field 'To' is obligatory"}, 400
+        return JSONResponse(content={"error": "The field 'To' is obligatory"}, status_code=400)
 
     # Crear el mensaje actual
     message = Message(
@@ -243,14 +245,18 @@ async def whatsapp(request: Request):
             from_="whatsapp:"+toN,
             to="whatsapp:"+reply.number
         )
+        content = {"status": True, "message": "A response has been sent back to Sender via Whatsapp "}
     except Exception as e:
+        logger.error(f"Error al enviar mensaje: {str(e)}")
         content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }
 
     # Guardar en base de datos
-    db.Insert([message.message, reply.message])
-    logger.debug(f"Mensajes almacenados: {message.message}, {reply.message}")
-
-    return Response(content=json.dumps(content), media_type="text/json")
+    try:
+        db.Insert([message.message, reply.message])
+        logger.debug(f"Mensajes almacenados: {message.message}, {reply.message}")
+    except Exception as e:
+        logger.error(f"Error al insertar en la base de datos: {str(e)}")
+    return JSONResponse(content=content)
 
 
 @router.post("/amd_detect")

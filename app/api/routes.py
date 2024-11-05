@@ -174,7 +174,7 @@ async def websocket_endpoint(ws: WebSocket):
     cleanup_call_logger()
 
 
-@router.post("/whatsapp")
+@router.get("/whatsapp")
 async def whatsapp(request: Request):
     db = LocalStorage()
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
@@ -187,8 +187,8 @@ async def whatsapp(request: Request):
         toN = toN.split(":")[1]
     else:
     # Manejar el caso donde "To" no está presente
-        print("El campo 'To' no está en los argumentos")
-        return {"error": "El campo 'To' es obligatorio"}, 400
+        print("The field 'To' is not on the args")
+        return {"error": "The field 'To' is obligatory"}, 400
 
     message = Message(
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

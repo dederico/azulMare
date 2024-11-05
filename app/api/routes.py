@@ -252,7 +252,8 @@ async def whatsapp(request: Request):
 
     # Guardar en base de datos
     try:
-        db.Insert([message.message, reply.message])
+        db.Insert(message)  # Guardar el mensaje original
+        db.Insert(reply)    # Guardar el mensaje de respuesta
         logger.debug(f"Mensajes almacenados: {message.message}, {reply.message}")
     except Exception as e:
         logger.error(f"Error al insertar en la base de datos: {str(e)}")

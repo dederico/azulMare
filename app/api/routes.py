@@ -202,7 +202,6 @@ async def whatsapp(request: Request):
     )
 
     messages = db.Search(Message(number=message.number, source="whatsapp"), order='asc', limit=50) or []
-    messages.append(message)
 
     current_date = await get_current_date()
     function_manager = FunctionManager(registered_functions)

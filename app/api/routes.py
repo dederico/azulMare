@@ -248,6 +248,7 @@ async def whatsapp(request: Request):
 
     # Guardar en base de datos
     db.Insert([message, reply])
+    logger.debug(f"Mensajes almacenados: {message}, {reply}")
 
     return Response(content=json.dumps(content), media_type="text/json")
 

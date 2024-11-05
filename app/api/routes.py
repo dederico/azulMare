@@ -202,7 +202,7 @@ async def whatsapp(request: Request):
 
     # Obtener mensajes históricos
     messages = db.Search(Message(number=message.number, source="whatsapp"), order='asc', limit=50) or []
-    logger.debug(f"Mensajes recuperados para {message.number}: {messages}")
+    logger.debug(f"Mensajes recuperados para {message.number}: {message.message}")
 
     # Configurar el LLM
     current_date = await get_current_date()
@@ -247,8 +247,8 @@ async def whatsapp(request: Request):
         content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }
 
     # Guardar en base de datos
-    db.Insert([message, reply])
-    logger.debug(f"Mensajes almacenados: {message}, {reply}")
+    db.Insert([message.message, reply.message])
+    logger.debug(f"Mensajes almacenados: {message.message}, {reply.message}")
 
     return Response(content=json.dumps(content), media_type="text/json")
 

@@ -180,16 +180,15 @@ async def whatsapp(request: Request):
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
 
     args = request.query_params
-    print("Argumentos recibidos:", args)
     toN = args.get("To")
 
     if toN:
         toN = toN.split(":")[1]
     else:
-    # Manejar el caso donde "To" no está presente
         print("The field 'To' is not on the args")
         return {"error": "The field 'To' is obligatory"}, 400
 
+    # Crear el mensaje actual
     message = Message(
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName = args["ProfileName"],
@@ -201,8 +200,11 @@ async def whatsapp(request: Request):
         source="Whatsapp"
     )
 
+    # Obtener mensajes históricos
     messages = db.Search(Message(number=message.number, source="whatsapp"), order='asc', limit=50) or []
+    logger.debug(f"Mensajes recuperados para {message.number}: {messages}")
 
+    # Configurar el LLM
     current_date = await get_current_date()
     function_manager = FunctionManager(registered_functions)
     now = datetime.now()
@@ -217,7 +219,9 @@ async def whatsapp(request: Request):
     for m in messages:
         role = "assistant" if m.direction == "outbound" else "user"
         llm_service.add_to_conversation(role, m.message)
+        logger.debug(f"Agregado a la conversación: rol={role}, mensaje={m.message}")
 
+    # Generar respuesta y enviar por WhatsApp
     response = llm_service.generate_response(message.message)
     response = "".join([token async for token in response])
 
@@ -227,6 +231,7 @@ async def whatsapp(request: Request):
     reply.mtype = "text"
     reply.time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Enviar mensaje usando Twilio
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
     client = Client(account_sid, auth_token)
@@ -241,6 +246,7 @@ async def whatsapp(request: Request):
     except Exception as e:
         content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }
 
+    # Guardar en base de datos
     db.Insert([message, reply])
 
     return Response(content=json.dumps(content), media_type="text/json")

@@ -236,8 +236,8 @@ async def whatsapp(request: Request):
     try:
         message = client.messages.create(
             body=reply.message,
-            from_=toN,
-            to=reply.number
+            from_="whatsapp:"+toN,
+            to="whatsapp:"+reply.number
         )
     except Exception as e:
         content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }

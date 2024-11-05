@@ -234,7 +234,7 @@ async def whatsapp(request: Request):
 
     content = { "status": True, "message": "A response has been sent back to Sender via WhatsApp" }
     try:
-        message = client.messages.create(
+        client.messages.create(
             body=reply.message,
             from_="whatsapp:"+toN,
             to="whatsapp:"+reply.number

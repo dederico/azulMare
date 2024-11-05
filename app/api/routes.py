@@ -180,8 +180,15 @@ async def whatsapp(request: Request):
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
 
     args = request.query_params
-    print(args)
-    toN = args["To"].split(":")[1]
+    print("Argumentos recibidos:", args)
+    toN = args.get("To")
+
+    if toN:
+        toN = toN.split(":")[1]
+    else:
+    # Manejar el caso donde "To" no está presente
+        print("El campo 'To' no está en los argumentos")
+        return {"error": "El campo 'To' es obligatorio"}, 400
 
     message = Message(
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

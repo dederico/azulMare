@@ -218,8 +218,23 @@ async def whatsapp(request: Request):
         function_manager=function_manager
     )
 
+    # Mapeo de roles según la dirección del mensaje
+    role_map = {
+        "outbound": "assistant",
+        "inbound": "user",
+        "system": "system"  # Agrega más roles aquí si es necesario
+    }
+
+    # Añadir mensajes históricos a la conversación con manejo de roles adicionales
     for m in messages:
-        role = "assistant" if m.direction == "outbound" else "user"
+        # Buscar el rol correspondiente en el diccionario o asignar 'unknown' si no se encuentra
+        role = role_map.get(m.direction, "unknown")
+        
+        if role == "unknown":
+            logger.warning(f"Dirección de mensaje desconocida '{m.direction}' para mensaje: {m.message}. No se agregará a la conversación.")
+            continue  # Saltar el mensaje si el rol no es válido
+
+        # Agregar el mensaje al contexto de la conversación
         llm_service.add_to_conversation(role, m.message)
         logger.debug(f"Agregado a la conversación: rol={role}, mensaje={m.message}")
 
@@ -257,6 +272,7 @@ async def whatsapp(request: Request):
         logger.debug(f"Mensajes almacenados: {message.message}, {reply.message}")
     except Exception as e:
         logger.error(f"Error al insertar en la base de datos: {str(e)}")
+    
     return JSONResponse(content=content)
 
 

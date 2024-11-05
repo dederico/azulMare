@@ -192,21 +192,32 @@ async def whatsapp(request: Request):
 
     # Crear el mensaje actual
     message = Message(
-        time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        senderName = args["ProfileName"],
-        message = args["Body"],
-        number = args["From"].split(":")[1],
-        uid = args["WaId"],
-        direction = "inbound",
-        mtype = args["MessageType"].split("/")[0],
+        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        senderName=args["ProfileName"],
+        message=args["Body"],
+        number=args["From"].split(":")[1],
+        uid=args["WaId"],
+        direction="inbound",
+        mtype=args["MessageType"].split("/")[0],
         source="Whatsapp"
     )
 
-    # Obtener mensajes históricos
-    messages = db.Search(Message(number=message.number, source="whatsapp"), order='asc', limit=50) or []
-    logger.debug(f"Mensajes recuperados para {message.number}: {message.message}")
+    # Recuperar mensajes históricos de la conversación
+    try:
+        messages = db.Search(Message(number=message.number, source="whatsapp"), order='asc', limit=50) or []
+        logger.debug(f"Mensajes recuperados para {message.number}: {[m.message for m in messages]}")
+    except Exception as e:
+        logger.error(f"Error al recuperar mensajes históricos: {str(e)}")
+        messages = []
 
-    # Configurar el LLM
+    # Confirmar que estamos construyendo la conversación histórica
+    conversation_history = []
+    for m in messages:
+        role = "assistant" if m.direction == "outbound" else "user"
+        conversation_history.append({"role": role, "content": m.message})
+        logger.debug(f"Mensaje agregado al historial: rol={role}, contenido={m.message}")
+
+    # Configurar el LLM con la conversación histórica
     current_date = await get_current_date()
     function_manager = FunctionManager(registered_functions)
     now = datetime.now()
@@ -218,25 +229,9 @@ async def whatsapp(request: Request):
         function_manager=function_manager
     )
 
-    # Mapeo de roles según la dirección del mensaje
-    role_map = {
-        "outbound": "assistant",
-        "inbound": "user",
-        "system": "system"  # Agrega más roles aquí si es necesario
-    }
-
-    # Añadir mensajes históricos a la conversación con manejo de roles adicionales
-    for m in messages:
-        # Buscar el rol correspondiente en el diccionario o asignar 'unknown' si no se encuentra
-        role = role_map.get(m.direction, "unknown")
-        
-        if role == "unknown":
-            logger.warning(f"Dirección de mensaje desconocida '{m.direction}' para mensaje: {m.message}. No se agregará a la conversación.")
-            continue  # Saltar el mensaje si el rol no es válido
-
-        # Agregar el mensaje al contexto de la conversación
-        llm_service.add_to_conversation(role, m.message)
-        logger.debug(f"Agregado a la conversación: rol={role}, mensaje={m.message}")
+    # Añadir cada mensaje del historial a la sesión del LLM
+    for entry in conversation_history:
+        llm_service.add_to_conversation(entry["role"], entry["content"])
 
     # Generar respuesta y enviar por WhatsApp
     response = llm_service.generate_response(message.message)
@@ -260,7 +255,6 @@ async def whatsapp(request: Request):
             from_="whatsapp:"+toN,
             to="whatsapp:"+reply.number
         )
-        content = {"status": True, "message": "A response has been sent back to Sender via Whatsapp "}
     except Exception as e:
         logger.error(f"Error al enviar mensaje: {str(e)}")
         content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }

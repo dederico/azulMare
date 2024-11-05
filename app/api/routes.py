@@ -180,7 +180,7 @@ async def whatsapp(request: Request):
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
 
     args = request.query_params
-    toN = args["To"].split(":")[1]
+    toN = args["To"]
 
     message = Message(
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

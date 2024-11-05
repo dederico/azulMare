@@ -181,22 +181,31 @@ async def whatsapp(request: Request):
     db = LocalStorage()
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
 
+    # Obtener los parámetros de la URL
     args = request.query_params
-    toN = args.get("To")
+    try:
+        toN = args.get("To")
+        if toN:
+            toN = toN.split(":")[1]
+        else:
+            logger.error("El campo 'To' no está presente en los parámetros")
+            return JSONResponse(content={"error": "El campo 'To' es obligatorio"}, status_code=400)
 
-    if toN:
-        toN = toN.split(":")[1]
-    else:
-        print("The field 'To' is not on the args")
-        return JSONResponse(content={"error": "The field 'To' is obligatory"}, status_code=400)
+        sender_name = args["ProfileName"]
+        body = args["Body"]
+        from_number = args["From"].split(":")[1]
+        wa_id = args["WaId"]
+    except KeyError as e:
+        logger.error(f"Falta el parámetro requerido: {e}")
+        return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
 
     # Crear el mensaje actual
     message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        senderName=args["ProfileName"],
-        message=args["Body"],
-        number=args["From"].split(":")[1],
-        uid=args["WaId"],
+        senderName=sender_name,
+        message=body,
+        number=from_number,
+        uid=wa_id,
         direction="inbound",
         mtype=args["MessageType"].split("/")[0],
         source="Whatsapp"
@@ -209,7 +218,7 @@ async def whatsapp(request: Request):
     except Exception as e:
         logger.error(f"Error al recuperar mensajes históricos: {str(e)}")
         messages = []
-
+    
     # Confirmar que estamos construyendo la conversación histórica
     conversation_history = []
     for m in messages:
@@ -222,20 +231,28 @@ async def whatsapp(request: Request):
     function_manager = FunctionManager(registered_functions)
     now = datetime.now()
 
-    llm_service = OpenAIService(
-        config=config,
-        api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=message.senderName, call_sid=message.uid, date2=current_date, now=now, date=current_date),
-        function_manager=function_manager
-    )
+    try:
+        llm_service = OpenAIService(
+            config=config,
+            api_key=OPENAI_API_KEY,
+            system=system_message.format(customer_name=message.senderName, call_sid=message.uid, date2=current_date, now=now, date=current_date),
+            function_manager=function_manager
+        )
+    except Exception as e:
+        logger.error(f"Error al configurar el servicio OpenAI: {str(e)}")
+        return JSONResponse(content={"error": "Error al configurar el servicio de inteligencia artificial"}, status_code=500)
 
     # Añadir cada mensaje del historial a la sesión del LLM
     for entry in conversation_history:
         llm_service.add_to_conversation(entry["role"], entry["content"])
 
     # Generar respuesta y enviar por WhatsApp
-    response = llm_service.generate_response(message.message)
-    response = "".join([token async for token in response])
+    try:
+        response = llm_service.generate_response(message.message)
+        response = "".join([token async for token in response])
+    except Exception as e:
+        logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
+        return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
 
     reply = deepcopy(message)
     reply.direction = "outbound"
@@ -256,8 +273,8 @@ async def whatsapp(request: Request):
             to="whatsapp:"+reply.number
         )
     except Exception as e:
-        logger.error(f"Error al enviar mensaje: {str(e)}")
-        content = { "status": False, "error": "Cannot reply to WhatsaApp message, possibly Access Denied" }
+        logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
+        content = { "status": False, "error": f"Cannot reply to WhatsApp message, possibly Access Denied: {str(e)}" }
 
     # Guardar en base de datos
     try:
@@ -266,6 +283,7 @@ async def whatsapp(request: Request):
         logger.debug(f"Mensajes almacenados: {message.message}, {reply.message}")
     except Exception as e:
         logger.error(f"Error al insertar en la base de datos: {str(e)}")
+        return JSONResponse(content={"error": "Error al guardar los mensajes en la base de datos"}, status_code=500)
     
     return JSONResponse(content=content)
 

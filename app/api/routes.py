@@ -185,21 +185,23 @@ async def whatsapp(request: Request):
     db = LocalStorage()
     # Obtener los parámetros de la URL
     args = request.query_params
+    
     try:
-        toN = request.values.get('From','')
+        form_data = await request.form()
+        toN = form_data.get("To")
         if toN:
             toN = toN.split(":")[1]
         else:
             logger.error("El campo 'To' no está presente en los parámetros")
-            raise HTTPException(status_code=400, detail="El campo 'To' es obligatorio")
+            raise JSONResponse(content={"error": "El campo 'To' es obligatorio"}, status_code=400)
 
-        sender_name = args["ProfileName"]
-        body = args["Body"]
-        from_number = args["From"].split(":")[1]
-        wa_id = args["WaId"]
+        sender_name = form_data.get("ProfileName")
+        body = form_data.get("Body")
+        from_number = form_data.get("From").split(":")[1]
+        wa_id = form_data.get("WaId")
     except KeyError as e:
         logger.error(f"Falta el parámetro requerido: {e}")
-        raise HTTPException(status_code=400, detail=f"Falta el parámetro {str(e)}")
+        raise JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
 
     # Crear el historial de conversación en memoria para el usuario si no existe
     if from_number not in user_histories:

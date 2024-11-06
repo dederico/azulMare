@@ -88,3 +88,4 @@ amazon-transcribe
 google-auth-oauthlib
 google-api-python-client
 dateparser
+langchain-community

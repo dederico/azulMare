@@ -186,7 +186,7 @@ async def whatsapp(request: Request):
     # Obtener los parámetros de la URL
     args = request.query_params
     try:
-        toN = args.get("To")
+        toN = request.values.get('From','')
         if toN:
             toN = toN.split(":")[1]
         else:

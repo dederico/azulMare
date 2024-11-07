@@ -213,6 +213,7 @@ async def whatsapp(request: Request):
 
     # Agregar mensaje de usuario al historial y guardar en base de datos
     conversation_history.add_user_message(body)
+    message_type = args.get("MessageType", "text").split("/")[0]
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName=sender_name,
@@ -220,7 +221,7 @@ async def whatsapp(request: Request):
         number=from_number,
         uid=wa_id,
         direction="inbound",
-        mtype=args["MessageType"].split("/")[0],
+        mtype=message_type,
         source="Whatsapp"
     )
     db.Insert(user_message)

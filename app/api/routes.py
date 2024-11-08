@@ -264,9 +264,9 @@ async def whatsapp(request: Request):
         logger.debug(f"Historial formateado para el modelo: {formatted_history}")
 
         # Agregar el nuevo mensaje del usuario
-        formatted_history.append({"role": "user", "content": body})
+        #formatted_history.append({"role": "user", "content": body})
 
-        logger.debug(f"Historial formateado APPEND: {formatted_history}")
+        #logger.debug(f"Historial formateado APPEND: {formatted_history}")
 
         # Generar la respuesta del modelo
         model_response = llm_service.generate_response(formatted_history)

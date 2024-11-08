@@ -211,6 +211,7 @@ async def whatsapp(request: Request):
         messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
         for msg in messages_db:
             role = "assistant" if msg.direction == "outbound" else "user"
+            # Usar `add_user_message` y `add_ai_message` según corresponda
             if role == "user":
                 conversation_history.add_user_message(msg.message)
             else:
@@ -254,39 +255,36 @@ async def whatsapp(request: Request):
         )
         
         # Formatear el historial de mensajes para el modelo
-        # formatted_history = [
-        #     {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
-        #     else {"role": "assistant", "content": message.content}
-        #     for message in conversation_history.messages
-        # ]
-
-        # Formatear el historial de mensajes para el modelo
-        formatted_history = []
-        for message in conversation_history.messages:
-            if isinstance(message, HumanMessage):
-                formatted_history.append({"role": "user", "content": message.content})
-            elif isinstance(message, AIMessage):
-                formatted_history.append({"role": "assistant", "content": message.content})
+        formatted_history = [
+            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
+            else {"role": "assistant", "content": message.content}
+            for message in conversation_history.messages
+        ]
 
         # Agregar el nuevo mensaje del usuario
         formatted_history.append({"role": "user", "content": body})
 
-        # Generar la respuesta del modelo y manejar el async_generator
+        # Generar la respuesta del modelo
         model_response = llm_service.generate_response(formatted_history)
-        
-        # Recoger el contenido del generador asincrónico
+
+        # Asegurarse de que model_response sea un string
         response_content = ""
         async for response in model_response:
-            response_content += response
+            response_content += str(response)  # Concatenar cada elemento generado
 
-        # Asegurarse de que response_content sea una cadena de texto
-        response_content = str(response_content)
+        logger.debug(f"Tipo de respuesta del modelo: {type(response_content)} - Contenido: {response_content}")
 
-        logger.debug(f"Respuesta generada: {response_content}")
-
-        # Agregar la respuesta generada al historial y guardar en la base de datos
+        # Asegurarse de que `model_response` sea un `str`
+        if isinstance(response_content, list):
+            # Concatenar elementos en caso de que sea una lista
+            response_content = " ".join([str(item) for item in response_content])
+        elif not isinstance(response_content, str):
+            # Convertir a cadena si es otro tipo de dato
+            response_content = str(response_content)
+            
         conversation_history.add_ai_message(response_content)
 
+        # Guardar la respuesta en la base de datos
         assistant_message = Message(
             time=current_date,
             senderName="Assistant",
@@ -299,25 +297,25 @@ async def whatsapp(request: Request):
         )
         db.Insert(assistant_message)
 
-        # Enviar la respuesta por WhatsApp usando Twilio
-        try:
-            twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-            twilio_client.messages.create(
-                body=response_content,
-                from_="whatsapp:" + toN,
-                to="whatsapp:" + from_number
-            )
-            logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_content}")
-            content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
-        except Exception as e:
-            logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
-            content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
-
-        return JSONResponse(content=content)
-
     except Exception as e:
         logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
         return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
+
+    # Enviar la respuesta por WhatsApp usando Twilio
+    try:
+        twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+        twilio_client.messages.create(
+            body=response_content,
+            from_="whatsapp:" + toN,
+            to="whatsapp:" + from_number
+        )
+        logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_content}")
+        content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
+    except Exception as e:
+        logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
+        content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
+
+    return JSONResponse(content=content)
 
 # @router.post("/whatsapp")
 # async def whatsapp(request: Request):

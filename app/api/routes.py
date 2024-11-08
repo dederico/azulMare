@@ -293,7 +293,7 @@ async def whatsapp(request: Request):
             number=from_number,
             uid=wa_id,
             direction="outbound",
-            mtype="text",
+            mtype=message_type,
             source="Whatsapp"
         )
         db.Insert(assistant_message)

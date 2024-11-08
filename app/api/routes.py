@@ -231,10 +231,10 @@ async def whatsapp(request: Request):
     # Configurar el LLM con el historial
     current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        # Crear el prompt con el historial de mensajes como texto concatenado
+    # Crear el prompt con el historial de mensajes como texto concatenado
         formatted_history = "\n".join(
-            f"{'Assistant' if role == 'assistant' else 'User'}: {msg.content}"
-            for role, msg in conversation_history.messages
+            f"{'Assistant' if message.role == 'assistant' else 'User'}: {message.content}"
+            for message in conversation_history.messages
         )
         
         system_prompt = system_message.format(

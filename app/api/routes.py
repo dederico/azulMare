@@ -211,7 +211,6 @@ async def whatsapp(request: Request):
         messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
         for msg in messages_db:
             role = "assistant" if msg.direction == "outbound" else "user"
-            # Usar `add_user_message` y `add_ai_message` según corresponda
             if role == "user":
                 conversation_history.add_user_message(msg.message)
             else:
@@ -260,6 +259,9 @@ async def whatsapp(request: Request):
             else {"role": "assistant", "content": message.content}
             for message in conversation_history.messages
         ]
+        
+        # Log para verificar la estructura del historial antes de enviarlo
+        logger.debug(f"Historial formateado para el modelo: {formatted_history}")
 
         # Agregar el nuevo mensaje del usuario
         formatted_history.append({"role": "user", "content": body})
@@ -267,19 +269,18 @@ async def whatsapp(request: Request):
         # Generar la respuesta del modelo
         model_response = llm_service.generate_response(formatted_history)
 
-        # Asegurarse de que model_response sea un string
+        # Procesar y concatenar la respuesta del modelo
         response_content = ""
         async for response in model_response:
-            response_content += str(response)  # Concatenar cada elemento generado
+            logger.debug(f"Tipo de respuesta parcial: {type(response)} - Contenido parcial: {response}")
+            response_content += str(response)
 
-        logger.debug(f"Tipo de respuesta del modelo: {type(response_content)} - Contenido: {response_content}")
+        logger.debug(f"Tipo final de respuesta del modelo: {type(response_content)} - Contenido completo: {response_content}")
 
-        # Asegurarse de que `model_response` sea un `str`
+        # Verificar que `response_content` es un string y agregarlo al historial
         if isinstance(response_content, list):
-            # Concatenar elementos en caso de que sea una lista
             response_content = " ".join([str(item) for item in response_content])
         elif not isinstance(response_content, str):
-            # Convertir a cadena si es otro tipo de dato
             response_content = str(response_content)
             
         conversation_history.add_ai_message(response_content)

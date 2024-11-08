@@ -35,6 +35,8 @@ from app.util.database import LocalStorage
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
+from langchain.schema import HumanMessage
+
 
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -252,14 +254,14 @@ async def whatsapp(request: Request):
             function_manager=function_manager
         )
         
-        # Generar respuesta con el historial en formato correcto
+        # Formatear el historial de mensajes para el modelo
         formatted_history = [
-            {"role": "user", "content": message.content} if message["direction"] == "inbound" 
+            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
             else {"role": "assistant", "content": message.content}
             for message in conversation_history.messages
         ]
 
-        # Agregar el nuevo mensaje del usuario al historial para la invocación
+        # Agregar el nuevo mensaje del usuario
         formatted_history.append({"role": "user", "content": body})
 
         # Generar la respuesta del modelo

@@ -284,7 +284,7 @@ async def whatsapp(request: Request):
             response_content = str(response_content)
             
         conversation_history.add_ai_message(response_content)
-
+        logger.warning("Response Content:" + response_content+ "FROM NUMBER:" +from_number+"WA ID:"+wa_id+"MESSAGE TYPE:"+message_type)
         # Guardar la respuesta en la base de datos
         assistant_message = Message(
             time=current_date,
@@ -296,6 +296,7 @@ async def whatsapp(request: Request):
             mtype=message_type,
             source="Whatsapp"
         )
+        logger.warning(assistant_message)
         db.Insert(assistant_message)
 
     except Exception as e:

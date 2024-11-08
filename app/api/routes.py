@@ -185,6 +185,7 @@ async def whatsapp(request: Request):
     db = LocalStorage()
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
+    function_manager = FunctionManager(registered_functions)
     
     try:
         form_data = await request.form()
@@ -228,9 +229,14 @@ async def whatsapp(request: Request):
     db.Insert(user_message)
 
     # Configurar el LLM con el historial
-    current_date = await get_current_date()
-    function_manager = FunctionManager(registered_functions)
+    current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
+        # Crear el prompt con el historial de mensajes como texto concatenado
+        formatted_history = "\n".join(
+            f"{'Assistant' if role == 'assistant' else 'User'}: {msg.content}"
+            for role, msg in conversation_history.messages
+        )
+        
         system_prompt = system_message.format(
             customer_name=sender_name, 
             call_sid=wa_id, 
@@ -246,9 +252,8 @@ async def whatsapp(request: Request):
             function_manager=function_manager
         )
         
-        # Generar respuesta del modelo
-        model_response = llm_service.generate_response([msg for msg in conversation_history])
-
+        # Generar respuesta del modelo con historial en formato texto
+        model_response = llm_service.generate_response(formatted_history + f"\nUser: {body}")
         conversation_history.add_ai_message(model_response)
         
         assistant_message = Message(

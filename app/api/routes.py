@@ -254,11 +254,19 @@ async def whatsapp(request: Request):
         )
         
         # Formatear el historial de mensajes para el modelo
-        formatted_history = [
-            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
-            else {"role": "assistant", "content": message.content}
-            for message in conversation_history.messages
-        ]
+        # formatted_history = [
+        #     {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
+        #     else {"role": "assistant", "content": message.content}
+        #     for message in conversation_history.messages
+        # ]
+
+        # Formatear el historial de mensajes para el modelo
+        formatted_history = []
+        for message in conversation_history.messages:
+            if isinstance(message, HumanMessage):
+                formatted_history.append({"role": "user", "content": message.content})
+            elif isinstance(message, AIMessage):
+                formatted_history.append({"role": "assistant", "content": message.content})
 
         # Agregar el nuevo mensaje del usuario
         formatted_history.append({"role": "user", "content": body})

@@ -247,7 +247,8 @@ async def whatsapp(request: Request):
         )
         
         # Generar respuesta del modelo
-        model_response = llm_service.generate_response(conversation_history.get_messages())
+        model_response = llm_service.generate_response([msg for msg in conversation_history])
+
         conversation_history.add_ai_message(model_response)
         
         assistant_message = Message(

@@ -186,7 +186,7 @@ async def whatsapp(request: Request):
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
-    
+
     try:
         form_data = await request.form()
         toN = form_data.get("To").split(":")[1]
@@ -202,13 +202,18 @@ async def whatsapp(request: Request):
     if from_number not in user_histories:
         user_histories[from_number] = ChatMessageHistory()
 
-    # Recuperar mensajes históricos desde la base de datos
+    conversation_history = user_histories[from_number]
+
+    # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
     try:
         messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
-        conversation_history = user_histories[from_number]
         for msg in messages_db:
             role = "assistant" if msg.direction == "outbound" else "user"
-            conversation_history.append_message(role, msg.message)
+            # Usar `add_user_message` y `add_ai_message` según corresponda
+            if role == "user":
+                conversation_history.add_user_message(msg.message)
+            else:
+                conversation_history.add_ai_message(msg.message)
             logger.debug(f"Mensaje recuperado para historial: rol={role}, contenido={msg.message}")
     except Exception as e:
         logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
@@ -231,20 +236,15 @@ async def whatsapp(request: Request):
     # Configurar el LLM con el historial
     current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-    # Crear el prompt con el historial de mensajes como texto concatenado
-        formatted_history = "\n".join(
-            f"{'Assistant' if message.role == 'assistant' else 'User'}: {message.content}"
-            for message in conversation_history.messages
-        )
-        
+        # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(
-            customer_name=sender_name, 
-            call_sid=wa_id, 
-            date2=current_date, 
-            now=datetime.now(), 
+            customer_name=sender_name,
+            call_sid=wa_id,
+            date2=current_date,
+            now=datetime.now(),
             date=current_date
         )
-        
+
         llm_service = OpenAIService(
             config=config,
             api_key=OPENAI_API_KEY,
@@ -252,10 +252,21 @@ async def whatsapp(request: Request):
             function_manager=function_manager
         )
         
-        # Generar respuesta del modelo con historial en formato texto
-        model_response = llm_service.generate_response(formatted_history + f"\nUser: {body}")
+        # Generar respuesta con el historial en formato correcto
+        formatted_history = [
+            {"role": "user", "content": message.content} if message["direction"] == "inbound" 
+            else {"role": "assistant", "content": message.content}
+            for message in conversation_history.messages
+        ]
+
+        # Agregar el nuevo mensaje del usuario al historial para la invocación
+        formatted_history.append({"role": "user", "content": body})
+
+        # Generar la respuesta del modelo
+        model_response = llm_service.generate_response(formatted_history)
         conversation_history.add_ai_message(model_response)
-        
+
+        # Guardar la respuesta en la base de datos
         assistant_message = Message(
             time=current_date,
             senderName="Assistant",
@@ -267,7 +278,7 @@ async def whatsapp(request: Request):
             source="Whatsapp"
         )
         db.Insert(assistant_message)
-        
+
     except Exception as e:
         logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
         return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)

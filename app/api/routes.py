@@ -229,12 +229,14 @@ async def whatsapp(request: Request):
     # Configurar el LLM con el historial
     current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        llm_service = OpenAIService(api_key=os.getenv("OPENAI_API_KEY"), temperature=0.4)
+        llm_service = OpenAIService(api_key=os.getenv("OPENAI_API_KEY"))
         response_message = llm_service.generate_response([
-            {"role": "system", "content": f"Chat iniciado por {sender_name} el {current_date}."},
+            {"role": "system", "content": f"{system_message} + Chat iniciado por {sender_name} el {current_date}."},
             *conversation_history.messages,
             {"role": "user", "content": body}
-        ]).content
+        ],
+        temperature=0.4
+        ).content
     except Exception as e:
         logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
         raise HTTPException(status_code=500, detail="Error al generar respuesta")

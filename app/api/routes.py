@@ -184,6 +184,7 @@ async def whatsapp(request: Request):
     # Configuración de base de datos
     db = LocalStorage()
     args = request.query_params
+    config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     
     try:
         form_data = await request.form()
@@ -194,7 +195,7 @@ async def whatsapp(request: Request):
         wa_id = form_data.get("WaId")
     except KeyError as e:
         logger.error(f"Falta el parámetro requerido: {e}")
-        raise JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
+        return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
 
     # Crear el historial de conversación en memoria para el usuario si no existe
     if from_number not in user_histories:
@@ -227,43 +228,53 @@ async def whatsapp(request: Request):
     db.Insert(user_message)
 
     # Configurar el LLM con el historial
-    current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    current_date = await get_current_date()
+    function_manager = FunctionManager(registered_functions)
     try:
-        llm_service = OpenAIService(api_key=os.getenv("OPENAI_API_KEY"))
-        response_message = llm_service.generate_response([
-            {"role": "system", "content": f"{system_message} + Chat iniciado por {sender_name} el {current_date}."},
-            *conversation_history.messages,
-            {"role": "user", "content": body}
-        ],
-        temperature=0.4
-        ).content
+        system_prompt = system_message.format(
+            customer_name=sender_name, 
+            call_sid=wa_id, 
+            date2=current_date, 
+            now=datetime.now(), 
+            date=current_date
+        )
+        
+        llm_service = OpenAIService(
+            config=config,
+            api_key=OPENAI_API_KEY,
+            system=system_prompt,
+            function_manager=function_manager
+        )
+        
+        # Generar respuesta del modelo
+        model_response = llm_service.generate_response(conversation_history.get_messages())
+        conversation_history.add_ai_message(model_response)
+        
+        assistant_message = Message(
+            time=current_date,
+            senderName="Assistant",
+            message=model_response,
+            number=from_number,
+            uid=wa_id,
+            direction="outbound",
+            mtype="text",
+            source="Whatsapp"
+        )
+        db.Insert(assistant_message)
+        
     except Exception as e:
         logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error al generar respuesta")
-
-    # Agregar respuesta del modelo al historial y guardar en base de datos
-    conversation_history.add_ai_message(response_message)
-    assistant_message = Message(
-        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        senderName="Assistant",
-        message=response_message,
-        number=from_number,
-        uid=wa_id,
-        direction="outbound",
-        mtype="text",
-        source="Whatsapp"
-    )
-    db.Insert(assistant_message)
+        return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
 
     # Enviar la respuesta por WhatsApp usando Twilio
     try:
         twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
         twilio_client.messages.create(
-            body=response_message,
+            body=model_response,
             from_="whatsapp:" + toN,
             to="whatsapp:" + from_number
         )
-        logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_message}")
+        logger.debug(f"Mensaje enviado con éxito a WhatsApp: {model_response}")
         content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
     except Exception as e:
         logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")

@@ -35,7 +35,7 @@ from app.util.database import LocalStorage
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
-from langchain.schema import HumanMessage
+from langchain.schema import HumanMessage, AIMessage
 
 
 
@@ -266,6 +266,17 @@ async def whatsapp(request: Request):
 
         # Generar la respuesta del modelo
         model_response = llm_service.generate_response(formatted_history)
+
+        logger.debug(f"Tipo de respuesta del modelo: {type(model_response)} - Contenido: {model_response}")
+
+        # Asegurarse de que `model_response` sea un `str`
+        if isinstance(model_response, list):
+            # Concatenar elementos en caso de que sea una lista
+            model_response = " ".join([str(item) for item in model_response])
+        elif not isinstance(model_response, str):
+            # Convertir a cadena si es otro tipo de dato
+            model_response = str(model_response)
+            
         conversation_history.add_ai_message(model_response)
 
         # Guardar la respuesta en la base de datos

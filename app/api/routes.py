@@ -36,7 +36,7 @@ from app.services.functions.implementations.identify import get_customer_identit
 from app.services.functions.implementations.date import get_current_date
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
 from langchain.schema import HumanMessage, AIMessage
-
+from app.services.stt.stt_service import STTService
 
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -189,6 +189,13 @@ async def whatsapp(request: Request):
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
 
+    stt_service = AmazonTranscribeService(
+        region="us-east-1",
+        sample_rate=8000,
+        enhanced=False,
+        language=config["language"]
+    )
+
     try:
         form_data = await request.form()
         toN = form_data.get("To").split(":")[1]
@@ -199,13 +206,20 @@ async def whatsapp(request: Request):
         message_type = form_data.get("MessageType")
         
         # Verificar si el mensaje incluye coordenadas de ubicación
+        latitude, longitude = None, None
         if message_type == "location":
             latitude = form_data.get("Latitude")
             longitude = form_data.get("Longitude")
             body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
-        else:
-            latitude = None
-            longitude = None
+
+        # Verificar si el mensaje incluye un audio
+        elif message_type == "audio":
+            media_url = form_data.get("MediaUrl0")
+            # Usar el Orchestrator para manejar la transcripción de audio
+            transcript = await stt_service.transcribe(media_url)
+            body = transcript  # El cuerpo ahora contiene la transcripción del audio
+            logger.debug(f"Audio transcrito: {body}")
+
             
     except KeyError as e:
         logger.error(f"Falta el parámetro requerido: {e}")

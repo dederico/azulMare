@@ -196,6 +196,17 @@ async def whatsapp(request: Request):
         body = form_data.get("Body")
         from_number = form_data.get("From").split(":")[1]
         wa_id = form_data.get("WaId")
+        message_type = form_data.get("MessageType")
+        
+        # Verificar si el mensaje incluye coordenadas de ubicación
+        if message_type == "location":
+            latitude = form_data.get("Latitude")
+            longitude = form_data.get("Longitude")
+            body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
+        else:
+            latitude = None
+            longitude = None
+            
     except KeyError as e:
         logger.error(f"Falta el parámetro requerido: {e}")
         return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
@@ -221,7 +232,6 @@ async def whatsapp(request: Request):
 
     # Agregar mensaje de usuario al historial y guardar en base de datos
     conversation_history.add_user_message(body)
-    message_type = args.get("MessageType", "text").split("/")[0]
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName=sender_name,
@@ -230,7 +240,9 @@ async def whatsapp(request: Request):
         uid=wa_id,
         direction="inbound",
         mtype=message_type,
-        source="Whatsapp"
+        source="Whatsapp",
+        latitude=latitude,  # Guardar latitud si está disponible
+        longitude=longitude  # Guardar longitud si está disponible
     )
     db.Insert(user_message)
 
@@ -259,14 +271,9 @@ async def whatsapp(request: Request):
             else {"role": "assistant", "content": message.content}
             for message in conversation_history.messages
         ]
-        # Log para verificar la estructura del historial antes de enviarlo
         logger.debug(f"Historial formateado para el modelo: {formatted_history}")
 
-        # Agregar el nuevo mensaje del usuario
-        #formatted_history.append({"role": "user", "content": body})
-
-        #logger.debug(f"Historial formateado APPEND: {formatted_history}")
-        # Convertir `formatted_history` en un solo string para user_input
+        # Convertir formatted_history en un solo string para user_input
         user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
 
         logger.debug(f"Input concatenado para generate_response: {user_input}")
@@ -274,26 +281,18 @@ async def whatsapp(request: Request):
         # Generar la respuesta del modelo usando el string completo de user_input
         model_response = llm_service.generate_response(user_input=user_input)
 
-        logger.debug(model_response)
-        logger.debug(f"Model response type {type(model_response)}")
-
-        # Procesar y concatenar la respuesta del modelo
         response_content = ""
         async for response in model_response:
-            logger.debug(f"Tipo de respuesta parcial: {type(response)} - Contenido parcial: {response}")
             response_content += str(response)
         logger.debug(f"Respuesta parcial: {response_content}")
-        logger.debug(f"Tipo final de respuesta del modelo: {type(response_content)} - Contenido completo: {response_content}")
 
-        # Verificar que `response_content` es un string y agregarlo al historial
         if isinstance(response_content, list):
             response_content = " ".join([str(item) for item in response_content])
         elif not isinstance(response_content, str):
             response_content = str(response_content)
-            
+
         conversation_history.add_ai_message(response_content)
-        logger.warning("Response Content:" + response_content+ "FROM NUMBER:" +from_number+"WA ID:"+wa_id+"MESSAGE TYPE:"+message_type)
-        # Guardar la respuesta en la base de datos
+        
         assistant_message = Message(
             time=current_date,
             senderName="Assistant",
@@ -304,7 +303,6 @@ async def whatsapp(request: Request):
             mtype=message_type,
             source="Whatsapp"
         )
-        logger.warning(assistant_message)
         db.Insert(assistant_message)
 
     except Exception as e:

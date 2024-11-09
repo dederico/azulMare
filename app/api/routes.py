@@ -272,6 +272,7 @@ async def whatsapp(request: Request):
         model_response = llm_service.generate_response(formatted_history)
 
         logger.debug(model_response)
+        logger.debug(f"Model response type {type(model_response)}")
 
         # Procesar y concatenar la respuesta del modelo
         response_content = ""

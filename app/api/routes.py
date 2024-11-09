@@ -259,7 +259,6 @@ async def whatsapp(request: Request):
             else {"role": "assistant", "content": message.content}
             for message in conversation_history.messages
         ]
-        
         # Log para verificar la estructura del historial antes de enviarlo
         logger.debug(f"Historial formateado para el modelo: {formatted_history}")
 
@@ -267,9 +266,13 @@ async def whatsapp(request: Request):
         #formatted_history.append({"role": "user", "content": body})
 
         #logger.debug(f"Historial formateado APPEND: {formatted_history}")
+        # Convertir `formatted_history` en un solo string para user_input
+        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
 
-        # Generar la respuesta del modelo
-        model_response = llm_service.generate_response(messages=formatted_history)
+        logger.debug(f"Input concatenado para generate_response: {user_input}")
+
+        # Generar la respuesta del modelo usando el string completo de user_input
+        model_response = await llm_service.generate_response(user_input=user_input)
 
         logger.debug(model_response)
         logger.debug(f"Model response type {type(model_response)}")

@@ -53,13 +53,13 @@ def send_ticket_email(data: str):
     smtp_port = 587
     smtp_username = "dederico@gmail.com"  # Cambia a tu dirección de correo
     smtp_password = "beas ajht qlgb eshd"  # Cambia a tu contraseña de correo
-    email_to = "dederico@gmail.com,soporte@cybersecuritydemexico.com.mx,banxico@cybersecuritydemexico.com.mx,soporte_uem@cybersecuritydemexico.com.mx,asistencia@cybersecuritydemexico.com.mx" # Cambia a tu dirección
+    email_to = "dederico@gmail.com" # Cambia a tu dirección
 
     # Crear el mensaje de correo
     msg = MIMEMultipart()
     msg['From'] = smtp_username
     msg['To'] = email_to
-    msg['Subject'] = "[BLACKBERRY] Ticket generado por DOMO ({})".format(data["ticket"])
+    msg['Subject'] = "[SENDA] Ticket generado por DOMO ({})".format(data["ticket"])
 
     # Cuerpo del correo
     email_body = "Ticket generado exitosamente.\n"
@@ -96,7 +96,7 @@ def Run(call, config):
     if call.callScript:
         data = Analyze(call, config)
         if data:
-            data["ticket"] = "BB-{}".format(str(call.id).zfill(4))
+            data["ticket"] = "SENDA-{}".format(str(call.id).zfill(4))
             data["time"] = call.callTime
 
             send_ticket_email(data)

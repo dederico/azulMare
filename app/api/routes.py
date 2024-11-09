@@ -269,7 +269,7 @@ async def whatsapp(request: Request):
         #logger.debug(f"Historial formateado APPEND: {formatted_history}")
 
         # Generar la respuesta del modelo
-        model_response = llm_service.generate_response(formatted_history)
+        model_response = llm_service.generate_response(messages=formatted_history)
 
         logger.debug(model_response)
         logger.debug(f"Model response type {type(model_response)}")

@@ -272,7 +272,7 @@ async def whatsapp(request: Request):
         logger.debug(f"Input concatenado para generate_response: {user_input}")
 
         # Generar la respuesta del modelo usando el string completo de user_input
-        model_response = await llm_service.generate_response(user_input=user_input)
+        model_response = llm_service.generate_response(user_input=user_input)
 
         logger.debug(model_response)
         logger.debug(f"Model response type {type(model_response)}")
@@ -282,7 +282,7 @@ async def whatsapp(request: Request):
         async for response in model_response:
             logger.debug(f"Tipo de respuesta parcial: {type(response)} - Contenido parcial: {response}")
             response_content += str(response)
-        logger.debug(f"Respuesta parcial: {response}")
+        logger.debug(f"Respuesta parcial: {response_content}")
         logger.debug(f"Tipo final de respuesta del modelo: {type(response_content)} - Contenido completo: {response_content}")
 
         # Verificar que `response_content` es un string y agregarlo al historial

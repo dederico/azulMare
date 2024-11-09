@@ -271,12 +271,14 @@ async def whatsapp(request: Request):
         # Generar la respuesta del modelo
         model_response = llm_service.generate_response(formatted_history)
 
+        logger.debug(model_response)
+
         # Procesar y concatenar la respuesta del modelo
         response_content = ""
         async for response in model_response:
             logger.debug(f"Tipo de respuesta parcial: {type(response)} - Contenido parcial: {response}")
             response_content += str(response)
-
+        logger.debug(f"Respuesta parcial: {response}")
         logger.debug(f"Tipo final de respuesta del modelo: {type(response_content)} - Contenido completo: {response_content}")
 
         # Verificar que `response_content` es un string y agregarlo al historial

@@ -28,6 +28,17 @@ async def hangup(call_sid):
     response = VoiceResponse()
     response.say("Gracias por tu tiempo.", voice="Polly.Lupe-Neural", language=config["language"])
     response.pause(length=5)
-    client.calls(call_sid).update(twiml=response.to_xml())
-    client.calls(call_sid).update(status="completed")
-    return "La interaccion termino"
+    try:
+        if call_sid.startswith("CA"):
+            # Es un SID de llamada, actualizamos con TwiML y completamos la llamada
+            client.calls(call_sid).update(twiml=response.to_xml())
+            client.calls(call_sid).update(status="completed")
+            return "La interacción de la llamada terminó."
+        elif call_sid.startswith("SM"):
+            # Es un SID de mensaje, enviamos un mensaje de texto
+            client.messages(call_sid).update(body="Gracias por tu tiempo.")
+            return "La interacción del mensaje terminó."
+        else:
+            return "El SID proporcionado no es válido para llamadas o mensajes."
+    except Exception as e:
+        return f"Error al procesar la interacción: {e}"

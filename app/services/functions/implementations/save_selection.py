@@ -135,13 +135,27 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
     Returns:
         string: Mensaje de confirmacion.
     """
-    # Fetch the call
-    call = client.calls(call_sid).fetch()
+    try:
+        # Fetch the call
+        if call_sid.startswith("CA"):
+            call = client.calls(call_sid).fetch()
+            caller_number = call.from_formatted
+            print(f"Caller number from call: {caller_number}")
+        elif call_sid.startswith("SM"):
+            # Es un SID de mensaje
+            message = client.messages(call_sid).fetch()
+            print("ESTE ES EL MENSAJE",message)
+            caller_number = message.from_
+            print(f"Sender number from message: {caller_number}")
+        else:
+            print("El SID proporcionado no es válido para llamadas o mensajes.")
+    except Exception as e:
+        print(f"Error al procesar el SID: {e}")
     # Fetch the token
     token = get_token()
     # Get the caller's phone number
-    caller_number = call.from_formatted  # Use `from_formatted` to get the caller's phone number
-    print(f"Caller number: {caller_number}")
+    #caller_number = call.from_formatted  # Use `from_formatted` to get the caller's phone number
+    #print(f"Caller number: {caller_number}")
 
     # Save selections for each question
     await find_row_and_update_selection(caller_number, 1, selection1)
@@ -176,7 +190,7 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
     payload = {
         "idAsunto": selection1,
         "nombreCiudadano": selection2 + " " + selection3,
-        "numWhastApp": caller_number,
+        "numWhastApp": caller_number.replace("whatsapp:+", ""),
         "anonimo": False,
         "detalleSolicitud": selection4,
         "_lat": "0",

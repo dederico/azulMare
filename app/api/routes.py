@@ -183,6 +183,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
+    logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
     # Configuración de base de datos
     db = LocalStorage()
     args = request.query_params
@@ -197,6 +198,10 @@ async def whatsapp(request: Request):
         from_number = form_data.get("From").split(":")[1]
         wa_id = form_data.get("WaId")
         message_type = form_data.get("MessageType")
+        uid = form_data.get("SmsMessageSid")
+
+        logger.debug(f"Datos recibidos: toN={toN}, sender_name={sender_name}, body={body}, "
+                     f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
         
         # Verificar si el mensaje incluye coordenadas de ubicación
         latitude, longitude = None, None
@@ -204,6 +209,7 @@ async def whatsapp(request: Request):
             latitude = form_data.get("Latitude")
             longitude = form_data.get("Longitude")
             body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
+            logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}")
 
         # Verificar si el mensaje incluye un audio
         elif message_type == "audio":
@@ -217,12 +223,14 @@ async def whatsapp(request: Request):
 
     # Crear el historial de conversación en memoria para el usuario si no existe
     if from_number not in user_histories:
+        logger.debug(f"Creando nuevo historial de conversación para el usuario: {from_number}")
         user_histories[from_number] = ChatMessageHistory()
 
     conversation_history = user_histories[from_number]
 
     # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
     try:
+        logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
         messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
         for msg in messages_db:
             role = "assistant" if msg.direction == "outbound" else "user"
@@ -241,7 +249,7 @@ async def whatsapp(request: Request):
         senderName=sender_name,
         message=body,
         number=from_number,
-        uid=wa_id,
+        uid=uid,
         direction="inbound",
         mtype=message_type,
         source="Whatsapp",
@@ -256,7 +264,7 @@ async def whatsapp(request: Request):
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(
             customer_name=sender_name,
-            call_sid=wa_id,
+            call_sid=uid,
             date2=current_date,
             now=datetime.now(),
             date=current_date

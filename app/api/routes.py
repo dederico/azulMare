@@ -174,7 +174,7 @@ async def websocket_endpoint(ws: WebSocket):
     db.Update(call)
     
     hooks = Hooks()
-    for hook in hooks.Get(True):
+    for hook in hooks.Get(False):
         if hook["type"] == "POST_CALL":
             logger.debug("Hook found for call executing function " + hook["name"])
             hook["function"](call, config)

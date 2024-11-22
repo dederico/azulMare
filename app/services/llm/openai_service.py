@@ -61,6 +61,7 @@ class OpenAIService(LLMService):
             messages=self.conversation_history,
             stream=True,
             tool_choice="auto",
+            temperature=0.1,
             tools=self.function_manager.get_function_definition(),
         )
         return generator

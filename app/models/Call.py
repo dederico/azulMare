@@ -1,4 +1,25 @@
 from .meta import DirtyTrackingMeta
+from pydantic import BaseModel
+
+class ScriptResponse(BaseModel):
+    role: str
+    dialog: str
+
+    class Config:
+        from_attributes = True
+
+class CallResponse(BaseModel):
+    id: int
+    callUid: str
+    callerName: str
+    callNumber: str
+    callStatus: str
+    callDirection: str
+    callDuration: int
+    callTime: str
+
+    class Config:
+        from_attributes = True
 
 class Call(metaclass=DirtyTrackingMeta):
     callerName: str

@@ -1,4 +1,16 @@
 from .meta import DirtyTrackingMeta
+from pydantic import BaseModel
+
+class NotificationResponse(BaseModel):
+    nType: str
+    nCategory: str
+    nTitle: str
+    nBody: str
+    nTime: str
+    nAck: bool
+
+    class Config:
+        from_attributes = True
 
 class Notification(metaclass=DirtyTrackingMeta):
     nType: str

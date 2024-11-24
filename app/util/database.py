@@ -132,15 +132,16 @@ class LocalStorage:
             logger.error(e)
             return None
 
-    def Search(self, model, single=False, json=False, limit=0, order='desc', order_col='id'):
+    def Search(self, model, single=False, json=False, limit=0, order='desc', order_col='id', cols=[]):
         try:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
+            cols = sql.SQL("*") if len(cols) == 0 else sql.SQL(", ").join(map(sql.Identifier, cols))
             attributes = {attr: getattr(model, attr) for attr in model.__dict__.keys() if not attr.startswith("_")}
 
             query_parts = [
-                "SELECT * FROM {table}",
+                "SELECT {cols} FROM {table}",
                 "WHERE " + " AND ".join([f"\"{sql.Identifier(attr).string}\" = %s" for attr in attributes])
             ]
 
@@ -151,7 +152,8 @@ class LocalStorage:
                 query_parts.append(f"LIMIT {limit}")
 
             query = sql.SQL(" ".join(query_parts)).format(
-                table=sql.Identifier(model.__class__.__name__.lower() + 's')
+                table=sql.Identifier(model.__class__.__name__.lower() + 's'),
+                cols=cols
             )
 
             cursor.execute(query, list(attributes.values()))
@@ -300,29 +302,33 @@ class LocalStorage:
             logger.error(e)
             return False
     
-    def Remove(self, data):
+    def Remove(self, data, allRecords=False):
         try:
-            if data and not hasattr(data, 'id'):
-                logger.warning("Unique ID not found in data instance, skipping removal")
-                return False
-    
             logger.debug("Trying to remove existing model entry in local storage")
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
     
             table_name = f"{type(data).__name__.lower()}s"
-            payload = {field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' and field != 'id'}
-            fields = ' AND '.join([f"\"{sql.Identifier(field).string}\" = %s" for field in payload.keys()])
+            if not allRecords:
+                payload = {field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' and field != 'id'}
+                fields = ' AND '.join([f"\"{sql.Identifier(field).string}\" = %s" for field in payload.keys()])
     
-            query = sql.SQL('''
-                DELETE FROM {table}
-                WHERE id = %s AND {fields}
-            ''').format(
-                table=sql.Identifier(table_name),
-                fields=sql.SQL(fields)
-            )
+                query = sql.SQL('''
+                    DELETE FROM {table}
+                    WHERE {fields}
+                ''').format(
+                    table=sql.Identifier(table_name),
+                    fields=sql.SQL(fields)
+                )
+                cursor.execute(query, list(payload.values()))
+            else:
+                query = sql.SQL('''
+                    DELETE FROM {table}
+                ''').format(
+                    table=sql.Identifier(table_name)
+                )
     
-            cursor.execute(query, [data.id] + list(payload.values()))
+                cursor.execute(query)
     
             conn.commit()
             logger.info("Existing record removed successfully in local storage")

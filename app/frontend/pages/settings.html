@@ -20,6 +20,24 @@
   .nav-item {
     padding: 0px;
   }
+
+  .custom-control-input:checked ~ .custom-control-label::before {
+    border-color: #007bff;
+    background-color: #007bff;
+  }
+
+  .custom-control-input:checked ~ .custom-control-label {
+    font-size: 1.15rem;
+  }
+
+  .custom-control-input {
+    width: 10rem;
+    height: 10rem;
+  }
+
+  .custom-control-label {
+    font-size: 1.15rem;
+  }
 </style>
 
 <ul class="nav nav-tabs nav-tabs-custom">
@@ -42,15 +60,15 @@
     </a>
   </li>
   <li class="nav-item col-2">
-    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#tts">
+    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#speech">
       <i class="fas fa-volume-up fa-lg nav-icon"></i>
-      TTS
+      Speech Engine
     </a>
   </li>
   <li class="nav-item col-2">
-    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#stt">
-      <i class="fas fa-microphone fa-lg nav-icon"></i>
-      STT
+    <a class="nav-link d-flex align-items-center" data-toggle="tab" href="#api">
+      <i class="fas fa-diagram-project fa-lg nav-icon"></i>
+      API's
     </a>
   </li>
   <li class="nav-item col-2">
@@ -249,11 +267,31 @@
         </form>
     </div>
   </div>
-  <div class="tab-pane container" id="tts">
-    <label>TTS Service Settings</label>
+  <div class="tab-pane container" id="speech">
+    <label>Speech Engine Settings</label>
   </div>
-  <div class="tab-pane container" id="stt">
-    <label>STT Service Settings</label>
+  <div class="tab-pane container" id="api">
+    <form method="POST" action="/admin/configs/api?json=true">
+    <div class="form-group">
+      <label for="api-toggle">Enable API Integration</label>
+      <div class="custom-control custom-checkbox">
+        <input type="checkbox" class="custom-control-input" id="api-toggle" name="apiStatus" checked>
+        <label class="custom-control-label" for="api-toggle">Enable</label>
+      </div>
+    </div>
+  
+    <div class="form-group">
+      <label for="api-key">API Key</label>
+      <input type="text" id="api-key" class="form-control" value="{{ data.configs.apiKey }}" name="apiKey" readonly>
+    </div>
+
+    <div class="form-group">
+      <button type="button" class="btn btn-primary" id="refresh-api-key">Refresh API Key</button>
+      <button type="button" class="btn btn-secondary" id="copy-api-key">Copy API Key</button>
+      <a target="_blank" href="/api/docs" class="btn btn-info">View Documentation</a>
+      <button style="float: right;" type="submit" class="btn btn-success">Update</button>
+    </div>
+    </form>
   </div>
   <div class="tab-pane container" id="llm">  
     <form method="POST" enctype="multipart/form-data" action="/admin/configs/llm?json=true">
@@ -309,6 +347,18 @@
             $element.prop('checked', config[key]);
         else
             $element.val(config[key]);
+    });
+
+    document.getElementById('refresh-api-key').addEventListener('click', function() {
+        const newApiKey = generateApiKey();
+        document.getElementById('api-key').value = newApiKey;
+    });
+
+    $("#copy-api-key").click(function() {
+        const apiKeyField = document.getElementById('api-key');
+        apiKeyField.select();
+        document.execCommand('copy');
+        Toast('Hurrah!', 'API Key copied to clipboard!');
     });
 
 
@@ -374,6 +424,16 @@
             Toast("Oops", error, 'error');
           }
       });
+  }
+
+  function generateApiKey() {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz!@#$^()_|,.';
+    let apiKey = '';
+    for (let i = 0; i < 64; i++) {
+      const randomIndex = Math.floor(Math.random() * characters.length);
+      apiKey += characters[randomIndex];
+    }
+    return apiKey;
   }
 
   function callFile(f) 

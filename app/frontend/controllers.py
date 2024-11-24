@@ -2,15 +2,16 @@ import json
 import os
 import platform
 from openai import OpenAI
-from datetime import datetime
 from threading import Thread
+from datetime import datetime
 from app.models.File import File
 from app.models.Call import Call
-from app.models.Message import Message
 from app.models.Config import Config
-from app.models.Notification import Notification
-from app.util.database import LocalStorage
+from app.models.Message import Message
 from app.outbound import InitOutboundCalls
+from app.util.database import LocalStorage
+from app.api.endpoints import app as endpoints
+from app.models.Notification import Notification
 
 class Context:
     def __init__(self, fragment, method, payload=None):
@@ -182,6 +183,15 @@ class Context:
                     formatted_time = datetime_obj.strftime('%Y-%m-%d %H:%M:%S')
                     os.system(f'date -s "{formatted_time}"')
                 del self.payload["datetime"]
+            
+            if "apiStatus" in self.payload:
+                from app.main import app
+                if self.payload["apiStatus"].lower() == "true":
+                    app.mount("/api", endpoints)
+                else:
+                    route = [ r for r in app.router.routes if "/api" in str(r) ]
+                    if len(route) == 1:
+                        app.router.routes.remove(route[0])
 
             for key, value in self.payload.items():
                 config = Config(name=key)

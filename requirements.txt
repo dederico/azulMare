@@ -91,3 +91,4 @@ dateparser
 langchain-community
 SpeechRecognition
 pydub
+email-validator

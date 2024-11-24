@@ -38,7 +38,7 @@ from langchain_community.chat_message_histories.in_memory import ChatMessageHist
 from langchain.schema import HumanMessage, AIMessage
 from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
-from app.services.functions.implementations.save_selection import save_client_selection, selection1, selection2, selection3, selection4, selection5, selection6, selection7
+from app.services.functions.implementations.save_selection import save_client_selection
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
@@ -119,7 +119,8 @@ async def websocket_endpoint(ws: WebSocket):
     call_sid = websocket_handler.call_sid
     customer_identity = await get_customer_identity(call_sid)
     call.callerName = customer_identity
-    solicitud_id = await save_client_selection(call_sid,selection1,selection2,selection3,selection4,selection5,selection6,selection7)
+    
+    solicitud_id = await save_client_selection()
 
     logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(

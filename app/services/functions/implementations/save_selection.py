@@ -120,105 +120,98 @@ async def find_row_and_update_selection(phone_number, question_number, selection
     print("Phone number not found.")
 
 async def save_client_selection(call_sid: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str):
-    """Guardar la información de las preguntas segun las respuestas del cliente.
+    """
+    Guardar la información de las preguntas según las respuestas del cliente.
 
     Args:
-        call_sid (string): Indicador unico de la llamada. Proporcionado en mensaje del sistema.
-        selection1 (string): Respuesta a la pregunta 1.
-        selection2 (string): Respuesta a la pregunta 2.
-        selection3 (string): Respuesta a la pregunta 3.
-        selection4 (string): Respuesta a la pregunta 4.
-        selection5 (string): Respuesta a la pregunta 5.
-        selection6 (string): Respuesta a la pregunta 6.
-        selection7 (string): Respuesta a la pregunta 7.
+        call_sid (str): Indicador único de la llamada. Proporcionado en mensaje del sistema.
+        selection1 (str): Respuesta a la pregunta 1.
+        selection2 (str): Respuesta a la pregunta 2.
+        selection3 (str): Respuesta a la pregunta 3.
+        selection4 (str): Respuesta a la pregunta 4.
+        selection5 (str): Respuesta a la pregunta 5.
+        selection6 (str): Respuesta a la pregunta 6.
+        selection7 (str): Respuesta a la pregunta 7.
 
     Returns:
-        string: Mensaje de confirmacion.
+        str: Mensaje de confirmación.
     """
     try:
-        # Fetch the call
+        # Determinar el número del usuario según el SID
         if call_sid.startswith("CA"):
             call = client.calls(call_sid).fetch()
             caller_number = call.from_formatted
             print(f"Caller number from call: {caller_number}")
         elif call_sid.startswith("SM"):
-            # Es un SID de mensaje
             message = client.messages(call_sid).fetch()
-            print("ESTE ES EL MENSAJE",message)
             caller_number = message.from_
             print(f"Sender number from message: {caller_number}")
         else:
-            print("El SID proporcionado no es válido para llamadas o mensajes.")
+            raise ValueError("El SID proporcionado no es válido para llamadas o mensajes.")
     except Exception as e:
         print(f"Error al procesar el SID: {e}")
-    # Fetch the token
-    token = get_token()
-    # Get the caller's phone number
-    #caller_number = call.from_formatted  # Use `from_formatted` to get the caller's phone number
-    #print(f"Caller number: {caller_number}")
+        return "Error al procesar el identificador del cliente."
 
-    # Save selections for each question
-    await find_row_and_update_selection(caller_number, 1, selection1)
-    await find_row_and_update_selection(caller_number, 2, selection2)
-    await find_row_and_update_selection(caller_number, 3, selection3)
-    await find_row_and_update_selection(caller_number, 4, selection4)
-    await find_row_and_update_selection(caller_number, 5, selection5)
-    await find_row_and_update_selection(caller_number, 6, selection6)
-    await find_row_and_update_selection(caller_number, 7, selection7)
+    try:
+        # Actualizar las selecciones
+        await find_row_and_update_selection(caller_number, 1, selection1)
+        await find_row_and_update_selection(caller_number, 2, selection2)
+        await find_row_and_update_selection(caller_number, 3, selection3)
+        await find_row_and_update_selection(caller_number, 4, selection4)
+        await find_row_and_update_selection(caller_number, 5, selection5)
+        await find_row_and_update_selection(caller_number, 6, selection6)
+        await find_row_and_update_selection(caller_number, 7, selection7)
+    except Exception as e:
+        print(f"Error al guardar selecciones en la base de datos: {e}")
+        return "Error al guardar las selecciones."
 
-
-    
-    # Prepare the JSON payload
-    # payload = {
-    #     "fname": selection1,  # Example mapping
-    #     "lname": selection2,  # Example mapping
-    #     "email": "Anónimo",  # Example hardcoded value
-    #     "phone": caller_number,
-    #     "titulo": caller_number,  # Example hardcoded value
-    #     "descripcion": selection3,  # Example mapping
-
-    #     "consejerias": "[\"fef66114-d97c-4f25-ad10-fd8af1ebef71\"]",
-    #     "tipo": TIPO,
-    #     "estado": ESTADO,
-    #     "htmlContent": HTML_CONTENT,
-    #     "canal": "Centralita Voz",  # Example hardcoded value
-    #     "idCli": "-1",  # Example hardcoded value
-    #     "idConversacion": -1,  # Example hardcoded value
-    #     "conector_id": -1  # Example hardcoded value
-    # }
-
+    # Construcción del payload
     payload = {
         "idAsunto": selection1,
-        "nombreCiudadano": selection2 + " " + selection3,
+        "nombreCiudadano": f"{selection2} {selection3}",
         "numWhastApp": caller_number.replace("whatsapp:+", ""),
         "anonimo": False,
         "detalleSolicitud": selection4,
         "_lat": "0",
         "_long": "0",
         "_direccionReporte": {
-            "calle": f"{selection5}",
-            "noExt": f"{selection6}",
-            "colonia": f"{selection7}",
+            "calle": selection5,
+            "noExt": selection6,
+            "colonia": selection7,
             "entreCalles": "Aramberri",
-            "referencias": f"{selection4}"
+            "referencias": selection4
         }
     }
-    
-    print(payload)
 
-    # Prepare the headers
+    print(f"Payload preparado: {payload}")
+
+    # Headers para la solicitud POST
+    token = get_token()
     headers = {
         "accept": "text/plain",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
-    
-    # Send the JSON payload via POST to the endpoint
+
     try:
+        # Envío del payload
         response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
-        response.raise_for_status()  # Raise an HTTPError on bad status
-        print(f"POST to {POST_ENDPOINT} successful. Response: {response.status_code} {response.text}")
+        response.raise_for_status()
+        response_data = response.json()
+        print(f"POST exitoso. Respuesta: {response_data}")
+
+        if response_data.get("success"):
+            solicitud_id = response_data.get("data", {}).get("solicitud", {}).get("idSoliciud")
+            print(f"Solicitud creada con ID: {solicitud_id}")
+            return f"Selecciones guardadas correctamente. ID de la solicitud: {solicitud_id}"
+        else:
+            print(f"Error en la respuesta: {response_data.get('message')}")
+            return "Error en la respuesta del servidor."
+
     except requests.exceptions.RequestException as e:
-        print(f"POST to {POST_ENDPOINT} failed: {e}")
-    
-    return "Selecciones guardadas correctamente."
+        print(f"Error al enviar el POST: {e}")
+        return "Error al guardar las selecciones en el servidor."
+
+    except Exception as e:
+        print(f"Error inesperado: {e}")
+        return "Error inesperado durante el proceso."

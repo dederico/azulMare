@@ -6,3 +6,4 @@ uploads/
 serve
 *.log
 *.db
+.venv

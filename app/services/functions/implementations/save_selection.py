@@ -6,6 +6,11 @@ import os
 import re
 import requests
 import json
+import uuid
+
+def get_uuid():
+    clave = uuid.uuid1()
+    return clave
 
 def get_token():
     req_url = "https://api.neurocity.solutions/api/auth/authenticate"
@@ -153,6 +158,7 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
         print(f"Error al procesar el SID: {e}")
     # Fetch the token
     token = get_token()
+    clave = get_uuid()
     # Get the caller's phone number
     #caller_number = call.from_formatted  # Use `from_formatted` to get the caller's phone number
     #print(f"Caller number: {caller_number}")
@@ -200,7 +206,7 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
             "noExt": f"{selection6}",
             "colonia": f"{selection7}",
             "entreCalles": "Aramberri",
-            "referencias": f"{selection4}"
+            "referencias": f"{selection4}+' '+'reporte número:'{clave}"
         }
     }
     

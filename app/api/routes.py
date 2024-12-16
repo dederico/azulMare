@@ -17,6 +17,7 @@ from app.core.orchestrator import Orchestrator
 from app.services.stt.deepgram_service import DeepgramService
 from app.services.stt.amazon_service import AmazonTranscribeService
 from app.services.llm.openai_service import OpenAIService
+from app.services.llm.gemini_service import GeminiService
 from app.services.tts.eleven_service import ElevenTTSService
 from app.services.tts.polly_service import AmazonTTSService
 from app.services.functions.function_registry import registered_functions
@@ -46,6 +47,7 @@ VOICE_ID = os.environ.get("VOICE_ID")
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
+GOOGLE_SEARCH_API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
@@ -120,12 +122,20 @@ async def websocket_endpoint(ws: WebSocket):
     call.callerName = customer_identity
 
     logger.debug("Initializing LLM service for the new call")
-    llm_service = OpenAIService(
-        config=config,
-        api_key=OPENAI_API_KEY,
+    # llm_service = OpenAIService(
+    #     config=config,
+    #     api_key=OPENAI_API_KEY,
+    #     system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
+    #     function_manager=function_manager
+    # )
+
+    llm_service = GeminiService(
+        config = config,
+        api_key=GOOGLE_SEARCH_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager
     )
+
 
     # tts_service = ElevenTTSService(
     #     api_key=ELEVENLABS_API_KEY,
@@ -270,12 +280,13 @@ async def whatsapp(request: Request):
             date=current_date
         )
 
-        llm_service = OpenAIService(
+        llm_service = GeminiService(
             config=config,
             api_key=OPENAI_API_KEY,
             system=system_prompt,
             function_manager=function_manager
         )
+
         
         # Formatear el historial de mensajes para el modelo
         formatted_history = [

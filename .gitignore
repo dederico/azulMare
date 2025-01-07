@@ -1,8 +1,27 @@
+# Ignorar cachés de Python
 __pycache__/
-uploads/
+*.py[cod]
+*.pyo
+
+# Ignorar archivos de entorno virtual
+.venv/
+venv/
+__venv__/
+
+# Ignorar archivos de configuración local
 .env
 .DS_Store
-.vscode
-serve
+.vscode/
+
+# Ignorar directorios de subidas
+uploads/
+
+# Ignorar binarios y logs
 *.log
+serve
 *.db
+
+# Ignorar cualquier archivo binario generado
+bin/
+
+.codegpt

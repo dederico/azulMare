@@ -122,19 +122,19 @@ async def websocket_endpoint(ws: WebSocket):
     call.callerName = customer_identity
 
     logger.debug("Initializing LLM service for the new call")
-    # llm_service = OpenAIService(
-    #     config=config,
-    #     api_key=OPENAI_API_KEY,
-    #     system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
-    #     function_manager=function_manager
-    # )
-
-    llm_service = GeminiService(
-        config = config,
-        api_key=GOOGLE_SEARCH_API_KEY,
+    llm_service = OpenAIService(
+        config=config,
+        api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager
     )
+
+    # llm_service = GeminiService(
+    #     config = config,
+    #     api_key=GOOGLE_SEARCH_API_KEY,
+    #     system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
+    #     function_manager=function_manager
+    # )
 
 
     # tts_service = ElevenTTSService(

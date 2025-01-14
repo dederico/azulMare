@@ -26,10 +26,10 @@ class WebSocketHandler:
     async def process_stream(self):
         try:
             while True:
-                logger.debug("Waiting for customer Audio_Message")
+                #logger.debug("Waiting for customer Audio_Message")
                 data = await self.websocket.receive_json()
 
-                logger.debug("Received customer audio, processing chunk")
+                #logger.debug("Received customer audio, processing chunk")
                 chunk = await self.handle_event(data)
                 if chunk:
                     yield chunk
@@ -70,7 +70,7 @@ class WebSocketHandler:
             return raw_audio_data
 
     async def generate_silence(self, sample_width=2, sample_rate=8000):
-        logger.debug("Generating and forwarding silence frame")
+        # logger.debug("Generating and forwarding silence frame")
         num_samples = int(self.duration * sample_rate)
         silence_data = b"\x00" * (num_samples * sample_width)
         return audioop.lin2ulaw(silence_data, sample_width)

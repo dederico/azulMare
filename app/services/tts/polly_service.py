@@ -7,7 +7,7 @@ import time
 from app.models.Config import Config
 from app.util.database import LocalStorage
 from app.services.tts.tts_service import TTSService
-
+import wave
 # Configuration constants
 SAMPLE_RATE = 8000
 SAMPLE_WIDTH = 2
@@ -65,9 +65,14 @@ class AmazonTTSService(TTSService):
                 LanguageCode=self.lang,
             )  # type: ignore
             mulaw_audio = await synth["AudioStream"].read()
+            with wave.open('output.wav', 'wb') as wf:
+                wf.setnchannels(1)  # Mono audio
+                wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
+                wf.setframerate(SAMPLE_RATE)  # Frecuencia de muestreo
+                wf.writeframes(mulaw_audio)
             audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)
             # audio = audioop.ulaw2lin(mulaw_audio, SAMPLE_WIDTH)
-            base64_audio = base64.b64encode(mulaw_audio).decode("utf-8")
+            base64_audio = base64.b64encode(audio).decode("utf-8")
 
             return base64_audio
 

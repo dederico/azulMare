@@ -20,7 +20,7 @@ class WebSocketHandler:
         self.callid=None
         self.number=None
         self.pattern=r"^[a-zA-Z0-9]+#[a-zA-Z0-9]+#[a-zA-Z0-9]+$"
-    async def get_lead(dnid: str):
+    async def get_lead(self,dnid: str):
         """
         Fetches lead information associated with the provided DNID.
 

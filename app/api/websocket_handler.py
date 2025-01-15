@@ -2,6 +2,8 @@ import base64
 import audioop
 import re
 import httpx
+import http.client
+import json
 from fastapi import WebSocket,HTTPException
 from app.util.logger import logger
 from fastapi.websockets import WebSocketState
@@ -41,7 +43,39 @@ class WebSocketHandler:
             raise HTTPException(status_code=500, detail=f"Failed to fetch lead information: {e}")
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=response.status_code, detail=f"Error from lead service: {e.response.text}")
+    def actions_call(self,call_id: str,action:str,data:bytes=None):
+        """
+        Ends an active call associated with the specified call_id.
 
+        :param call_id: The ID of the ongoing call.
+        :param action: The action to execute, can be hangup,transfer_agent or playback 
+        :return: JSON response confirming the hangup.
+        """
+        payload=None
+        if data:
+            # audio_base64 = base64.b64encode(data).decode(encoding="utf-8")
+            payload = {
+                "call_id": int(call_id),
+                "action": action,
+                "data": {"audio_base64": f"{data}"}
+            }
+        else:
+            payload = {
+                "call_id": int(call_id),
+                "action": action
+            }
+        logger.debug(f"{call_id}")
+        conn = http.client.HTTPSConnection("websockets.ccc.uno")
+        params = payload  # Parámetros de consulta
+        headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
+        data = json.dumps(params)
+        logger.debug(data)
+        logger.debug(conn)
+        conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
+        response = conn.getresponse()
+        logger.debug(response.status)
+        logger.debug(response.read().decode())
+        
     async def connect(self):
         await self.websocket.accept()
 
@@ -126,13 +160,15 @@ class WebSocketHandler:
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
             self.playsequence.append(audio_data)
-            await self.websocket.send_json(
-                {
-                    "event": "media",
-                    "streamSid": self.stream_sid,
-                    "media": {"payload": audio_data},
-                }
-            )
+            
+            self.actions_call(self.call_sid,"playback",audio_data)
+            # await self.websocket.send_json(
+            #     {
+            #         "event": "media",
+            #         "streamSid": self.stream_sid,
+            #         "media": {"payload": audio_data},
+            #     }
+            # )
         else:
             logger.debug("User is not connected anymore skipping audio sending to customer")
 

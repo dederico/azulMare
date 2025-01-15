@@ -70,14 +70,15 @@ class AmazonTTSService(TTSService):
                 wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
                 wf.setframerate(SAMPLE_RATE)  # Frecuencia de muestreo
                 wf.writeframes(mulaw_audio)
-            
+            base64_audio=None
             with open('output.wav', "rb") as f:
                 response_audio = f.read()
-            audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)
+                base64_audio = base64.b64encode(response_audio).decode("utf-8")
+                return base64_audio
+            # audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)
             # audio = audioop.ulaw2lin(mulaw_audio, SAMPLE_WIDTH)
-            base64_audio = base64.b64encode(response_audio).decode("utf-8")
 
-            return base64_audio
+            # return base64_audio
 
         # except Exception as e:
         #     print(f"Error in AmazonTTS: {e}")

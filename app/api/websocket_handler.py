@@ -81,7 +81,7 @@ class WebSocketHandler:
         # Convert to a file-like object
         audio_file = io.BytesIO(audio_data)
         # Convert the raw audio data to a Pydub AudioSegment
-        audio = AudioSegment.from_file(audio_file, format="raw", frame_rate=8000, channels=1, sample_width=2)
+        audio = AudioSegment.from_file(audio_file, format="raw", frame_rate=8000, channels=1, sample_width=1)
         # Export the audio as a WAV file
         audio.export(file_path, format="wav")
         logger.debug(f"Audio saved to {file_path}")

@@ -67,7 +67,8 @@ class WebSocketHandler:
                         context=await self.get_lead(dnid=dnid)
                         logger.warning(f"context: {context}")
                 elif 'bytes' in data:
-                    chunk = await self.handle_event(data)
+                    datos= data["bytes"]
+                    chunk = await self.handle_event(datos)
                 #logger.debug("Received customer audio, processing chunk")
                 
                 if chunk:

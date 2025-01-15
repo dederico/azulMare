@@ -124,7 +124,6 @@ class WebSocketHandler:
             raise e
 
     async def handle_event(self, data):
-        self.switch="listening"
         if 'text' in data:
             datos = data["text"].strip('"').strip()
             if re.match(self.pattern, datos):
@@ -164,9 +163,11 @@ class WebSocketHandler:
             # Check if the audio is loud enough and in "listening" state
             if rms > 300 and (self.switch == "listening" or self.switch is None):
                 self.playsequence.append(audio_payload)  # Append the raw payload
+                logger.debug("Si es audio")
                 return raw_audio_data
             else:
                 # Generate silence if below threshold or not in listening state
+                logger.debug("Es silencio")
                 raw_audio_data = await self.generate_silence()
                 return raw_audio_data
         except (binascii.Error, ValueError) as e:
@@ -199,7 +200,7 @@ class WebSocketHandler:
     async def send_mark(self, mark):
         logger.debug("Sending {} mark to Twilio".format(mark))
         if self.is_connected:
-            self.switch="listening"
+            self.switch=mark
             # await self.websocket.send_json(
             #     {
             #         "event": "mark",

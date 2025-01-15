@@ -65,7 +65,8 @@ class AmazonTTSService(TTSService):
                 LanguageCode=self.lang,
             )  # type: ignore
             mulaw_audio = await synth["AudioStream"].read()
-            audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)
+            # audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)
+            audio = audioop.ulaw2lin(mulaw_audio, SAMPLE_WIDTH)
             base64_audio = base64.b64encode(audio).decode("utf-8")
 
             return base64_audio

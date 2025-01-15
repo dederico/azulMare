@@ -1,7 +1,8 @@
 import base64
 import audioop
 import re
-from fastapi import WebSocket
+import httpx
+from fastapi import WebSocket,HTTPException
 from app.util.logger import logger
 from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
@@ -34,7 +35,7 @@ class WebSocketHandler:
                 response.raise_for_status()
 
             lead_info = response.json()
-            logging.debug(f"Lead information retrieved: {lead_info}")
+            logger.debug(f"Lead information retrieved: {lead_info}")
             return lead_info
         except httpx.RequestError as e:
             raise HTTPException(status_code=500, detail=f"Failed to fetch lead information: {e}")

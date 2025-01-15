@@ -8,7 +8,8 @@ from fastapi import WebSocket,HTTPException
 from app.util.logger import logger
 from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
-
+import io
+import wave
 class WebSocketHandler:
     duration = 0.02
 
@@ -73,7 +74,32 @@ class WebSocketHandler:
         response = conn.getresponse()
         logger.debug(response.status)
         logger.debug(response.read().decode())
-        
+    
+    def save_base64_to_wav(self,base64_audio: str, file_path: str):
+        audio_data = base64.b64decode(base64_audio)
+
+        audio_file = io.BytesIO(audio_data)
+
+        # Open the audio data as a wave file to read and write
+        with wave.open(audio_file, 'rb') as audio_in:
+            # Check if the format is already PCM (mono, 8000 Hz, 16-bit)
+            if audio_in.getnchannels() == 1 and audio_in.getsampwidth() == 2 and audio_in.getframerate() == 8000:
+                # Create a new wave file for saving the audio
+                with wave.open(file_path, 'wb') as audio_out:
+                    # Set parameters for the output WAV file
+                    audio_out.setnchannels(audio_in.getnchannels())  # Mono
+                    audio_out.setsampwidth(audio_in.getsampwidth())  # 16-bit
+                    audio_out.setframerate(audio_in.getframerate())  # 8000 Hz
+
+                    # Write audio data to the new file
+                    audio_out.writeframes(audio_in.readframes(audio_in.getnframes()))
+            else:
+                print("The audio format is not compatible (must be mono, 8000 Hz, 16-bit).")
+                return
+
+        print(f"Audio saved to {file_path}")
+
+ 
     async def connect(self):
         await self.websocket.accept()
 
@@ -158,7 +184,7 @@ class WebSocketHandler:
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
             self.playsequence.append(audio_data)
-            logger.debug(f"audio data: {audio_data}")
+            self.save_base64_to_wav(audio_data, "/tmp/output_audio.wav")
             self.actions_call(self.call_sid,"playback",audio_data)
             # await self.websocket.send_json(
             #     {

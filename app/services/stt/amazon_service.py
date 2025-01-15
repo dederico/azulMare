@@ -31,7 +31,9 @@ class AmazonTranscribeService(STTService):
         logging.getLogger("uvicorn").info(f"Correctly connected to Amazon Transcribe.")
 
     async def transcribe(self, audio_chunk):
+        logging.getLogger("transcribe1")
         if self.stream:
+            logging.getLogger("transcribe2")
             await self.stream.input_stream.send_audio_event(audio_chunk=audio_chunk)
 
     async def finish_transcription(self):

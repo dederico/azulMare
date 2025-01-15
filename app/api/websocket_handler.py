@@ -19,6 +19,7 @@ class WebSocketHandler:
         self.stream_sid = None
         self.initial_data = None
         self.switch = None
+        self.code= None
         self.playsequence = []
         self.number=None
         self.call_sid=None
@@ -127,9 +128,9 @@ class WebSocketHandler:
         if 'text' in data:
             datos = data["text"].strip('"').strip()
             if re.match(self.pattern, datos):
-                self.stream_sid, self.call_sid, self.number = datos.split('#')
-                logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number}")
-                dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+                self.code, self.call_sid, self.number = datos.split('#')
+                logger.warning(f"Codigo: {self.code}, Call ID: {self.call_sid}, Number: {self.number}")
+                dnid=f"{self.code}%23{self.call_sid}%23{self.number}"
                 logger.debug(dnid)
                 context=await self.get_lead(dnid=dnid)
                 logger.warning(f"context: {context}")
@@ -163,11 +164,11 @@ class WebSocketHandler:
             # Check if the audio is loud enough and in "listening" state
             if rms > 300 and (self.switch == "listening" or self.switch is None):
                 self.playsequence.append(audio_payload)  # Append the raw payload
-                logger.debug("Si es audio")
+                # logger.debug("Si es audio")
                 return raw_audio_data
             else:
                 # Generate silence if below threshold or not in listening state
-                logger.debug("Es silencio")
+                # logger.debug("Es silencio")
                 raw_audio_data = await self.generate_silence()
                 return raw_audio_data
         except (binascii.Error, ValueError) as e:

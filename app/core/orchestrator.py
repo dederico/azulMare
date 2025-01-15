@@ -38,6 +38,7 @@ class Orchestrator:
             await self.stt_service.set_transcript_received_callback(self.handler)
 
             async for audio_chunk in self.websocket_handler.process_stream():
+                self.log(f"process_audio_stream {audio_chunk}")
                 await self.stt_service.transcribe(audio_chunk)
             await self.stt_service.finish_transcription()
             self.log("Call ended Gracefully")

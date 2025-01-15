@@ -10,6 +10,7 @@ from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
 import io
 from pydub import AudioSegment
+import binascii
 class WebSocketHandler:
     duration = 0.02
 
@@ -150,19 +151,28 @@ class WebSocketHandler:
         #     self.switch = data["mark"]["name"]
 
     async def process_media_event(self, data):
-        #audio_payload = data["media"]["payload"]
-        audio_payload=data
-        audio_content = base64.b64decode(audio_payload)
-        if re.fullmatch(r'^[A-Za-z0-9+/]*={0,2}$', audio_content):
+        # Assume `data` is already in bytes format
+        audio_payload = data  # `data` is treated as Base64 bytes
+        try:
+            # Decode the Base64 payload
+            audio_content = base64.b64decode(audio_payload)
+            
+            # Convert from µ-law to PCM linear format
             raw_audio_data = audioop.ulaw2lin(audio_content, 2)
-            rms = audioop.rms(raw_audio_data, 2)
+            rms = audioop.rms(raw_audio_data, 2)  # Calculate RMS
 
+            # Check if the audio is loud enough and in "listening" state
             if rms > 300 and (self.switch == "listening" or self.switch is None):
-                self.playsequence.append(audio_payload)
+                self.playsequence.append(audio_payload)  # Append the raw payload
                 return raw_audio_data
             else:
+                # Generate silence if below threshold or not in listening state
                 raw_audio_data = await self.generate_silence()
                 return raw_audio_data
+        except (binascii.Error, ValueError) as e:
+            # Handle invalid Base64 or decoding errors
+            logger.error(f"Error decoding Base64: {e}")
+            return await self.generate_silence()
 
     async def generate_silence(self, sample_width=2, sample_rate=8000):
         # logger.debug("Generating and forwarding silence frame")

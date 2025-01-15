@@ -69,10 +69,11 @@ class WebSocketHandler:
                 elif 'bytes' in data:
                     datos= data["bytes"]
                     chunk = await self.handle_event(datos)
+                    if chunk:
+                        yield chunk
                 #logger.debug("Received customer audio, processing chunk")
                 
-                if chunk:
-                    yield chunk
+                
 
         except WebSocketDisconnect:
             logger.warning("WebSocket disconnected reason unknown")

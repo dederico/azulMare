@@ -48,8 +48,11 @@ class Orchestrator:
         return self.stats
 
     async def handler(self, transcription: dict) -> None:
+        self.log(f"Amazon handler {self.websocket_handler.is_connected} channel {transcription.get("channel")}")
         if self.websocket_handler.is_connected and transcription.get("channel"):
+            
             full_transcript = transcription["channel"]["alternatives"][0]["transcript"]
+            
             if full_transcript:
                 self.stats["Script"].append({ "role": "CUSTOMER", "dialog": full_transcript })
                 logger.warning(f"CUSTOMER: {full_transcript}")

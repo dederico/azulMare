@@ -56,8 +56,9 @@ class WebSocketHandler:
                 # data = await self.websocket.receive_json()
                 data = await self.websocket.receive()
                 if 'text' in data:
-                    if re.match(self.pattern, data):
-                        code, callid, number = data.split('#')
+                    datos = data["text"].strip('"').strip()
+                    if re.match(self.pattern, datos):
+                        code, callid, number = datos.split('#')
                         logger.warning(f"Codigo: {code}, Call ID: {callid}, Number: {number}")
                         context=await self.get_lead(f"{code}%23{callid}%23{number}")
                         logger.warning(f"context: {context}")

@@ -69,8 +69,6 @@ class WebSocketHandler:
         params = payload  # Parámetros de consulta
         headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
         data = json.dumps(params)
-        logger.debug(data)
-        logger.debug(conn)
         conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
         response = conn.getresponse()
         logger.debug(response.status)
@@ -140,6 +138,14 @@ class WebSocketHandler:
         audio_payload=data
         audio_content = base64.b64decode(audio_payload)
         raw_audio_data = audioop.ulaw2lin(audio_content, 2)
+        # Ensure mono audio
+        raw_audio_data = audioop.tomono(raw_audio_data, 2, 1, 0)
+        
+        # Resample to 8000 Hz if necessary
+        current_sample_rate = 8000  # Replace with actual sample rate if known
+        if current_sample_rate != 8000:
+            raw_audio_data = audioop.ratecv(raw_audio_data, 2, 1, current_sample_rate, 8000, None)[0]
+        
         rms = audioop.rms(raw_audio_data, 2)
 
         if rms > 300 and (self.switch == "listening" or self.switch is None):
@@ -175,13 +181,14 @@ class WebSocketHandler:
     async def send_mark(self, mark):
         logger.debug("Sending {} mark to Twilio".format(mark))
         if self.is_connected:
-            await self.websocket.send_json(
-                {
-                    "event": "mark",
-                    "streamSid": self.stream_sid,
-                    "mark": {"name": mark},
-                }
-            )
+            self.switch="listening"
+            # await self.websocket.send_json(
+            #     {
+            #         "event": "mark",
+            #         "streamSid": self.stream_sid,
+            #         "mark": {"name": mark},
+            #     }
+            # )
         else:
             logger.debug("Socket not connected hence mark Not_Sent")
 

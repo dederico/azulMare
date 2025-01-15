@@ -76,27 +76,13 @@ class WebSocketHandler:
         logger.debug(response.status)
         logger.debug(response.read().decode())
     
-    def save_base64_to_wav(self,base64_audio: str, file_path: str):
-        # Decode the base64 string to raw audio data
-        audio_data = base64.b64decode(base64_audio)
-        # Convert to a file-like object
-        audio_file = io.BytesIO(audio_data)
-        # Convert the raw audio data to a Pydub AudioSegment
-        audio = AudioSegment.from_file(audio_file, format="raw", 
-                                   sample_width=1,  # 8 bits = 1 byte
-                                   channels=1,      # Mono
-                                   frame_rate=8000,  # 8000 Hz
-                                   compression_method="mulaw")
-        # Export the audio as a WAV file
-        audio.export(file_path, format="wav")
-        logger.debug(f"Audio saved to {file_path}")
- 
     async def connect(self):
         await self.websocket.accept()
 
         logger.debug("Customer call connected processing audio channel")
         async for _ in self.process_stream():
             if self.stream_sid:
+                logger.debug("stream_sid break")
                 break
 
     async def process_stream(self):
@@ -163,11 +149,11 @@ class WebSocketHandler:
             # Check if the audio is loud enough and in "listening" state
             if rms > 300 and (self.switch == "listening" or self.switch is None):
                 self.playsequence.append(audio_payload)  # Append the raw payload
-                logger.debug("Si es audio")
+                # logger.debug("Si es audio")
                 return raw_audio_data
             else:
                 # Generate silence if below threshold or not in listening state
-                logger.debug("Si es audio")
+                # logger.debug("Si es silencio")
                 raw_audio_data = await self.generate_silence()
                 return raw_audio_data
         except (binascii.Error, ValueError) as e:

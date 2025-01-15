@@ -28,6 +28,7 @@ class WebSocketHandler:
         :return: JSON response with lead information.
         """
         try:
+            logger.debug(dnid)
             endpoint_url = f"https://app.ccc.uno/api/autoagent/{dnid}"
 
             async with httpx.AsyncClient() as client:
@@ -62,6 +63,7 @@ class WebSocketHandler:
                         code, callid, number = datos.split('#')
                         logger.warning(f"Codigo: {code}, Call ID: {callid}, Number: {number}")
                         dnid=f"{code}%23{callid}%23{number}"
+                        logger.debug(dnid)
                         context=await self.get_lead(dnid=dnid)
                         logger.warning(f"context: {context}")
                 elif 'bytes' in data:

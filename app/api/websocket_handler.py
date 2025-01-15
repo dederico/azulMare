@@ -75,7 +75,7 @@ class WebSocketHandler:
         logger.debug(response.status)
         logger.debug(response.read().decode())
     
-    def save_base64_to_wav(base64_audio: str, file_path: str):
+    def save_base64_to_wav(self,base64_audio: str, file_path: str):
         # Decode the base64 string to raw audio data
         audio_data = base64.b64decode(base64_audio)
         # Convert to a file-like object

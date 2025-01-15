@@ -122,7 +122,6 @@ async def websocket_endpoint(ws: WebSocket):
     call.callerName = customer_identity
 
     logger.debug("Initializing LLM service for the new call")
-    logger.info(f"openai {OPENAI_API_KEY}")
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,

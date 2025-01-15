@@ -113,9 +113,9 @@ class WebSocketHandler:
         if 'text' in data:
             datos = data["text"].strip('"').strip()
             if re.match(self.pattern, datos):
-                self.stream_sid, self.call_sid, self.number = datos.split('#')
-                logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number}")
-                dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+                self.code, self.call_sid, self.number = datos.split('#')
+                logger.warning(f"Codigo: {self.code}, Call ID: {self.call_sid}, Number: {self.number}")
+                dnid=f"{self.code}%23{self.call_sid}%23{self.number}"
                 logger.debug(dnid)
                 context=await self.get_lead(dnid=dnid)
                 logger.warning(f"context: {context}")

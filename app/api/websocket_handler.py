@@ -174,7 +174,6 @@ class WebSocketHandler:
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
             self.playsequence.append(audio_data)
-            self.save_base64_to_wav(audio_data, "output_audio.wav")
             self.actions_call(self.call_sid,"playback",audio_data)
             # await self.websocket.send_json(
             #     {

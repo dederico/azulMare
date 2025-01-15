@@ -94,10 +94,10 @@ class WebSocketHandler:
                     # Write audio data to the new file
                     audio_out.writeframes(audio_in.readframes(audio_in.getnframes()))
             else:
-                print("The audio format is not compatible (must be mono, 8000 Hz, 16-bit).")
+                logger.debug("The audio format is not compatible (must be mono, 8000 Hz, 16-bit).")
                 return
 
-        print(f"Audio saved to {file_path}")
+        logger.debug(f"Audio saved to {file_path}")
 
  
     async def connect(self):
@@ -184,7 +184,7 @@ class WebSocketHandler:
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
             self.playsequence.append(audio_data)
-            self.save_base64_to_wav(audio_data, "/tmp/output_audio.wav")
+            self.save_base64_to_wav(audio_data, "output_audio.wav")
             self.actions_call(self.call_sid,"playback",audio_data)
             # await self.websocket.send_json(
             #     {

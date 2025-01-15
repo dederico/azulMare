@@ -38,9 +38,7 @@ class Orchestrator:
             await self.stt_service.set_transcript_received_callback(self.handler)
 
             async for audio_chunk in self.websocket_handler.process_stream():
-                self.log(".")
                 try:
-                    self.log(f"amazon transcribe")
                     await self.stt_service.transcribe(audio_chunk)
                 except Exception as e:
                     self.log(f"Error al enviar evento de audio a Transcribe: {e}")

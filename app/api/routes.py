@@ -69,7 +69,7 @@ async def post(request: Request):
 async def websocket_endpoint(ws: WebSocket):
     db = LocalStorage()
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
-
+    logger.info(f"config {config}")
     logHandler = get_thread_log_handler(config.get("rawLogs", 10))
 
     logger.info("Got new INCOMING_CALL")

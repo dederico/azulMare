@@ -152,16 +152,17 @@ class WebSocketHandler:
     async def process_media_event(self, data):
         #audio_payload = data["media"]["payload"]
         audio_payload=data
-        audio_content = base64.b64decode(audio_payload)
-        raw_audio_data = audioop.ulaw2lin(audio_content, 2)
-        rms = audioop.rms(raw_audio_data, 2)
+        if re.fullmatch(r'^[A-Za-z0-9+/]*={0,2}$', audio_payload):
+            audio_content = base64.b64decode(audio_payload)
+            raw_audio_data = audioop.ulaw2lin(audio_content, 2)
+            rms = audioop.rms(raw_audio_data, 2)
 
-        if rms > 300 and (self.switch == "listening" or self.switch is None):
-            self.playsequence.append(audio_payload)
-            return raw_audio_data
-        else:
-            raw_audio_data = await self.generate_silence()
-            return raw_audio_data
+            if rms > 300 and (self.switch == "listening" or self.switch is None):
+                self.playsequence.append(audio_payload)
+                return raw_audio_data
+            else:
+                raw_audio_data = await self.generate_silence()
+                return raw_audio_data
 
     async def generate_silence(self, sample_width=2, sample_rate=8000):
         # logger.debug("Generating and forwarding silence frame")

@@ -1,5 +1,6 @@
 import base64
 import audioop
+import re
 from fastapi import WebSocket
 from app.util.logger import logger
 from fastapi.websockets import WebSocketState
@@ -14,6 +15,31 @@ class WebSocketHandler:
         self.initial_data = None
         self.switch = None
         self.playsequence = []
+        self.code=None
+        self.callid=None
+        self.number=None
+        self.pattern=r"^[a-zA-Z0-9]+#[a-zA-Z0-9]+#[a-zA-Z0-9]+$"
+    async def get_lead(dnid: str):
+        """
+        Fetches lead information associated with the provided DNID.
+
+        :param dnid: The DNID to fetch lead information for.
+        :return: JSON response with lead information.
+        """
+        try:
+            endpoint_url = f"https://app.ccc.uno/api/autoagent/{dnid}"
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(endpoint_url)
+                response.raise_for_status()
+
+            lead_info = response.json()
+            logging.debug(f"Lead information retrieved: {lead_info}")
+            return lead_info
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch lead information: {e}")
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=response.status_code, detail=f"Error from lead service: {e.response.text}")
 
     async def connect(self):
         await self.websocket.accept()
@@ -27,10 +53,18 @@ class WebSocketHandler:
         try:
             while True:
                 #logger.debug("Waiting for customer Audio_Message")
-                data = await self.websocket.receive_json()
-
+                # data = await self.websocket.receive_json()
+                data = await self.websocket.receive()
+                if 'text' in data:
+                    if re.match(self.pattern, data):
+                        code, callid, number = data.split('#')
+                        logger.warning(f"Codigo: {code}, Call ID: {callid}, Number: {number}")
+                        context=await self.get_lead(f"{code}%23{callid}%23{number}")
+                        logger.warning(f"context: {context}")
+                elif 'bytes' in data:
+                    chunk = await self.handle_event(data)
                 #logger.debug("Received customer audio, processing chunk")
-                chunk = await self.handle_event(data)
+                
                 if chunk:
                     yield chunk
 

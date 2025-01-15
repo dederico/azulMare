@@ -9,7 +9,7 @@ from app.util.logger import logger
 from fastapi.websockets import WebSocketState
 from starlette.websockets import WebSocketDisconnect
 import io
-import wave
+from pydub import AudioSegment
 class WebSocketHandler:
     duration = 0.02
 
@@ -75,30 +75,16 @@ class WebSocketHandler:
         logger.debug(response.status)
         logger.debug(response.read().decode())
     
-    def save_base64_to_wav(self,base64_audio: str, file_path: str):
+    def save_base64_to_wav(base64_audio: str, file_path: str):
+        # Decode the base64 string to raw audio data
         audio_data = base64.b64decode(base64_audio)
-
+        # Convert to a file-like object
         audio_file = io.BytesIO(audio_data)
-
-        # Open the audio data as a wave file to read and write
-        with wave.open(audio_file, 'rb') as audio_in:
-            # Check if the format is already PCM (mono, 8000 Hz, 16-bit)
-            if audio_in.getnchannels() == 1 and audio_in.getsampwidth() == 2 and audio_in.getframerate() == 8000:
-                # Create a new wave file for saving the audio
-                with wave.open(file_path, 'wb') as audio_out:
-                    # Set parameters for the output WAV file
-                    audio_out.setnchannels(audio_in.getnchannels())  # Mono
-                    audio_out.setsampwidth(audio_in.getsampwidth())  # 16-bit
-                    audio_out.setframerate(audio_in.getframerate())  # 8000 Hz
-
-                    # Write audio data to the new file
-                    audio_out.writeframes(audio_in.readframes(audio_in.getnframes()))
-            else:
-                logger.debug("The audio format is not compatible (must be mono, 8000 Hz, 16-bit).")
-                return
-
+        # Convert the raw audio data to a Pydub AudioSegment
+        audio = AudioSegment.from_file(audio_file, format="raw", frame_rate=8000, channels=1, sample_width=2)
+        # Export the audio as a WAV file
+        audio.export(file_path, format="wav")
         logger.debug(f"Audio saved to {file_path}")
-
  
     async def connect(self):
         await self.websocket.accept()

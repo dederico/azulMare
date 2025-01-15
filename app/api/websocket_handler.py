@@ -155,10 +155,10 @@ class WebSocketHandler:
         audio_payload = data  # `data` is treated as Base64 bytes
         try:
             # Decode the Base64 payload
-            audio_content = base64.b64decode(audio_payload)
+            # audio_content = base64.b64decode(audio_payload)
             
             # Convert from µ-law to PCM linear format
-            raw_audio_data = audioop.ulaw2lin(audio_content, 2)
+            raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
             rms = audioop.rms(raw_audio_data, 2)  # Calculate RMS
 
             # Check if the audio is loud enough and in "listening" state

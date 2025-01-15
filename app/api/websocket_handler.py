@@ -61,7 +61,8 @@ class WebSocketHandler:
                     if re.match(self.pattern, datos):
                         code, callid, number = datos.split('#')
                         logger.warning(f"Codigo: {code}, Call ID: {callid}, Number: {number}")
-                        context=await self.get_lead(f"{code}%23{callid}%23{number}")
+                        dnid=f"{code}%23{callid}%23{number}"
+                        context=await self.get_lead(dnid=dnid)
                         logger.warning(f"context: {context}")
                 elif 'bytes' in data:
                     chunk = await self.handle_event(data)

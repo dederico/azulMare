@@ -138,14 +138,6 @@ class WebSocketHandler:
         audio_payload=data
         audio_content = base64.b64decode(audio_payload)
         raw_audio_data = audioop.ulaw2lin(audio_content, 2)
-        # Ensure mono audio
-        raw_audio_data = audioop.tomono(raw_audio_data, 2, 1, 0)
-        
-        # Resample to 8000 Hz if necessary
-        current_sample_rate = 8000  # Replace with actual sample rate if known
-        if current_sample_rate != 8000:
-            raw_audio_data = audioop.ratecv(raw_audio_data, 2, 1, current_sample_rate, 8000, None)[0]
-        
         rms = audioop.rms(raw_audio_data, 2)
 
         if rms > 300 and (self.switch == "listening" or self.switch is None):
@@ -166,7 +158,7 @@ class WebSocketHandler:
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
             self.playsequence.append(audio_data)
-            
+            logger.debug(f"audio data: {audio_data}")
             self.actions_call(self.call_sid,"playback",audio_data)
             # await self.websocket.send_json(
             #     {

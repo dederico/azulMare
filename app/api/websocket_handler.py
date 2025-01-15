@@ -152,8 +152,8 @@ class WebSocketHandler:
     async def process_media_event(self, data):
         #audio_payload = data["media"]["payload"]
         audio_payload=data
-        if re.fullmatch(r'^[A-Za-z0-9+/]*={0,2}$', audio_payload):
-            audio_content = base64.b64decode(audio_payload)
+        audio_content = base64.b64decode(audio_payload)
+        if re.fullmatch(r'^[A-Za-z0-9+/]*={0,2}$', audio_content):
             raw_audio_data = audioop.ulaw2lin(audio_content, 2)
             rms = audioop.rms(raw_audio_data, 2)
 

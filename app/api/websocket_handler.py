@@ -89,7 +89,7 @@ class WebSocketHandler:
         elif 'bytes' in data:
             datos= data["bytes"]
             return await self.process_media_event(datos)
-            
+             
         # if data["event"] == "start":
         #     self.initial_data = data["start"]
         #     self.stream_sid = data["streamSid"]
@@ -102,7 +102,8 @@ class WebSocketHandler:
         #     self.switch = data["mark"]["name"]
 
     async def process_media_event(self, data):
-        audio_payload = data["media"]["payload"]
+        #audio_payload = data["media"]["payload"]
+        audio_payload=data
         audio_content = base64.b64decode(audio_payload)
         raw_audio_data = audioop.ulaw2lin(audio_content, 2)
         rms = audioop.rms(raw_audio_data, 2)

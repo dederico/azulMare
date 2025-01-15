@@ -16,9 +16,8 @@ class WebSocketHandler:
         self.initial_data = None
         self.switch = None
         self.playsequence = []
-        self.code=None
-        self.callid=None
         self.number=None
+        self.call_sid=None
         self.pattern=r"^[a-zA-Z0-9]+#[a-zA-Z0-9]+#[a-zA-Z0-9]+$"
     async def get_lead(self,dnid: str):
         """
@@ -57,20 +56,10 @@ class WebSocketHandler:
                 #logger.debug("Waiting for customer Audio_Message")
                 # data = await self.websocket.receive_json()
                 data = await self.websocket.receive()
-                if 'text' in data:
-                    datos = data["text"].strip('"').strip()
-                    if re.match(self.pattern, datos):
-                        code, callid, number = datos.split('#')
-                        logger.warning(f"Codigo: {code}, Call ID: {callid}, Number: {number}")
-                        dnid=f"{code}%23{callid}%23{number}"
-                        logger.debug(dnid)
-                        context=await self.get_lead(dnid=dnid)
-                        logger.warning(f"context: {context}")
-                elif 'bytes' in data:
-                    datos= data["bytes"]
-                    chunk = await self.handle_event(datos)
-                    if chunk:
-                        yield chunk
+                
+                chunk = await self.handle_event(data)
+                if chunk:
+                    yield chunk
                 #logger.debug("Received customer audio, processing chunk")
                 
                 
@@ -86,16 +75,31 @@ class WebSocketHandler:
             raise e
 
     async def handle_event(self, data):
-        if data["event"] == "start":
-            self.initial_data = data["start"]
-            self.stream_sid = data["streamSid"]
-            self.call_sid = data["start"]["callSid"]
+        self.switch="listening"
+        if 'text' in data:
+            datos = data["text"].strip('"').strip()
+            if re.match(self.pattern, datos):
+                self.stream_sid, self.call_sid, self.number = datos.split('#')
+                logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number}")
+                dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+                logger.debug(dnid)
+                context=await self.get_lead(dnid=dnid)
+                logger.warning(f"context: {context}")
+                self.initial_data=context
+        elif 'bytes' in data:
+            datos= data["bytes"]
+            return await self.process_media_event(datos)
+            
+        # if data["event"] == "start":
+        #     self.initial_data = data["start"]
+        #     self.stream_sid = data["streamSid"]
+        #     self.call_sid = data["start"]["callSid"]
 
-        elif data["event"] == "media":
-            return await self.process_media_event(data)
+        # elif data["event"] == "media":
+        #     return await self.process_media_event(data)
 
-        elif data["event"] == "mark":
-            self.switch = data["mark"]["name"]
+        # elif data["event"] == "mark":
+        #     self.switch = data["mark"]["name"]
 
     async def process_media_event(self, data):
         audio_payload = data["media"]["payload"]

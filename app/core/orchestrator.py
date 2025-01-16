@@ -39,7 +39,6 @@ class Orchestrator:
 
             async for audio_chunk in self.websocket_handler.process_stream():
                 try:
-                    self.log(f"Tamaño del chunk: {len(audio_chunk)} bytes")
                     await self.stt_service.transcribe(audio_chunk)
                 except Exception as e:
                     self.log(f"Error al enviar evento de audio a Transcribe: {e}")

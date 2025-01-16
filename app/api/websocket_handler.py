@@ -144,7 +144,8 @@ class WebSocketHandler:
             # audio_content = base64.b64decode(audio_payload)
             
             # Convert from µ-law to PCM linear format
-            raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
+            # raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
+            raw_audio_data = audio_payload
             rms = audioop.rms(raw_audio_data, 2)  # Calculate RMS
             logger.debug(f"rms: {rms}")
             # Check if the audio is loud enough and in "listening" state

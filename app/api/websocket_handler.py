@@ -94,6 +94,7 @@ class WebSocketHandler:
                 
                 chunk = await self.handle_event(data)
                 if chunk:
+                    logger.debug(f"Tamaño del chunk: {len(chunk)} bytes")
                     yield chunk
                 #logger.debug("Received customer audio, processing chunk")
                 
@@ -145,7 +146,7 @@ class WebSocketHandler:
             # Convert from µ-law to PCM linear format
             raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
             rms = audioop.rms(raw_audio_data, 2)  # Calculate RMS
-
+            logger.debug(f"rms: {rms}")
             # Check if the audio is loud enough and in "listening" state
             if rms > 300 and (self.switch == "listening" or self.switch is None):
                 self.playsequence.append(audio_payload)  # Append the raw payload

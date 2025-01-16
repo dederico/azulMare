@@ -1,4 +1,13 @@
+# Ignorar directorios de Python
 __pycache__/
+*.pyc
+*.pyo
+
+# Ignorar entorno virtual
+.venv/
+venv/
+
+# Ignorar otros archivos y carpetas específicas
 uploads/
 .env
 .DS_Store
@@ -6,3 +15,7 @@ uploads/
 serve
 *.log
 *.db
+
+# Ignorar cachés y backups de editores
+*.swp
+*.swo

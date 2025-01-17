@@ -66,13 +66,14 @@ class WebSocketHandler:
 
             # Calcular duración
             duration = n_frames / float(frame_rate)
+            adjusted_duration = max(duration - 0.5, 0)
             print(f"Frecuencia de muestreo: {frame_rate} Hz")
             print(f"Número de frames: {n_frames}")
             print(f"Número de canales: {channels}")
             print(f"Ancho de muestra: {sample_width} bytes")
             print(f"Duración calculada: {duration:.2f} segundos")
 
-            return duration
+            return adjusted_duration
     async def actions_call(self,call_id: str,action:str,data:bytes=None):
         """
         Ends an active call associated with the specified call_id.

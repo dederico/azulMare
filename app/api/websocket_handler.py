@@ -99,9 +99,10 @@ class WebSocketHandler:
         conn = http.client.HTTPSConnection("websockets.ccc.uno")
         params = payload  # Parámetros de consulta
         headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
-        data = json.dumps(params)
         if data:
             duration = self.calculate_wav_duration_from_base64(data)
+        data = json.dumps(params)
+        
         conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
         response = conn.getresponse()
         logger.debug(response.status)

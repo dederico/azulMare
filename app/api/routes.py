@@ -102,11 +102,11 @@ async def websocket_endpoint(ws: WebSocket):
     else:
         call = Call(
             callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
-            callSource = "Twillio",
+            callSource = "Layer7",
             callType = "IP",
             callDirection = "IN_COMING",
             callStatus = "IN_PROGRESS",
-            callNumber = "Not Available",
+            callNumber = websocket_handler.initial_data,
             callUid = websocket_handler.call_sid
         )
         call = db.Insert(call)

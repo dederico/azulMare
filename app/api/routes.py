@@ -106,7 +106,7 @@ async def websocket_endpoint(ws: WebSocket):
             callType = "IP",
             callDirection = "IN_COMING",
             callStatus = "IN_PROGRESS",
-            callNumber = websocket_handler.initial_data,
+            callNumber = "Not Available",
             callUid = websocket_handler.call_sid
         )
         call = db.Insert(call)

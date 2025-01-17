@@ -86,7 +86,11 @@ class AmazonTTSService(TTSService):
                     wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
                     wf.setframerate(int(SAMPLE_RATE))  # Frecuencia de muestreo
                     wf.writeframes(pcm_audio)
-
+             # Leer la duración del archivo WAV
+            with wave.open(temp_file_name, 'rb') as wf:
+                frame_rate = wf.getframerate()
+                n_frames = wf.getnframes()
+                duration = n_frames / float(frame_rate)
         # Leer el archivo temporal y codificarlo en Base64
             with open(temp_file_name, "rb") as f:
                 wav_data = f.read()

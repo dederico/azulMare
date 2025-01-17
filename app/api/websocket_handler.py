@@ -11,6 +11,8 @@ from starlette.websockets import WebSocketDisconnect
 import io
 from pydub import AudioSegment
 import binascii
+import wave
+import asyncio
 class WebSocketHandler:
     duration = 0.02
 
@@ -45,7 +47,33 @@ class WebSocketHandler:
             raise HTTPException(status_code=500, detail=f"Failed to fetch lead information: {e}")
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=response.status_code, detail=f"Error from lead service: {e.response.text}")
-    def actions_call(self,call_id: str,action:str,data:bytes=None):
+    def calculate_wav_duration_from_base64(self,base64_audio: str) -> float:
+        """
+        Calcula la duración de un archivo WAV a partir de su representación Base64.
+
+        :param base64_audio: Cadena Base64 que representa un archivo WAV.
+        :return: Duración del archivo WAV en segundos.
+        """
+        # Decodificar Base64 a bytes
+        wav_bytes = base64.b64decode(base64_audio)
+
+        # Leer el archivo WAV desde los bytes decodificados
+        with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
+            frame_rate = wf.getframerate()  # Frecuencia de muestreo (Hz)
+            n_frames = wf.getnframes()  # Número total de frames
+            channels = wf.getnchannels()  # Número de canales
+            sample_width = wf.getsampwidth()  # Ancho de muestra en bytes
+
+            # Calcular duración
+            duration = n_frames / float(frame_rate)
+            print(f"Frecuencia de muestreo: {frame_rate} Hz")
+            print(f"Número de frames: {n_frames}")
+            print(f"Número de canales: {channels}")
+            print(f"Ancho de muestra: {sample_width} bytes")
+            print(f"Duración calculada: {duration:.2f} segundos")
+
+            return duration
+    async def actions_call(self,call_id: str,action:str,data:bytes=None):
         """
         Ends an active call associated with the specified call_id.
 
@@ -54,6 +82,7 @@ class WebSocketHandler:
         :return: JSON response confirming the hangup.
         """
         payload=None
+        duration=None
         if data:
             # audio_base64 = base64.b64encode(data).decode(encoding="utf-8")
             payload = {
@@ -71,10 +100,14 @@ class WebSocketHandler:
         params = payload  # Parámetros de consulta
         headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
         data = json.dumps(params)
+        if data:
+            duration = self.calculate_wav_duration_from_base64(data)
         conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
         response = conn.getresponse()
         logger.debug(response.status)
         logger.debug(response.read().decode())
+        if duration:
+            await asyncio.sleep(duration)
     
     async def connect(self):
         await self.websocket.accept()
@@ -170,7 +203,7 @@ class WebSocketHandler:
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
             self.playsequence.append(audio_data)
-            self.actions_call(self.call_sid,"playback",audio_data)
+            await self.actions_call(self.call_sid,"playback",audio_data)
             # await self.websocket.send_json(
             #     {
             #         "event": "media",

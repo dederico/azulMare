@@ -8,7 +8,7 @@ from app.models.Config import Config
 from app.util.database import LocalStorage
 from app.services.tts.tts_service import TTSService
 import wave
-import io
+import tempfile
 # Configuration constants
 SAMPLE_RATE = 8000
 SAMPLE_WIDTH = 2
@@ -65,23 +65,32 @@ class AmazonTTSService(TTSService):
                 Engine="neural",
                 LanguageCode=self.lang,
             )  # type: ignore
-            # Leer el flujo de datos de audio PCM
-            pcm_audio = await synth["AudioStream"].read()
             
-            # Crear un archivo WAV en memoria
-            wav_buffer = io.BytesIO()
-            with wave.open(wav_buffer, 'wb') as wf:
-                wf.setnchannels(1)  # Mono audio
-                wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
-                wf.setframerate(int(SAMPLE_RATE))  # Frecuencia de muestreo
-                wf.writeframes(pcm_audio)
+            # wav_buffer = io.BytesIO()
+            # with wave.open(wav_buffer, 'wb') as wf:
+            #     wf.setnchannels(1)  # Mono audio
+            #     wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
+            #     wf.setframerate(int(SAMPLE_RATE))  # Frecuencia de muestreo
+            #     wf.writeframes(pcm_audio)
             
-            # Obtener los bytes del WAV directamente desde el buffer
-            wav_buffer.seek(0)
-            wav_data = wav_buffer.read()
+            # wav_buffer.seek(0)
+            # wav_data = wav_buffer.read()
 
-            # Convertir a Base64
-            base64_audio = base64.b64encode(wav_data).decode("utf-8")
+            # base64_audio = base64.b64encode(wav_data).decode("utf-8")
+            # return base64_audio
+            pcm_audio = await synth["AudioStream"].read()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+                temp_file_name = temp_file.name  # Obtener el nombre del archivo
+                with wave.open(temp_file, 'wb') as wf:
+                    wf.setnchannels(1)  # Mono audio
+                    wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
+                    wf.setframerate(int(SAMPLE_RATE))  # Frecuencia de muestreo
+                    wf.writeframes(pcm_audio)
+
+        # Leer el archivo temporal y codificarlo en Base64
+            with open(temp_file_name, "rb") as f:
+                wav_data = f.read()
+                base64_audio = base64.b64encode(wav_data).decode("utf-8")
             return base64_audio
             # audio = audioop.lin2ulaw(mulaw_audio, SAMPLE_WIDTH)
             # audio = audioop.ulaw2lin(mulaw_audio, SAMPLE_WIDTH)

@@ -1,5 +1,6 @@
 from app.util.database import LocalStorage
 from app.models.Config import Config
+from app.api.websocket_handler import WebSocketHandler
 
 ls = LocalStorage()
 configs = { c.name:c.value for c in ls.GetAll(Config) }
@@ -10,6 +11,10 @@ hello_message = configs.get("greeting_message") or """
     ¿Me comunico con {customer_name}?"
 """
 
+#{'context': {'TELEFONO': '314 133 5870', 'NOMBRE': 'Prueba 1', 'MARCA': 'Banco de Mexico', 'PRODUCTO': 'Tarjeta de credito', 'ADEUDO': '567.99', 'FECHA_LIMITE_PAGO': '2025-01-30', 'URL': 'google.com', 'TTS': 'Texto de prueba 4'}, 'result': 'Ok'}
+
+telefono = WebSocketHandler.initial_data.context.TELEFONO
+print(telefono)
 
 system_message =  configs.get("prompt") or """
 Responde en frases cortas

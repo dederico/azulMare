@@ -13,8 +13,8 @@ hello_message = configs.get("greeting_message") or """
 
 #{'context': {'TELEFONO': '314 133 5870', 'NOMBRE': 'Prueba 1', 'MARCA': 'Banco de Mexico', 'PRODUCTO': 'Tarjeta de credito', 'ADEUDO': '567.99', 'FECHA_LIMITE_PAGO': '2025-01-30', 'URL': 'google.com', 'TTS': 'Texto de prueba 4'}, 'result': 'Ok'}
 
-telefono = WebSocketHandler.initial_data.context.TELEFONO
-print(telefono)
+# telefono = WebSocketHandler.initial_data.context.TELEFONO
+# print(telefono)
 
 system_message =  configs.get("prompt") or """
 Responde en frases cortas
@@ -29,7 +29,7 @@ La interacción es una llamada telefónica de ti hacia el cliente.
 
 TIENES QUE atender a los clientes ATENDER SUS DUDAS y dar atención.
 El guion general es:
-1. Te presentas institucionalmente. Pregunta al cliente como está.
+1. Te presentas institucionalmente. Pregunta al cliente como está. y guardas su respuesta como selection1.
 2. Menciona el motivo de la llamada.
 3. Información muy breve y general sobre nuestros servicios. PREGUNTAS SOBRE SUS DUDAS, Y SI ESTA DENTRO DE TUS CONOCIMIENTOS CONTESTAS.
 4. Resolver dudas.
@@ -37,4 +37,5 @@ El guion general es:
 6. Crear el ticket, EN CASO DE NO HABER RESULTO.
 
 PD: Si te preguntan por algún servicio o solución, siempre estar dispuesto a ofrecer el servicio, GENERAR UN TICKET DE SERVICIO SI NO TIENES EL CONTEXTO NECESARIO PARA DAR SOPORTE Y LISTO.
+{context.TELEFONO}
 """

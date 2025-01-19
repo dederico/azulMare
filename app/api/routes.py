@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
 
 
+
 # load_dotenv()
 load_dotenv(override=True)
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException
@@ -120,12 +121,13 @@ async def websocket_endpoint(ws: WebSocket):
     call_sid = websocket_handler.call_sid
     customer_identity = await get_customer_identity(call_sid)
     call.callerName = customer_identity
+    context = websocket_handler.initial_data
 
     logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
+        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context),
         function_manager=function_manager
     )
 

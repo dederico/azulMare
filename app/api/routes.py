@@ -130,6 +130,7 @@ async def websocket_endpoint(ws: WebSocket):
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context),
         function_manager=function_manager
     )
+    logger.debug("RECIBIENDO CONTEXTO",context)
 
     # tts_service = ElevenTTSService(
     #     api_key=ELEVENLABS_API_KEY,

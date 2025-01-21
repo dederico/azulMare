@@ -13,7 +13,6 @@ from pydub import AudioSegment
 import binascii
 import wave
 import asyncio
-from app.api.websocket_handler import actions_call
 
 
 async def actions_call(self,call_id: str):

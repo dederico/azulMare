@@ -16,13 +16,14 @@ import asyncio
 
 
 async def actions_call(call_id: str):
-        """Terminar interaccion si el usuario asi lo solicita.
+        """
+        Ends an active call associated with the specified call_id.
 
-        Args:
-        call_id (int): Indicador unico de la llamada. Proporcionado en mensaje del sistema.
+        :param call_id: The ID of the ongoing call.
+        :param action: The action to execute, can be hangup,transfer_agent or playback 
         
-        Returns:
-        JSON response confirming the hangup.
+        :return: JSON response confirming the hangup.
+
         """
         payload=None
         duration=None

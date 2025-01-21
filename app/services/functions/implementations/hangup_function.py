@@ -15,13 +15,14 @@ import wave
 import asyncio
 
 
-async def actions_call(self,call_id: str):
-        """
-        Ends an active call associated with the specified call_id.
+async def actions_call(call_id: str):
+        """Terminar interaccion si el usuario asi lo solicita.
 
-        :param call_id: The ID of the ongoing call.
-        :param action: The action to execute, can be hangup,transfer_agent or playback 
-        :return: JSON response confirming the hangup.
+        Args:
+        call_id (int): Indicador unico de la llamada. Proporcionado en mensaje del sistema.
+        
+        Returns:
+        JSON response confirming the hangup.
         """
         payload=None
         duration=None

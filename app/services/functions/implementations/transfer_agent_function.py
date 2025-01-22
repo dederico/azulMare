@@ -13,9 +13,9 @@ from pydub import AudioSegment
 import binascii
 import wave
 import asyncio
- 
 
-async def actions_call(call_sid: str):
+
+async def actions_call_transfer(call_sid: str):
         """
         Ends an active call associated with the specified call_id.
 
@@ -35,7 +35,7 @@ async def actions_call(call_sid: str):
         # else: 
         payload = {
                 "call_id": int(call_sid),
-                "action": "hangup"
+                "action": "transfer_agent"
                 }
         logger.debug(f"{call_sid}")
         conn = http.client.HTTPSConnection("websockets.ccc.uno")

@@ -124,19 +124,18 @@ class WebSocketHandler:
 
     async def process_stream(self):
         try:
-            transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
-            transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
-            
-            while self.websocket.connected:
+            # transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
+            # transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
+            while True:
                 try:
-                    # Recibir datos del WebSocket
                     data = await self.websocket.receive()
                     
                     # Salir del bucle si no se reciben datos
                     if not data:
                         logger.debug("No data received, exiting loop.")
                         break
-
+                    transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
+                    transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
                     logger.debug(f"Using shared transcription: {transcription_for_analysis_customer}")
                     logger.debug(f"Using this text: {transcription_for_analysis_bot}")
 

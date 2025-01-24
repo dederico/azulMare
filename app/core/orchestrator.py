@@ -59,7 +59,7 @@ class Orchestrator:
             if full_transcript:
                 self.stats["Script"].append({ "role": "CUSTOMER", "dialog": full_transcript })
                 logger.warning(f"CUSTOMER: {full_transcript}")
-                LocalStorage.set(f"transcription_for_analysis_customer, {full_transcript}")
+                LocalStorage.set("transcription_for_analysis_customer", full_transcript)
                 await self.websocket_handler.send_mark("not_listening")
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
@@ -92,7 +92,7 @@ class Orchestrator:
         logger.warning(f"Speaking: {text}")
         self.stats["Script"].append({ "role": "BOT", "dialog": text })
         if self.tts_service.stream_results:
-            LocalStorage.set(f"transcription_for_analysis_bot, {text}")
+            LocalStorage.set("transcription_for_analysis_bot", text)
             generator = self.tts_service.stream_synthesize(text)
             async for encoded_audio in generator:  # type:ignore
                 await self.websocket_handler.send_audio(encoded_audio)

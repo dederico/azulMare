@@ -31,6 +31,16 @@ class VectorBase:
         return None
 
 class LocalStorage:
+    storage = {}
+
+    @classmethod
+    def get(cls, key, default=None):
+        return cls.storage.get(key, default)
+
+    @classmethod
+    def set(cls, key, value):
+        cls.storage[key] = value
+        
     def __init__(self):
         self.dbName = os.environ.get("DATABASE")
         self.user = os.environ.get("DB_USERNAME")

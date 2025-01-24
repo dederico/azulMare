@@ -124,8 +124,8 @@ class WebSocketHandler:
 
     async def process_stream(self):
         try:
-            transcription = LocalStorage.get("transcription", "")
-            text = LocalStorage.get("text", "")
+            transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
+            transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
             
             while self.websocket.connected:
                 try:
@@ -137,8 +137,8 @@ class WebSocketHandler:
                         logger.debug("No data received, exiting loop.")
                         break
 
-                    logger.debug(f"Using shared transcription: {transcription}")
-                    logger.debug(f"Using this text: {text}")
+                    logger.debug(f"Using shared transcription: {transcription_for_analysis_customer}")
+                    logger.debug(f"Using this text: {transcription_for_analysis_bot}")
 
                     # Procesar los datos recibidos
                     chunk = await self.handle_event(data)
@@ -152,10 +152,10 @@ class WebSocketHandler:
             llm = openai.AsyncClient()
 
             # Validar y combinar transcription y text
-            if isinstance(transcription, list) and isinstance(text, list):
-                combined = transcription + text
+            if isinstance(transcription_for_analysis_customer, list) and isinstance(transcription_for_analysis_bot, list):
+                combined = transcription_for_analysis_customer + transcription_for_analysis_bot
             else:
-                logger.error("Transcription and text must be lists. Found: %s, %s", type(transcription), type(text))
+                logger.error("Transcription and text must be lists. Found: %s, %s", type(transcription_for_analysis_customer), type(transcription_for_analysis_bot))
                 return
 
             # Mensajes para el modelo

@@ -124,9 +124,10 @@ class WebSocketHandler:
 
     async def process_stream(self):
         try:
-            # transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
-            # transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
             while True:
+                if not self.is_connected:
+                    logger.debug("WebSocket is not longer connecter, exiting loop.")
+                    break
                 try:
                     data = await self.websocket.receive()
                     

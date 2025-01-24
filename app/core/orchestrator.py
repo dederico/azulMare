@@ -59,7 +59,15 @@ class Orchestrator:
             if full_transcript:
                 self.stats["Script"].append({ "role": "CUSTOMER", "dialog": full_transcript })
                 logger.warning(f"CUSTOMER: {full_transcript}")
-                LocalStorage.set("transcription_for_analysis_customer", full_transcript)
+                
+                # Obtener la transcripción actual del cliente en LocalStorage
+                current_customer_transcription = LocalStorage.get("transcription_for_analysis_customer", "")
+                # Concatenar la nueva transcripción con la existente
+                updated_customer_transcription = f"{current_customer_transcription} {full_transcript}".strip()
+                # Guardar la transcripción actualizada en LocalStorage
+                LocalStorage.set("transcription_for_analysis_customer", updated_customer_transcription)
+
+
                 await self.websocket_handler.send_mark("not_listening")
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
@@ -91,8 +99,14 @@ class Orchestrator:
     async def synthesize_and_send(self, text: str) -> None:
         logger.warning(f"Speaking: {text}")
         self.stats["Script"].append({ "role": "BOT", "dialog": text })
+        #Obtener el valor existente en LocalStorage
+        current_bot_transcription = LocalStorage.get("transcription_for_analysis_bot", "")
+        #Concatenar el nuevo texto al LocalStorage
+        updated_bot_transcription = f"{current_bot_transcription} {text}".strip()
+        # Guardar la transcripción actualizada
+        LocalStorage.set("transcription_for_analysis_bot", updated_bot_transcription)
+        
         if self.tts_service.stream_results:
-            LocalStorage.set("transcription_for_analysis_bot", text)
             generator = self.tts_service.stream_synthesize(text)
             async for encoded_audio in generator:  # type:ignore
                 await self.websocket_handler.send_audio(encoded_audio)

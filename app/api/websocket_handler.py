@@ -15,6 +15,7 @@ import wave
 import asyncio
 import openai
 from app.util.database import LocalStorage
+import json
 class WebSocketHandler:
     duration = 0.02
 
@@ -135,8 +136,15 @@ class WebSocketHandler:
                     if not data:
                         logger.debug("No data received, exiting loop.")
                         break
-                    transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
-                    transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
+                    transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "[]")
+                    transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "[]")
+                    try:
+                        transcription_for_analysis_customer = json.loads(transcription_for_analysis_customer)
+                        transcription_for_analysis_bot = json.loads(transcription_for_analysis_bot)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Error decoding transcription data: {e}")
+                        transcription_for_analysis_customer = []
+                        transcription_for_analysis_bot = []
                     logger.debug(f"Using shared transcription: {transcription_for_analysis_customer}")
                     logger.debug(f"Using this text: {transcription_for_analysis_bot}")
 

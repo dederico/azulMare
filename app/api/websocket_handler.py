@@ -14,6 +14,7 @@ import binascii
 import wave
 import asyncio
 import openai
+from app.util.database import LocalStorage
 class WebSocketHandler:
     duration = 0.02
 
@@ -123,21 +124,41 @@ class WebSocketHandler:
 
     async def process_stream(self):
         try:
-            while True:
-                #logger.debug("Waiting for customer Audio_Message")
-                # data = await self.websocket.receive_json()
-                data = await self.websocket.receive()
-                
-                chunk = await self.handle_event(data)
-                if chunk:
-                    yield chunk
-                #logger.debug("Received customer audio, processing chunk")
-        except Exception as e:
-             logger.error(
-                f"Error in WebSocket stream processing: {e}"
-            )
-            raise e
-            # llm = openai.AsyncClient()
+            transcription = LocalStorage.get("transcription", "")
+            text = LocalStorage.get("text", "")
+            
+            while self.websocket.connected:
+                try:
+                    # Recibir datos del WebSocket
+                    data = await self.websocket.receive()
+                    
+                    # Salir del bucle si no se reciben datos
+                    if not data:
+                        logger.debug("No data received, exiting loop.")
+                        break
+
+                    logger.debug(f"Using shared transcription: {transcription}")
+                    logger.debug(f"Using this text: {text}")
+
+                    # Procesar los datos recibidos
+                    chunk = await self.handle_event(data)
+                    if chunk:
+                        yield chunk
+                except Exception as e:
+                    logger.error(f"Error procesando el flujo de audio: {e}")
+                    raise e
+
+            # Crear cliente para OpenAI
+            llm = openai.AsyncClient()
+
+            # Validar y combinar transcription y text
+            if isinstance(transcription, list) and isinstance(text, list):
+                combined = transcription + text
+            else:
+                logger.error("Transcription and text must be lists. Found: %s, %s", type(transcription), type(text))
+                return
+
+            # Mensajes para el modelo
             messages = [
                 {
                     "role": "system",
@@ -145,7 +166,7 @@ class WebSocketHandler:
                     En caso de no haberla requerido, devuelve un false.
 
                     * STC-100: Si el cliente contesta.
-                    * STC-105: Si el cliente contesta, y no confirma identidad.	
+                    * STC-105: Si el cliente contesta, y no confirma identidad.    
                     * STC-110: Si el cliente contesta, y confirma identidad.
                     * STC-115: Si el cliente contesta, no confirma identidad, y no conoce al cliente.
                     * STC-120: Si el cliente contesta, no confirma identidad, pero conoce al cliente.
@@ -160,37 +181,59 @@ class WebSocketHandler:
                     {{
                         "checkpoints": ["STC-100","STC-110","STC-120"]
                     }}
-                    
                     """,
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(chat_memory.get_messages(), indent=2),
+                    "content": json.dumps(combined, indent=2),
                 },
             ]
-            # respuesta = await llm.chat.completions.create(
-            #     model="gpt-4-0125-preview",
-            #     temperature=0.1,
-            #     messages=messages,
-            #     response_format={"type": "json_object"},
-            # )
-            # checkpoints = json.loads(respuesta.choices[0].message.content)["checkpoints"]
-            
-            # dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
-            # conn = http.client.HTTPSConnection("app.ccc.uno")
-            # headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
-            
-            # for checkpoint in checkpoints:
-            #     payload = {
-            #         "status": checkpoint,
-            #         "callerid": dnid
-            #     }
-            #     data = json.dumps(payload)
-                
-            #     conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
-            #     response = conn.getresponse()
-            #     logger.debug(response.read().decode())
-            # conn.close()
+
+            try:
+                # Llamar al modelo para obtener la respuesta
+                respuesta = await llm.chat.completions.create(
+                    model="gpt-4-0125-preview",
+                    temperature=0.1,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                )
+                # Extraer checkpoints de la respuesta
+                checkpoints = json.loads(respuesta.choices[0].message.content).get("checkpoints", [])
+            except Exception as e:
+                logger.error(f"Error al procesar la respuesta del modelo: {e}")
+                return
+
+            # Formatear el identificador del cliente
+            dnid = f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+
+            # Configurar conexión HTTP
+            conn = http.client.HTTPSConnection("app.ccc.uno")
+            headers = {"accept": "application/json", "Content-Type": "application/json"}
+
+            try:
+                # Enviar cada checkpoint como payload
+                for checkpoint in checkpoints:
+                    payload = {
+                        "status": checkpoint,
+                        "callerid": dnid
+                    }
+                    data = json.dumps(payload)
+
+                    conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
+                    response = conn.getresponse()
+                    logger.debug(f"Response from server: {response.status} {response.read().decode()}")
+
+                    if response.status != 200:
+                        logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
+            except Exception as e:
+                logger.error(f"Error al enviar datos al servidor: {e}")
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"Error general en process_stream: {e}")
+            raise e
+
+
 
     async def handle_event(self, data):
         if 'text' in data:

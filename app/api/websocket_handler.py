@@ -136,8 +136,16 @@ class WebSocketHandler:
                     if not data:
                         logger.debug("No data received, exiting loop.")
                         break
-                    transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "[]")
-                    transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "[]")
+                    # Obtener y convertir datos a listas
+                    transcription_for_analysis_customer = self._ensure_list(LocalStorage.get("transcription_for_analysis_customer", "[]"))
+                    transcription_for_analysis_bot = self._ensure_list(LocalStorage.get("transcription_for_analysis_bot", "[]"))
+
+                    # Validar que no sean cadenas vacías
+                    if not transcription_for_analysis_customer:
+                        transcription_for_analysis_customer = "[]"
+                    if not transcription_for_analysis_bot:
+                        transcription_for_analysis_bot = "[]"
+
                     try:
                         transcription_for_analysis_customer = json.loads(transcription_for_analysis_customer)
                         transcription_for_analysis_bot = json.loads(transcription_for_analysis_bot)
@@ -241,6 +249,24 @@ class WebSocketHandler:
             logger.error(f"Error general en process_stream: {e}")
             raise e
 
+    def _ensure_list(self, data):
+        """Convierte cualquier entrada en una lista válida."""
+        try:
+            # Intentar cargar como JSON
+            if isinstance(data, str):
+                parsed_data = json.loads(data)
+            else:
+                parsed_data = data
+
+            # Si es una lista, devolverla
+            if isinstance(parsed_data, list):
+                return parsed_data
+
+            # Convertir otros tipos de datos en listas
+            return [parsed_data]
+        except Exception as e:
+            logger.error(f"Error convirtiendo datos a lista: {e}")
+            return []
 
 
     async def handle_event(self, data):

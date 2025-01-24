@@ -40,7 +40,8 @@ from langchain_community.chat_message_histories.in_memory import ChatMessageHist
 from langchain.schema import HumanMessage, AIMessage
 from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
-
+from pathlib import Path
+import http.client
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
@@ -53,6 +54,53 @@ router = APIRouter()
 # Historial en memoria para una conversación dinámica
 user_histories = {}
 
+async def initial_greet(call_id: str):
+    """
+    Ends an active call associated with the specified call_id.
+
+    :param call_id: The ID of the ongoing call.
+    :return: JSON response confirming the hangup.
+    """
+    # Obtener la hora actual
+    current_hour = datetime.now().hour
+
+    # Seleccionar el archivo de audio según el momento del día
+    if 6 <= current_hour < 12:
+        wav_file_name = "buenos_dias.wav"
+    elif 12 <= current_hour < 20:
+        wav_file_name = "buen_dia.wav"
+    else:
+        wav_file_name = "buenas_noches.wav"
+
+    # Ruta al archivo WAV
+    current_dir = Path(__file__).resolve().parent
+    parent_dir = current_dir.parent
+    wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", wav_file_name)
+    
+    # Leer el archivo WAV
+    with open(wav_path, "rb") as wav_file:
+        wav_data = wav_file.read()
+    
+    # Codificar el audio en base64
+    audio_base64 = base64.b64encode(wav_data).decode(encoding="utf-8")
+
+    # Crear el payload
+    payload = {
+        "call_id": int(call_id),
+        "action": "playback",
+        "data": {"audio_base64": f"{audio_base64}"}
+    }
+
+    # Enviar la solicitud
+    conn = http.client.HTTPSConnection("websockets.ccc.uno")
+    headers = {"accept": "application/json", "Content-Type": "application/json"}
+    data = json.dumps(payload)
+
+    conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
+    response = conn.getresponse()
+    logger.debug(response.status)
+    logger.debug(response.read().decode())
+    
 @router.post("/")
 async def post(request: Request):
     response = VoiceResponse()
@@ -77,7 +125,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
-
+    await initial_greet(call_id=websocket_handler.call_sid)
     # Set up Deepgram as the Speech-to-Text (STT) Model
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)
 
@@ -119,6 +167,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Get call SID and customer identity
     call_sid = websocket_handler.call_sid
+  
     customer_identity = await get_customer_identity(call_sid)
     call.callerName = customer_identity
     context = websocket_handler.initial_data

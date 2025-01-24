@@ -13,6 +13,7 @@ from pydub import AudioSegment
 import binascii
 import wave
 import asyncio
+import openai
 class WebSocketHandler:
     duration = 0.02
 
@@ -131,18 +132,65 @@ class WebSocketHandler:
                 if chunk:
                     yield chunk
                 #logger.debug("Received customer audio, processing chunk")
-                
-                
-
-        except WebSocketDisconnect:
-            logger.warning("WebSocket disconnected reason unknown")
-            raise WebSocketDisconnect
-
         except Exception as e:
-            logger.error(
+             logger.error(
                 f"Error in WebSocket stream processing: {e}"
             )
             raise e
+            # llm = openai.AsyncClient()
+            messages = [
+                {
+                    "role": "system",
+                    "content": """Analiza la conversacion y devuelve un json con base a lo contestado por el cliente, identificando todos los puntos cumplidos.
+                    En caso de no haberla requerido, devuelve un false.
+
+                    * STC-100: Si el cliente contesta.
+                    * STC-105: Si el cliente contesta, y no confirma identidad.	
+                    * STC-110: Si el cliente contesta, y confirma identidad.
+                    * STC-115: Si el cliente contesta, no confirma identidad, y no conoce al cliente.
+                    * STC-120: Si el cliente contesta, no confirma identidad, pero conoce al cliente.
+                    * STC-125: Si el cliente contesta, confirma identidad y paga el día de hoy.
+                    * STC-130: Si el cliente contesta, confirma identidad, y no puede pagar hoy.
+                    * STC-135: Si el cliente contesta, confirma identidad, y no puede pagar antes de la fecha límite.
+                    * STC-140: Si el cliente contesta, confirma identidad, y puede pagar antes de la fecha límite.
+                    * STC-145: Si el cliente contesta, confirma identidad, no puede pagar antes de la fecha límite, y es transferido a un agente.
+                    
+                    Ejemplo
+                    
+                    {{
+                        "checkpoints": ["STC-100","STC-110","STC-120"]
+                    }}
+                    
+                    """,
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(chat_memory.get_messages(), indent=2),
+                },
+            ]
+            # respuesta = await llm.chat.completions.create(
+            #     model="gpt-4-0125-preview",
+            #     temperature=0.1,
+            #     messages=messages,
+            #     response_format={"type": "json_object"},
+            # )
+            # checkpoints = json.loads(respuesta.choices[0].message.content)["checkpoints"]
+            
+            # dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+            # conn = http.client.HTTPSConnection("app.ccc.uno")
+            # headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
+            
+            # for checkpoint in checkpoints:
+            #     payload = {
+            #         "status": checkpoint,
+            #         "callerid": dnid
+            #     }
+            #     data = json.dumps(payload)
+                
+            #     conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
+            #     response = conn.getresponse()
+            #     logger.debug(response.read().decode())
+            # conn.close()
 
     async def handle_event(self, data):
         if 'text' in data:

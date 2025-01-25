@@ -223,7 +223,7 @@ class WebSocketHandler:
                         "callerid": dnid
                     }
                     data = json.dumps(payload)
-                    
+
                     # Agregar logger para imprimir la petición antes de enviarla
                     logger.debug(f"Preparing to send POST request with payload: {data}")
 
@@ -233,6 +233,10 @@ class WebSocketHandler:
 
                     if response.status != 200:
                         logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
+                    # Limpiar el almacenamiento después de enviar los datos
+                    LocalStorage.set("transcription_for_analysis_customer", "")
+                    LocalStorage.set("transcription_for_analysis_bot", "")
+                    logger.debug("Local storage cleared after processing the call.")
             except Exception as e:
                 logger.error(f"Error al enviar datos al servidor: {e}")
             finally:

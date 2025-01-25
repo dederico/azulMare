@@ -126,35 +126,31 @@ class WebSocketHandler:
     async def process_stream(self):
         try:
             while True:
+                # Verificar si el WebSocket sigue conectado
                 if not self.is_connected:
-                    logger.debug("WebSocket is not longer connecter, exiting loop.")
+                    logger.debug("WebSocket is no longer connected, exiting loop.")
                     break
+                
                 try:
                     data = await self.websocket.receive()
-                    
+
                     # Salir del bucle si no se reciben datos
                     if not data:
                         logger.debug("No data received, exiting loop.")
                         break
-                    # Obtener y convertir datos a listas
-                    transcription_for_analysis_customer = self._ensure_list(LocalStorage.get("transcription_for_analysis_customer", "[]"))
-                    transcription_for_analysis_bot = self._ensure_list(LocalStorage.get("transcription_for_analysis_bot", "[]"))
 
-                    # Validar que no sean cadenas vacías
-                    if not transcription_for_analysis_customer:
-                        transcription_for_analysis_customer = "[]"
-                    if not transcription_for_analysis_bot:
-                        transcription_for_analysis_bot = "[]"
+                    # Obtener los datos del almacenamiento local
+                    transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
+                    transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
 
-                    try:
-                        transcription_for_analysis_customer = json.loads(transcription_for_analysis_customer)
-                        transcription_for_analysis_bot = json.loads(transcription_for_analysis_bot)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Error decoding transcription data: {e}")
-                        transcription_for_analysis_customer = []
-                        transcription_for_analysis_bot = []
-                    logger.debug(f"Using shared transcription: {transcription_for_analysis_customer}")
-                    logger.debug(f"Using this text: {transcription_for_analysis_bot}")
+                    logger.debug(f"Raw transcription_for_analysis_customer: {transcription_for_analysis_customer}")
+                    logger.debug(f"Raw transcription_for_analysis_bot: {transcription_for_analysis_bot}")
+
+                    # Preparar y combinar los datos, asegurando que sean listas
+                    combined = self._prepare_and_combine(
+                        transcription_for_analysis_customer, transcription_for_analysis_bot
+                    )
+                    logger.debug(f"Combined transcription: {combined}")
 
                     # Procesar los datos recibidos
                     chunk = await self.handle_event(data)
@@ -166,13 +162,6 @@ class WebSocketHandler:
 
             # Crear cliente para OpenAI
             llm = openai.AsyncClient()
-
-            # Validar y combinar transcription y text
-            if isinstance(transcription_for_analysis_customer, list) and isinstance(transcription_for_analysis_bot, list):
-                combined = transcription_for_analysis_customer + transcription_for_analysis_bot
-            else:
-                logger.error("Transcription and text must be lists. Found: %s, %s", type(transcription_for_analysis_customer), type(transcription_for_analysis_bot))
-                return
 
             # Mensajes para el modelo
             messages = [
@@ -234,6 +223,9 @@ class WebSocketHandler:
                         "callerid": dnid
                     }
                     data = json.dumps(payload)
+                    
+                    # Agregar logger para imprimir la petición antes de enviarla
+                    logger.debug(f"Preparing to send POST request with payload: {data}")
 
                     conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
                     response = conn.getresponse()
@@ -249,24 +241,33 @@ class WebSocketHandler:
             logger.error(f"Error general en process_stream: {e}")
             raise e
 
-    def _ensure_list(self, data):
-        """Convierte cualquier entrada en una lista válida."""
-        try:
-            # Intentar cargar como JSON
-            if isinstance(data, str):
-                parsed_data = json.loads(data)
-            else:
-                parsed_data = data
+    def _prepare_and_combine(self, customer_data, bot_data):
+        """
+        Convierte los datos recibidos a listas y los combina de forma segura.
+        Siempre retorna una lista válida combinada.
+        """
+        def ensure_list(data):
+            try:
+                if isinstance(data, str) and data.strip():  # Si es un string no vacío
+                    try:
+                        # Intentar parsear como JSON primero
+                        return json.loads(data)
+                    except json.JSONDecodeError:
+                        # Si no es JSON válido, encapsular el string en una lista
+                        return [data]
+                elif isinstance(data, list):  # Si ya es una lista
+                    return data
+                return []  # Cualquier otra cosa, lista vacía
+            except Exception as e:
+                logger.error(f"Error asegurando lista: {e} | Data: {data}")
+                return []
 
-            # Si es una lista, devolverla
-            if isinstance(parsed_data, list):
-                return parsed_data
+        # Asegurar que ambos datos sean listas válidas
+        customer_list = ensure_list(customer_data)
+        bot_list = ensure_list(bot_data)
 
-            # Convertir otros tipos de datos en listas
-            return [parsed_data]
-        except Exception as e:
-            logger.error(f"Error convirtiendo datos a lista: {e}")
-            return []
+        # Combinar las listas
+        return customer_list + bot_list
 
 
     async def handle_event(self, data):

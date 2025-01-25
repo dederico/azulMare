@@ -221,35 +221,32 @@ class WebSocketHandler:
         if not checkpoints:
             logger.debug("No checkpoints to send. Skipping HTTP request.")
             return
-
-        dnid = f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
-        payload = {
-            "status": checkpoints,  # Todos los checkpoints acumulados
-            "callerid": dnid
-        }
-        data = json.dumps(payload)
-        logger.debug(f"Preparing to send POST request with payload: {data}")
-
         conn = http.client.HTTPSConnection("app.ccc.uno")
         headers = {"accept": "application/json", "Content-Type": "application/json"}
-        
-        try:
-            conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
-            response = conn.getresponse()
-            logger.debug(f"Response from server: {response.status} {response.read().decode()}")
+        dnid = f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+        for checkpoint in checkpoints:
+                payload = {
+                    "status": checkpoint,
+                    "callerid": dnid
+                }
+                data = json.dumps(payload)
+                try:
+                    conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
+                    response = conn.getresponse()
+                    logger.debug(f"Response from server: {response.status} {response.read().decode()}")
 
-            if response.status == 200:
-                logger.debug("Checkpoints sent successfully.")
-            else:
-                logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
-        except Exception as e:
-            logger.error(f"Error al enviar datos al servidor: {e}")
-        finally:
-            # Limpiar almacenamiento local independientemente del resultado
-            LocalStorage.set("transcription_for_analysis_customer", "")
-            LocalStorage.set("transcription_for_analysis_bot", "")
-            logger.debug("Local storage cleared after attempting to send checkpoints.")
-            conn.close()
+                    if response.status == 200:
+                        logger.debug("Checkpoints sent successfully.")
+                    else:
+                        logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
+                except Exception as e:
+                    logger.error(f"Error al enviar datos al servidor: {e}")
+                finally:
+                    # Limpiar almacenamiento local independientemente del resultado
+                    LocalStorage.set("transcription_for_analysis_customer", "")
+                    LocalStorage.set("transcription_for_analysis_bot", "")
+                    logger.debug("Local storage cleared after attempting to send checkpoints.")
+                    conn.close()
 
     def _prepare_and_combine(self, customer_data, bot_data):
         """

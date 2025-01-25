@@ -124,6 +124,8 @@ class WebSocketHandler:
                 break
 
     async def process_stream(self):
+        collected_checkpoints = []  # Lista para acumular los checkpoints
+
         try:
             while True:
                 # Verificar si el WebSocket sigue conectado
@@ -142,9 +144,6 @@ class WebSocketHandler:
                     # Obtener los datos del almacenamiento local
                     transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
                     transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
-
-                    logger.debug(f"Raw transcription_for_analysis_customer: {transcription_for_analysis_customer}")
-                    logger.debug(f"Raw transcription_for_analysis_bot: {transcription_for_analysis_bot}")
 
                     # Preparar y combinar los datos, asegurando que sean listas
                     combined = self._prepare_and_combine(
@@ -167,7 +166,7 @@ class WebSocketHandler:
             messages = [
                 {
                     "role": "system",
-                    "content": """Analiza la conversacion y devuelve un json con base a lo contestado por el cliente, identificando todos los puntos cumplidos.
+                    "content": """Analiza la conversación y devuelve un json con base a lo contestado por el cliente, identificando todos los puntos cumplidos.
                     En caso de no haberla requerido, devuelve un false.
 
                     * STC-100: Si el cliente contesta.
@@ -204,46 +203,47 @@ class WebSocketHandler:
                 )
                 # Extraer checkpoints de la respuesta
                 checkpoints = json.loads(respuesta.choices[0].message.content).get("checkpoints", [])
+                collected_checkpoints.extend(checkpoints)  # Acumular checkpoints generados
             except Exception as e:
                 logger.error(f"Error al procesar la respuesta del modelo: {e}")
                 return
-
-            # Formatear el identificador del cliente
-            dnid = f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
-
-            # Configurar conexión HTTP
-            conn = http.client.HTTPSConnection("app.ccc.uno")
-            headers = {"accept": "application/json", "Content-Type": "application/json"}
-
-            try:
-                # Enviar cada checkpoint como payload
-                for checkpoint in checkpoints:
-                    payload = {
-                        "status": checkpoint,
-                        "callerid": dnid
-                    }
-                    data = json.dumps(payload)
-
-                    # Agregar logger para imprimir la petición antes de enviarla
-                    logger.debug(f"Preparing to send POST request with payload: {data}")
-
-                    conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
-                    response = conn.getresponse()
-                    logger.debug(f"Response from server: {response.status} {response.read().decode()}")
-
-                    if response.status != 200:
-                        logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
-                    # Limpiar el almacenamiento después de enviar los datos
-                    LocalStorage.set("transcription_for_analysis_customer", "")
-                    LocalStorage.set("transcription_for_analysis_bot", "")
-                    logger.debug("Local storage cleared after processing the call.")
-            except Exception as e:
-                logger.error(f"Error al enviar datos al servidor: {e}")
-            finally:
-                conn.close()
         except Exception as e:
             logger.error(f"Error general en process_stream: {e}")
             raise e
+        
+        # Enviar todos los checkpoints acumulados al finalizar
+        await self._send_collected_checkpoints(collected_checkpoints)
+
+    async def _send_collected_checkpoints(self, checkpoints):
+        """
+        Envía todos los checkpoints acumulados en una sola solicitud HTTP.
+        """
+        if not checkpoints:
+            logger.debug("No checkpoints to send. Skipping HTTP request.")
+            return
+
+        dnid = f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+        payload = {
+            "status": checkpoints,  # Todos los checkpoints acumulados
+            "callerid": dnid
+        }
+        data = json.dumps(payload)
+        logger.debug(f"Preparing to send POST request with payload: {data}")
+
+        conn = http.client.HTTPSConnection("app.ccc.uno")
+        headers = {"accept": "application/json", "Content-Type": "application/json"}
+        
+        try:
+            conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
+            response = conn.getresponse()
+            logger.debug(f"Response from server: {response.status} {response.read().decode()}")
+
+            if response.status != 200:
+                logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
+        except Exception as e:
+            logger.error(f"Error al enviar datos al servidor: {e}")
+        finally:
+            conn.close()
 
     def _prepare_and_combine(self, customer_data, bot_data):
         """

@@ -223,7 +223,7 @@ class WebSocketHandler:
             return
         conn = http.client.HTTPSConnection("app.ccc.uno")
         headers = {"accept": "application/json", "Content-Type": "application/json"}
-        dnid = f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+        dnid = f"{self.stream_sid}#{self.call_sid}#{self.number}"
         for checkpoint in checkpoints:
                 payload = {
                     "status": checkpoint,

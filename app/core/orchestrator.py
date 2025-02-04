@@ -49,6 +49,7 @@ class Orchestrator:
             self.log(str(e))
             self.stats["Status"] = "PARTIAL_COMPLETED"
 
+        logger.warning(self.stats)
         return self.stats
 
     async def handler(self, transcription: dict) -> None:

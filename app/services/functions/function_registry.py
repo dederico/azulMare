@@ -10,4 +10,5 @@ from .implementations.hangup_function import actions_call
 from .implementations.transfer_agent_function import actions_call_transfer
 
 #registered_functions = [get_current_date, get_customer_identity, get_credit_card_options, hangup, get_current_weather, create_google_event] #send_ticket_email]
-registered_functions = [save_client_selection,actions_call,actions_call_transfer]
+# registered_functions = [save_client_selection,actions_call,actions_call_transfer]
+registered_functions = [actions_call,actions_call_transfer]

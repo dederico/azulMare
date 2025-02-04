@@ -36,7 +36,6 @@ class WebSocketHandler:
         :return: JSON response with lead information.
         """
         try:
-            logger.debug(dnid)
             endpoint_url = f"https://app.ccc.uno/api/autoagent/{dnid}"
 
             async with httpx.AsyncClient() as client:
@@ -70,13 +69,30 @@ class WebSocketHandler:
             # Calcular duración
             duration = n_frames / float(frame_rate)
             adjusted_duration = max(duration - 0.5, 0)
-            print(f"Frecuencia de muestreo: {frame_rate} Hz")
-            print(f"Número de frames: {n_frames}")
-            print(f"Número de canales: {channels}")
-            print(f"Ancho de muestra: {sample_width} bytes")
-            print(f"Duración calculada: {duration:.2f} segundos")
 
             return adjusted_duration
+    def base64_wav_to_pcm(self, base64_string):
+        """
+        Convierte un archivo WAV en formato Base64 a bytes PCM sin encabezado WAV.
+        
+        :param base64_string: String en Base64 del archivo WAV.
+        :return: Bytes PCM puros.
+        """
+        # Decodificar el string Base64 a bytes WAV
+        wav_bytes = base64.b64decode(base64_string)
+
+        # Cargar el WAV en un buffer de memoria
+        with wave.open(io.BytesIO(wav_bytes), 'rb') as wav_file:
+            # Obtener información del audio
+            n_channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            frame_rate = wav_file.getframerate()
+            n_frames = wav_file.getnframes()
+
+            # Leer los datos PCM (sin encabezado WAV)
+            pcm_bytes = wav_file.readframes(n_frames)
+
+        return pcm_bytes
     async def actions_call(self,call_id: str,action:str,data:bytes=None):
         """
         Ends an active call associated with the specified call_id.
@@ -99,7 +115,6 @@ class WebSocketHandler:
                 "call_id": int(call_id),
                 "action": action
             }
-        logger.debug(f"{call_id}")
         conn = http.client.HTTPSConnection("websockets.ccc.uno")
         params = payload  # Parámetros de consulta
         headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
@@ -116,8 +131,8 @@ class WebSocketHandler:
     
     async def connect(self):
         await self.websocket.accept()
-
-        logger.debug("Customer call connected processing audio channel")
+        #debug
+        #logger.debug("Customer call connected processing audio channel")
         async for _ in self.process_stream():
             if self.stream_sid:
                 logger.debug("stream_sid break")
@@ -149,7 +164,8 @@ class WebSocketHandler:
                     combined = self._prepare_and_combine(
                         transcription_for_analysis_customer, transcription_for_analysis_bot
                     )
-                    logger.debug(f"Combined transcription: {combined}")
+                    #debug
+                    # logger.debug(f"Combined transcription: {combined}") 
 
                     # Procesar los datos recibidos
                     chunk = await self.handle_event(data)
@@ -284,7 +300,7 @@ class WebSocketHandler:
                 self.stream_sid, self.call_sid, self.number = datos.split('#')
                 logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number}")
                 dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
-                logger.debug(dnid)
+                # logger.debug(dnid)
                 context=await self.get_lead(dnid=dnid)
                 logger.warning(f"context: {context}")
                 self.initial_data=context
@@ -337,7 +353,8 @@ class WebSocketHandler:
         logger.debug("Received audio frame from Robot")
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
-            self.playsequence.append(audio_data)
+            byte_data = self.base64_wav_to_pcm(audio_data)
+            self.playsequence.append(byte_data)
             await self.actions_call(self.call_sid,"playback",audio_data)
             # await self.websocket.send_json(
             #     {
@@ -372,4 +389,10 @@ class WebSocketHandler:
     
     @property
     def audio_sequence(self):
-        return self.playsequence
+        # return self.playsequence
+        if not self.playsequence:
+            return ""  # Evita errores si la lista está vacía
+        # Convertir a Base64 y devolverlo como string
+        audio_bytes = b"".join(self.playsequence)
+
+        return base64.b64encode(audio_bytes).decode("utf-8")

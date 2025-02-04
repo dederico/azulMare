@@ -7,8 +7,11 @@ import json
 from io import StringIO
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
-
-
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("aiobotocore").setLevel(logging.WARNING)
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logging.getLogger("boto").setLevel(logging.WARNING)
 
 # load_dotenv()
 load_dotenv(override=True)
@@ -42,6 +45,7 @@ from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
 from pathlib import Path
 import http.client
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
@@ -116,22 +120,18 @@ async def post(request: Request):
 
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
-    #Inicia el Websocket
+    
+    logger.info("Got new INCOMING_CALL")
+
     websocket_handler = WebSocketHandler(ws)
-    #Conecta el Websocket
     await websocket_handler.connect()
-    #Saludo inicial "antes" para no generar latencia al crear la db
     await initial_greet(call_id=websocket_handler.call_sid)
-    #Crear la db
+    # Set up Deepgram as the Speech-to-Text (STT) Model
+    #stt_service = DeepgramService(DEEPGRAM_API_KEY)
     db = LocalStorage()
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
     logger.info(f"config {config}")
     logHandler = get_thread_log_handler(config.get("rawLogs", 10))
-
-    logger.info("Got new INCOMING_CALL")
-
-    # Set up Deepgram as the Speech-to-Text (STT) Model
-    #stt_service = DeepgramService(DEEPGRAM_API_KEY)
 
     # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
     logger.debug("Setting up transcription service")
@@ -148,6 +148,7 @@ async def websocket_endpoint(ws: WebSocket):
     now = datetime.now()
     callDirection = "Inbound"
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
+    context = websocket_handler.initial_data
     if call:
         callDirection = "Outbound"
         call.callStatus = "IN_PROGRESS"
@@ -155,11 +156,12 @@ async def websocket_endpoint(ws: WebSocket):
     else:
         call = Call(
             callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
+            callerName= context['context']['NOMBRE'],
             callSource = "Layer7",
             callType = "IP",
             callDirection = "IN_COMING",
             callStatus = "IN_PROGRESS",
-            callNumber = "Not Available",
+            callNumber = websocket_handler.number,
             callUid = websocket_handler.call_sid
         )
         call = db.Insert(call)
@@ -172,15 +174,14 @@ async def websocket_endpoint(ws: WebSocket):
     # Get call SID and customer identity
     call_sid = websocket_handler.call_sid
   
-    customer_identity = await get_customer_identity(call_sid)
-    call.callerName = customer_identity
-    context = websocket_handler.initial_data
-
+    # customer_identity = await get_customer_identity(call_sid)
+    #call.callerName = customer_identity
+    
     logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context),
+        system=system_message.format(customer_name=call.callerName, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context),
         function_manager=function_manager
     )
     logger.debug("RECIBIENDO CONTEXTO",context)
@@ -212,9 +213,12 @@ async def websocket_endpoint(ws: WebSocket):
     )
 
     logger.debug("Starting a conversation with caller")
-    stats = await orchestrator.process_audio_stream()
-
-    # Sync the call record in case of AMD detection event was triggered
+    
+    try:
+        stats = await orchestrator.process_audio_stream()
+    except Exception as e:
+        logger.warning("Cacha excepción al final de la llamada")
+    logger.warning("registrando cambios al finalizar")
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     call.callLogs = logHandler.stream.getvalue()
 
@@ -238,6 +242,8 @@ async def websocket_endpoint(ws: WebSocket):
             hook["function"](call, config)
 
     cleanup_call_logger()
+
+    
 
 @router.post("/whatsapp")
 async def whatsapp(request: Request):

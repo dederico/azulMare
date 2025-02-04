@@ -394,5 +394,29 @@ class WebSocketHandler:
             return ""  # Evita errores si la lista está vacía
         # Convertir a Base64 y devolverlo como string
         audio_bytes = b"".join(self.playsequence)
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wf:
+            wf.setnchannels(1)  # Mono audio
+            wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
+            wf.setframerate(int(8000))  # Frecuencia de muestreo
+            wf.writeframes(audio_bytes)
 
-        return base64.b64encode(audio_bytes).decode("utf-8")
+        # Obtener datos WAV desde el buffer
+        wav_buffer.seek(0)
+        wav_data = wav_buffer.read()
+
+        audio_segment = AudioSegment(
+            audio_bytes, sample_width=2, frame_rate=8000, channels=1
+        )
+
+        mp3_buffer = io.BytesIO()
+        audio_segment.export(mp3_buffer, format="mp3", bitrate="64k")  # Exportar como MP3
+
+        # Obtener los datos MP3 desde el buffer
+        mp3_buffer.seek(0)
+        mp3_data = mp3_buffer.read()
+
+        base64_audio = base64.b64encode(mp3_data).decode("utf-8")
+        # Convertir a Base64
+        # base64_audio = base64.b64encode(wav_data).decode("utf-8")
+        return base64_audio 

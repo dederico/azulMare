@@ -49,6 +49,38 @@ class WebSocketHandler:
             raise HTTPException(status_code=500, detail=f"Failed to fetch lead information: {e}")
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=response.status_code, detail=f"Error from lead service: {e.response.text}")
+    def convert_wav_base64_to_ulaw_base64(self,wav_base64):
+        """
+        Convierte un archivo WAV en formato Base64 (PCM 16 bits) a u-law y lo codifica en Base64.
+
+        :param wav_base64: String Base64 del archivo WAV original (PCM 16 bits).
+        :return: String Base64 del archivo WAV convertido a u-law.
+        """
+        # Decodificar el Base64 a bytes WAV
+        wav_bytes = base64.b64decode(wav_base64)
+
+        with wave.open(io.BytesIO(wav_bytes), 'rb') as wav_file:
+            n_channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            frame_rate = wav_file.getframerate()
+            n_frames = wav_file.getnframes()
+
+            # Leer datos PCM 16 bits
+            pcm_bytes = wav_file.readframes(n_frames)
+
+            # Convertir de PCM 16 bits a u-law
+            ulaw_bytes = audioop.lin2ulaw(pcm_bytes, sample_width)
+
+            # Crear un nuevo archivo WAV en formato u-law
+            ulaw_buffer = io.BytesIO()
+            with wave.open(ulaw_buffer, 'wb') as ulaw_wav:
+                ulaw_wav.setnchannels(n_channels)  # Mono
+                ulaw_wav.setsampwidth(1)  # u-law usa 8 bits (1 byte)
+                ulaw_wav.setframerate(frame_rate)
+                ulaw_wav.writeframes(ulaw_bytes)
+
+            # Convertir a Base64 nuevamente
+            return base64.b64encode(ulaw_buffer.getvalue()).decode('utf-8')
     def calculate_wav_duration_from_base64(self,base64_audio: str) -> float:
         """
         Calcula la duración de un archivo WAV a partir de su representación Base64.
@@ -332,20 +364,20 @@ class WebSocketHandler:
             # Convert from µ-law to PCM linear format
             # raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
             raw_audio_data = audio_payload
-            rms = audioop.rms(raw_audio_data, 2)  # Calculate RMS
+            rms = audioop.rms(audio_payload, 2)  # Calculate RMS
             # Check if the audio is loud enough and in "listening" state
             if rms > 300 and (self.switch == "listening" or self.switch is None):
                 wav_buffer = io.BytesIO()
                 with wave.open(wav_buffer, 'wb') as wf:
-                    wf.setnchannels(1)  # Mono audio
-                    wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
-                    wf.setframerate(int(8000))  # Frecuencia de muestreo
-                    wf.writeframes(audio_payload)
+                    wf.setnchannels(1)  # Mono
+                    wf.setsampwidth(2)  # PCM 16 bits usa 2 bytes por muestra
+                    wf.setframerate(8000)  # Frecuencia de muestreo 8 kHz
+                    wf.writeframes(data)  # Guardar datos PCM 16 bits
 
-                # Obtener datos WAV desde el buffer
+                # 📌 Guardar el audio en Base64 para enviarlo al frontend
                 wav_buffer.seek(0)
                 wav_data = wav_buffer.read()
-                self.playsequence.append(base64.b64encode(wav_data).decode("utf-8"))  # Append the raw payload
+                self.playsequence.append(base64.b64encode(wav_data).decode("utf-8"))
                 return raw_audio_data
             else:
                 # Generate silence if below threshold or not in listening state
@@ -402,7 +434,9 @@ class WebSocketHandler:
     
     @property
     def audio_sequence(self):
-         return self.playsequence
+        #  return self.playsequence
+        ulaw_base64_list = [self.convert_wav_base64_to_ulaw_base64(wav) for wav in self.playsequence]
+        return ulaw_base64_list
         # if not self.playsequence:
         #     return [] # Evita errores si la lista está vacía
         # audio_bytes = b"".join(self.playsequence)

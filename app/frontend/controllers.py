@@ -11,7 +11,7 @@ from app.models.Config import Config
 from app.models.Notification import Notification
 from app.util.database import LocalStorage
 from app.outbound import InitOutboundCalls
-
+from datetime import datetime
 class Context:
     def __init__(self, fragment, method, payload=None):
         self.__fragment = fragment
@@ -68,10 +68,12 @@ class Context:
         
         return { "audios": [] }
     
+    
     def __script(self, **kwargs):
+        now = datetime.now()
         call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
         if call["callScript"]:
-            return { "script": json.loads(call['callScript']) }
+            return { "script": json.loads(call['callScript'] + " " + now) }
         
         return { "script": [] }
     

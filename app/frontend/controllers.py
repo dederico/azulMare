@@ -71,9 +71,10 @@ class Context:
     
     def __script(self, **kwargs):
         now = datetime.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
         call = self.__ls.GetByPK(Call, kwargs['id'], json=True)
         if call["callScript"]:
-            return { "script": json.loads(call['callScript'] + " " + now) }
+            return { "script": json.loads(call['callScript'] + " " + now_str) }
         
         return { "script": [] }
     

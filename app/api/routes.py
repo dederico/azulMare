@@ -116,6 +116,13 @@ async def post(request: Request):
 
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
+    #Inicia el Websocket
+    websocket_handler = WebSocketHandler(ws)
+    #Conecta el Websocket
+    await websocket_handler.connect()
+    #Saludo inicial "antes" para no generar latencia al crear la db
+    await initial_greet(call_id=websocket_handler.call_sid)
+    #Crear la db
     db = LocalStorage()
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
     logger.info(f"config {config}")
@@ -123,9 +130,6 @@ async def websocket_endpoint(ws: WebSocket):
 
     logger.info("Got new INCOMING_CALL")
 
-    websocket_handler = WebSocketHandler(ws)
-    await websocket_handler.connect()
-    await initial_greet(call_id=websocket_handler.call_sid)
     # Set up Deepgram as the Speech-to-Text (STT) Model
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)
 

@@ -133,6 +133,9 @@ class WebSocketHandler:
         await self.websocket.accept()
         #debug
         #logger.debug("Customer call connected processing audio channel")
+        client_ip = self.websocket.client.host
+        client_port = self.websocket.client.port
+        logger.warning(f"Cliente conectado desde {client_ip}:{client_port}")
         async for _ in self.process_stream():
             if self.stream_sid:
                 logger.debug("stream_sid break")

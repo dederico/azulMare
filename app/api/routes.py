@@ -125,6 +125,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
+    
     await initial_greet(call_id=websocket_handler.call_sid)
     # Set up Deepgram as the Speech-to-Text (STT) Model
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)

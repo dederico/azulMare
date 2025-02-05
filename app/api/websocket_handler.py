@@ -354,7 +354,14 @@ class WebSocketHandler:
 
         # elif data["event"] == "mark":
         #     self.switch = data["mark"]["name"]
-
+    def detect_audio_format(self, data):
+        try:
+            # Intentar convertir desde µ-law a PCM 16-bit
+            test_pcm = audioop.ulaw2lin(data[:10], 2)
+            logger.debug("µ-law (necesita conversión a PCM)")
+        except audioop.error:
+            logger.debug("PCM (sin conversión adicional necesaria)")
+            
     async def process_media_event(self, data):
         # Assume `data` is already in bytes format
         audio_payload = data  # `data` is treated as Base64 bytes
@@ -365,20 +372,22 @@ class WebSocketHandler:
             # Convert from µ-law to PCM linear format
             # raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
             raw_audio_data = audio_payload
+            # self.detect_audio_format(data)
             rms = audioop.rms(audio_payload, 2)  # Calculate RMS
             # Check if the audio is loud enough and in "listening" state
             if rms > 300 and (self.switch == "listening" or self.switch is None):
+                pcm = audioop.ulaw2lin(audio_payload, 2)
                 wav_buffer = io.BytesIO()
                 with wave.open(wav_buffer, 'wb') as wf:
                     wf.setnchannels(1)  # Mono
                     wf.setsampwidth(2)  # PCM 16 bits usa 2 bytes por muestra
                     wf.setframerate(8000)  # Frecuencia de muestreo 8 kHz
-                    wf.writeframes(data)  # Guardar datos PCM 16 bits
+                    wf.writeframes(pcm)  # Guardar datos PCM 16 bits
 
                 # 📌 Guardar el audio en Base64 para enviarlo al frontend
                 wav_buffer.seek(0)
                 wav_data = wav_buffer.read()
-                self.playsequence.append(base64.b64encode(wav_data).decode("utf-8"))
+                self.playsequence.append(raw_audio_data)
                 return raw_audio_data
             else:
                 # Generate silence if below threshold or not in listening state
@@ -399,8 +408,8 @@ class WebSocketHandler:
         logger.debug("Received audio frame from Robot")
         if self.is_connected:
             logger.debug("Socket is connected, sending audio frame to customer")
-            # byte_data = self.base64_wav_to_pcm(audio_data)
-            self.playsequence.append(audio_data)
+            byte_data = self.base64_wav_to_pcm(audio_data)
+            self.playsequence.append(byte_data)
             await self.actions_call(self.call_sid,"playback",audio_data)
             # await self.websocket.send_json(
             #     {
@@ -436,7 +445,20 @@ class WebSocketHandler:
     @property
     def audio_sequence(self):
         #  return self.playsequence
-        ulaw_base64_list = [self.convert_wav_base64_to_ulaw_base64(wav) for wav in self.playsequence]
+        audio_bytes = b"".join(self.playsequence)
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wf:
+            wf.setnchannels(1)  # Mono audio
+            wf.setsampwidth(2)  # 2 bytes por muestra (16 bits)
+            wf.setframerate(int(8000))  # Frecuencia de muestreo
+            wf.writeframes(audio_bytes)
+
+        wav_buffer.seek(0)
+        wav_data = wav_buffer.read()
+        base64_audio = [base64.b64encode(wav_data).decode("utf-8")]
+        
+        ulaw_base64_list = [self.convert_wav_base64_to_ulaw_base64(wav) for wav in base64_audio]
+        # ulaw_base64_list = [self.convert_wav_base64_to_ulaw_base64(wav) for wav in self.playsequence]
         return ulaw_base64_list
         # if not self.playsequence:
         #     return [] # Evita errores si la lista está vacía

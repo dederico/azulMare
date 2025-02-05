@@ -7,11 +7,11 @@ import json
 from io import StringIO
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("botocore").setLevel(logging.WARNING)
-logging.getLogger("aiobotocore").setLevel(logging.WARNING)
-logging.getLogger("boto3").setLevel(logging.WARNING)
-logging.getLogger("boto").setLevel(logging.WARNING)
+# logging.getLogger("openai").setLevel(logging.WARNING)
+# logging.getLogger("botocore").setLevel(logging.WARNING)
+# logging.getLogger("aiobotocore").setLevel(logging.WARNING)
+# logging.getLogger("boto3").setLevel(logging.WARNING)
+# logging.getLogger("boto").setLevel(logging.WARNING)
 
 # load_dotenv()
 load_dotenv(override=True)

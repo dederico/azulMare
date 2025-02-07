@@ -206,6 +206,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     logger.debug("Initializing orchestrator for the call")
     orchestrator = Orchestrator(
+        call_sid=call_sid,
         config=config,
         websocket_handler=websocket_handler,
         stt_service=stt_service,

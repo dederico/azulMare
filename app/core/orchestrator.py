@@ -9,8 +9,10 @@ from app.util.database import LocalStorage
 from app.models.Config import Config
 from datetime import datetime
 class Orchestrator:
+    _instances = {}
     def __init__(
         self,
+        call_sid,
         config,
         websocket_handler: WebSocketHandler,
         stt_service: STTService,
@@ -23,12 +25,30 @@ class Orchestrator:
         self.llm_service = llm_service
         self.tts_service = tts_service
         self.websocket_handler = websocket_handler
-        self.log("Orchestrator for new call has been initialized")
+        self.call_sid = call_sid  # Se usa para identificar cada instancia
+        self._instances[call_sid] = self  # Guardar la instancia en el diccionario
 
+        self.log(f"Orchestrator for call {call_sid} has been initialized")
     def log(self, msg):
         logger.debug(msg)
         self.stats["Logs"].append(msg)
-
+    def logScript(self, msg):
+        self.stats["Logs"].append(msg)
+        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]") 
+        self.stats["Script"].append({ "role": "BOT", "dialog": f"{timestamp} - {msg}" })
+    @classmethod
+    def get_instance(cls, call_sid):
+        """ Devuelve la instancia asociada a un `call_sid`, si existe """
+        return cls._instances.get(call_sid)
+    
+    @classmethod
+    def staticlog(cls, call_sid, msg):
+        """ Llama a `log` en la instancia correcta según `call_sid` """
+        instance = cls.get_instance(call_sid)
+        if instance:
+            instance.logScript(msg)
+        else:
+            logger.warning(f"No instance found for call_id {call_sid}")
     async def process_audio_stream(self):
         try:
             self.log("Greeting the caller")

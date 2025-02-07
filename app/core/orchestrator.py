@@ -1,4 +1,6 @@
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo  # Python 3.9+
 
 from app.util.logger import logger
 from app.services.stt.stt_service import STTService
@@ -7,9 +9,13 @@ from app.services.tts.tts_service import TTSService
 from app.api.websocket_handler import WebSocketHandler
 from app.util.database import LocalStorage
 from app.models.Config import Config
-from datetime import datetime
+
+# Configurar la zona horaria de México
+MEXICO_TZ = ZoneInfo("America/Mexico_City")
+
 class Orchestrator:
     _instances = {}
+
     def __init__(
         self,
         call_sid,
@@ -29,13 +35,16 @@ class Orchestrator:
         self._instances[call_sid] = self  # Guardar la instancia en el diccionario
 
         self.log(f"Orchestrator for call {call_sid} has been initialized")
+
     def log(self, msg):
         logger.debug(msg)
         self.stats["Logs"].append(msg)
+
     def logScript(self, msg):
         self.stats["Logs"].append(msg)
-        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]") 
+        timestamp = datetime.now(MEXICO_TZ).strftime("[%Y-%m-%d %H:%M:%S]")  # ✅ Zona horaria de México
         self.stats["Script"].append({ "role": "BOT", "dialog": f"{timestamp} - {msg}" })
+
     @classmethod
     def get_instance(cls, call_sid):
         """ Devuelve la instancia asociada a un `call_sid`, si existe """
@@ -49,6 +58,7 @@ class Orchestrator:
             instance.logScript(msg)
         else:
             logger.warning(f"No instance found for call_id {call_sid}")
+
     async def process_audio_stream(self):
         try:
             self.log("Greeting the caller")
@@ -78,8 +88,7 @@ class Orchestrator:
             full_transcript = transcription["channel"]["alternatives"][0]["transcript"]
             
             if full_transcript:
-                timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")  # Formato de fecha y hora
-    
+                timestamp = datetime.now(MEXICO_TZ).strftime("[%Y-%m-%d %H:%M:%S]")  # ✅ Zona horaria de México
                 self.stats["Script"].append({ "role": "CUSTOMER", "dialog":  f"{timestamp} - {full_transcript}" })
                 logger.warning(f"CUSTOMER: {timestamp} - {full_transcript}")
                 
@@ -89,7 +98,6 @@ class Orchestrator:
                 updated_customer_transcription = f"{current_customer_transcription} {full_transcript}".strip()
                 # Guardar la transcripción actualizada en LocalStorage
                 LocalStorage.set("transcription_for_analysis_customer", updated_customer_transcription)
-
 
                 await self.websocket_handler.send_mark("not_listening")
                 await self.process_transcript(full_transcript)
@@ -120,12 +128,13 @@ class Orchestrator:
         return buffer
 
     async def synthesize_and_send(self, text: str) -> None:
-        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]") 
+        timestamp = datetime.now(MEXICO_TZ).strftime("[%Y-%m-%d %H:%M:%S]")  # ✅ Zona horaria de México
         logger.warning(f"Speaking: {text}")
         self.stats["Script"].append({ "role": "BOT", "dialog": f"{timestamp} - {text}" })
-        #Obtener el valor existente en LocalStorage
+
+        # Obtener el valor existente en LocalStorage
         current_bot_transcription = LocalStorage.get("transcription_for_analysis_bot", "")
-        #Concatenar el nuevo texto al LocalStorage
+        # Concatenar el nuevo texto al LocalStorage
         updated_bot_transcription = f"{current_bot_transcription} {text}".strip()
         # Guardar la transcripción actualizada
         LocalStorage.set("transcription_for_analysis_bot", updated_bot_transcription)
@@ -157,7 +166,8 @@ class Orchestrator:
             ¿Con quién tengo el gusto de hablar?
         """
 
-        self.log("GREETING: {}".format(greeting))
+        timestamp = datetime.now(MEXICO_TZ).strftime("[%Y-%m-%d %H:%M:%S]")  # ✅ Zona horaria de México
+        self.log(f"GREETING at {timestamp}: {greeting}")
         await self.synthesize_and_send(greeting)
         self.llm_service.add_to_conversation("assistant", greeting)
         await self.websocket_handler.send_mark("listening")

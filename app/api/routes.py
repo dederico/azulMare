@@ -45,7 +45,7 @@ from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
 from pathlib import Path
 import http.client
-
+from zoneinfo import ZoneInfo
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
@@ -66,7 +66,7 @@ async def initial_greet(call_id: str):
     :return: JSON response confirming the hangup.
     """
     # Obtener la hora actual
-    current_hour = datetime.now().hour
+    current_hour = datetime.now(ZoneInfo("America/Mexico_City")).hour
 
     # Seleccionar el archivo de audio según el momento del día
     if 6 <= current_hour < 12:
@@ -146,7 +146,7 @@ async def websocket_endpoint(ws: WebSocket):
     function_manager = FunctionManager(registered_functions)
 
     # Get the current date and time
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("America/Mexico_City"))
     callDirection = "Inbound"
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     context = websocket_handler.initial_data
@@ -234,7 +234,7 @@ async def websocket_endpoint(ws: WebSocket):
         # (VERY IMPORTANT) only update status if AMD is not detected
         call.callStatus = stats['Status']
 
-    call.callDuration = (datetime.now() - now).seconds
+    call.callDuration = (datetime.now(ZoneInfo("America/Mexico_City")) - now).seconds
     db.Update(call)
     
     hooks = Hooks()
@@ -307,11 +307,11 @@ async def whatsapp(request: Request):
             logger.debug(f"Mensaje recuperado para historial: rol={role}, contenido={msg.message}")
     except Exception as e:
         logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
-
+    now_mexico = datetime.now(ZoneInfo("America/Mexico_City"))
     # Agregar mensaje de usuario al historial y guardar en base de datos
     conversation_history.add_user_message(body)
     user_message = Message(
-        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        time=now_mexico.strftime("%Y-%m-%d %H:%M:%S"),
         senderName=sender_name,
         message=body,
         number=from_number,
@@ -325,14 +325,14 @@ async def whatsapp(request: Request):
     db.Insert(user_message)
 
     # Configurar el LLM con el historial
-    current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    current_date = now_mexico.strftime("%Y-%m-%d %H:%M:%S")
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(
             customer_name=sender_name,
             call_sid=uid,
             date2=current_date,
-            now=datetime.now(),
+            now=now_mexico,
             date=current_date
         )
 

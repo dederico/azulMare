@@ -212,7 +212,7 @@ async def websocket_endpoint(ws: WebSocket):
         llm_service=llm_service,
         tts_service=tts_service,
     )
-
+    websocket_handler.orchestrator = orchestrator
     logger.debug("Starting a conversation with caller")
     
     try:

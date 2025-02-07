@@ -16,9 +16,10 @@ import asyncio
 import openai
 from app.util.database import LocalStorage
 import json
+# from app.core.orchestrator import Orchestrator
 class WebSocketHandler:
     duration = 0.02
-
+    
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
         self.stream_sid = None
@@ -28,6 +29,7 @@ class WebSocketHandler:
         self.number=None
         self.call_sid=None
         self.pattern=r"^[a-zA-Z0-9]+#[a-zA-Z0-9]+#[a-zA-Z0-9]+$"
+        self.orchestrator = None 
     async def get_lead(self,dnid: str):
         """
         Fetches lead information associated with the provided DNID.
@@ -262,7 +264,9 @@ class WebSocketHandler:
         except Exception as e:
             logger.error(f"Error general en process_stream: {e}")
             raise e
-        
+        if self.orchestrator:
+            self.orchestrator.log(f"Códigos de estado: {json.dumps(collected_checkpoints)}")
+        # Orchestrator.log(f"Códigos de estado: {json.dumps(collected_checkpoints)}");
         # Enviar todos los checkpoints acumulados al finalizar
         await self._send_collected_checkpoints(collected_checkpoints)
 
@@ -362,6 +366,10 @@ class WebSocketHandler:
         except audioop.error:
             logger.debug("PCM (sin conversión adicional necesaria)")
             
+    def calcular_umbral(self,audio_payload, sample_width=2):
+        ruido_base = audioop.rms(audio_payload, sample_width)
+        return max(ruido_base * 1.5, 500)  # Ajusta el factor 1.5 según el ruido
+    
     async def process_media_event(self, data):
         # Assume `data` is already in bytes format
         audio_payload = data  # `data` is treated as Base64 bytes
@@ -373,9 +381,10 @@ class WebSocketHandler:
             # raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
             raw_audio_data = audio_payload
             # self.detect_audio_format(data)
+            umbral = self.calcular_umbral(audio_payload)
             rms = audioop.rms(audio_payload, 2)  # Calculate RMS
             # Check if the audio is loud enough and in "listening" state
-            if rms > 300 and (self.switch == "listening" or self.switch is None):
+            if rms > 500 and (self.switch == "listening" or self.switch is None):
                 pcm = audioop.ulaw2lin(audio_payload, 2)
                 wav_buffer = io.BytesIO()
                 with wave.open(wav_buffer, 'wb') as wf:

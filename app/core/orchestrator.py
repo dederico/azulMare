@@ -7,7 +7,7 @@ from app.services.tts.tts_service import TTSService
 from app.api.websocket_handler import WebSocketHandler
 from app.util.database import LocalStorage
 from app.models.Config import Config
-
+from datetime import datetime
 class Orchestrator:
     def __init__(
         self,
@@ -58,8 +58,10 @@ class Orchestrator:
             full_transcript = transcription["channel"]["alternatives"][0]["transcript"]
             
             if full_transcript:
-                self.stats["Script"].append({ "role": "CUSTOMER", "dialog": full_transcript })
-                logger.warning(f"CUSTOMER: {full_transcript}")
+                timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")  # Formato de fecha y hora
+    
+                self.stats["Script"].append({ "role": "CUSTOMER", "dialog":  f"{timestamp} - {full_transcript}" })
+                logger.warning(f"CUSTOMER: {timestamp} - {full_transcript}")
                 
                 # Obtener la transcripción actual del cliente en LocalStorage
                 current_customer_transcription = LocalStorage.get("transcription_for_analysis_customer", "")
@@ -98,8 +100,9 @@ class Orchestrator:
         return buffer
 
     async def synthesize_and_send(self, text: str) -> None:
+        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]") 
         logger.warning(f"Speaking: {text}")
-        self.stats["Script"].append({ "role": "BOT", "dialog": text })
+        self.stats["Script"].append({ "role": "BOT", "dialog": f"{timestamp} - {text}" })
         #Obtener el valor existente en LocalStorage
         current_bot_transcription = LocalStorage.get("transcription_for_analysis_bot", "")
         #Concatenar el nuevo texto al LocalStorage

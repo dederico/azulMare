@@ -70,7 +70,7 @@ async def actions_call(call_sid: str):
         response = conn.getresponse()
         logger.debug(response.status)
         logger.debug(response.read().decode())
-        Orchestrator.staticlog(call_sid, "Claro!, te transfiero con uno de mis compañeros -- COLGAR")
+        Orchestrator.staticlog(call_sid, "Claro!, muchas gracias por tu tiempo -- COLGAR")
         await asyncio.sleep(duration)
                 
         payload = {

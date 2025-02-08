@@ -169,7 +169,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Format the date as a string
     date_string = now.strftime("%Y-%m-%d")
-
+    
     current_date = await get_current_date()
 
     # Get call SID and customer identity
@@ -177,15 +177,15 @@ async def websocket_endpoint(ws: WebSocket):
   
     # customer_identity = await get_customer_identity(call_sid)
     #call.callerName = customer_identity
-    
-    logger.debug("Initializing LLM service for the new call")
+
+    logger.warning("Initializing LLM service for the new call")
+
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=call.callerName, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context),
+        system=system_message.format(customer_name=call.callerName, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context, NOMBRE=context['context']['NOMBRE'], TELEFONO = context['context']['TELEFONO'], MARCA = context['context']['MARCA'], PRODUCTO = context['context']['PRODUCTO'],ADEUDO = context['context']['ADEUDO'], FECHA_LIMITE_PAGO = context['context']['FECHA_LIMITE_PAGO']),
         function_manager=function_manager
     )
-    logger.debug("RECIBIENDO CONTEXTO",context)
 
     # tts_service = ElevenTTSService(
     #     api_key=ELEVENLABS_API_KEY,

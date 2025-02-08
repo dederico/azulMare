@@ -5,6 +5,21 @@ from app.api.websocket_handler import WebSocketHandler
 ls = LocalStorage()
 configs = { c.name:c.value for c in ls.GetAll(Config) }
 
+# Lista de variables requeridas
+REQUIRED_VARIABLES = [
+    'call_sid', 'TELEFONO', 'NOMBRE', 'MARCA', 'PRODUCTO', 
+    'ADEUDO', 'FECHA_LIMITE_PAGO', 'URL', 'TTS'
+]
+
+def validate_context(context):
+    """
+    Valida que todas las variables requeridas estén presentes en el contexto.
+    Lanza una excepción si falta alguna variable.
+    """
+    missing_variables = [var for var in REQUIRED_VARIABLES if var not in context or context[var] is None]
+    if missing_variables:
+        raise ValueError(f"Faltan las siguientes variables requeridas en el contexto: {', '.join(missing_variables)}")
+
 hello_message = configs.get("greeting_message") or """
     "Hola! 
     Mi nombre es Julieta Perez, nos comunicamos de SWITCH en colaboración con AMERICAN EXPRESS. 

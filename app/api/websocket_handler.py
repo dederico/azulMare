@@ -384,7 +384,7 @@ class WebSocketHandler:
             umbral = self.calcular_umbral(audio_payload)
             rms = audioop.rms(audio_payload, 2)  # Calculate RMS
             # Check if the audio is loud enough and in "listening" state
-            if rms > 500 and (self.switch == "listening" or self.switch is None):
+            if rms > 350 and (self.switch == "listening" or self.switch is None):
                 pcm = audioop.ulaw2lin(audio_payload, 2)
                 wav_buffer = io.BytesIO()
                 with wave.open(wav_buffer, 'wb') as wf:

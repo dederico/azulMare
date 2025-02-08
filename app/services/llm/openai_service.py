@@ -56,8 +56,11 @@ class OpenAIService(LLMService):
             self.add_to_conversation("assistant", full_message)
 
     async def llm_generator(self):
+        self.conversation_history = [
+            msg for msg in self.conversation_history if msg.get("content") is not None
+        ]
         generator = await self.client.chat.completions.create(
-            model=self.config.get("model") or "gpt-3.5-turbo-1106",
+            model=self.config.get("model") or "gpt-4-0125-preview",
             messages=self.conversation_history,
             stream=True,
             tool_choice="auto",

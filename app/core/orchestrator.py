@@ -93,12 +93,12 @@ class Orchestrator:
                 logger.warning(f"CUSTOMER: {timestamp} - {full_transcript}")
                 
                 # Obtener la transcripción actual del cliente en LocalStorage
-                current_customer_transcription = LocalStorage.get("transcription_for_analysis_customer", "")
+                current_customer_transcription = LocalStorage.get(f"{self.call_sid}_transcription_for_analysis_customer", "")
                 # Concatenar la nueva transcripción con la existente
                 updated_customer_transcription = f"{current_customer_transcription} {full_transcript}".strip()
                 # Guardar la transcripción actualizada en LocalStorage
-                LocalStorage.set("transcription_for_analysis_customer", updated_customer_transcription)
-
+                LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_customer", updated_customer_transcription)
+                logger.warning(f"full_transcript_customer: {updated_customer_transcription}")
                 await self.websocket_handler.send_mark("not_listening")
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
@@ -133,12 +133,12 @@ class Orchestrator:
         self.stats["Script"].append({ "role": "BOT", "dialog": f"{timestamp} - {text}" })
 
         # Obtener el valor existente en LocalStorage
-        current_bot_transcription = LocalStorage.get("transcription_for_analysis_bot", "")
+        current_bot_transcription = LocalStorage.get(f"{self.call_sid}_transcription_for_analysis_bot", "")
         # Concatenar el nuevo texto al LocalStorage
         updated_bot_transcription = f"{current_bot_transcription} {text}".strip()
         # Guardar la transcripción actualizada
-        LocalStorage.set("transcription_for_analysis_bot", updated_bot_transcription)
-        
+        LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_bot", updated_bot_transcription)
+        logger.warning(f"full_transcript_bot: {updated_bot_transcription}")
         if self.tts_service.stream_results:
             generator = self.tts_service.stream_synthesize(text)
             async for encoded_audio in generator:  # type:ignore

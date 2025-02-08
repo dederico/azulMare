@@ -30,6 +30,7 @@ class WebSocketHandler:
         self.call_sid=None
         self.pattern=r"^[a-zA-Z0-9]+#[a-zA-Z0-9]+#[a-zA-Z0-9]+$"
         self.orchestrator = None 
+        self.silence_duration = 0
     async def get_lead(self,dnid: str):
         """
         Fetches lead information associated with the provided DNID.
@@ -194,14 +195,7 @@ class WebSocketHandler:
                         logger.debug("No data received, exiting loop.")
                         break
 
-                    # Obtener los datos del almacenamiento local
-                    transcription_for_analysis_customer = LocalStorage.get("transcription_for_analysis_customer", "")
-                    transcription_for_analysis_bot = LocalStorage.get("transcription_for_analysis_bot", "")
-
-                    # Preparar y combinar los datos, asegurando que sean listas
-                    combined = self._prepare_and_combine(
-                        transcription_for_analysis_customer, transcription_for_analysis_bot
-                    )
+                    
                     #debug
                     # logger.debug(f"Combined transcription: {combined}") 
 
@@ -212,7 +206,21 @@ class WebSocketHandler:
                 except Exception as e:
                     logger.error(f"Error procesando el flujo de audio: {e}")
                     raise e
+            # Obtener los datos del almacenamiento local
+            transcription_for_analysis_customer = LocalStorage.get(f"{self.call_sid}_transcription_for_analysis_customer", "")
+            transcription_for_analysis_bot = LocalStorage.get(f"{self.call_sid}_transcription_for_analysis_bot", "")
 
+            # Preparar y combinar los datos, asegurando que sean listas
+            combined = self._prepare_and_combine(
+                transcription_for_analysis_customer, transcription_for_analysis_bot
+            )
+            logger.warning(f"Chat combinado: {combined}")
+            if combined is None:
+                combined = []
+
+        # Convert the list to a single string (joining with newline)
+            combined_text = "\n".join(combined)  
+            logger.warning(f"Chat combinado: {combined_text}")
             # Crear cliente para OpenAI
             llm = openai.AsyncClient()
 
@@ -243,10 +251,10 @@ class WebSocketHandler:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(combined, indent=2),
+                    "content": combined_text,
                 },
             ]
-
+            logger.warning(f"messages: {messages}")
             try:
                 # Llamar al modelo para obtener la respuesta
                 respuesta = await llm.chat.completions.create(
@@ -256,6 +264,7 @@ class WebSocketHandler:
                     response_format={"type": "json_object"},
                 )
                 # Extraer checkpoints de la respuesta
+                logger.warning(f"Extraer checkpoints de la respuesta {respuesta.choices[0].message.content}")
                 checkpoints = json.loads(respuesta.choices[0].message.content).get("checkpoints", [])
                 collected_checkpoints.extend(checkpoints)  # Acumular checkpoints generados
             except Exception as e:
@@ -265,6 +274,7 @@ class WebSocketHandler:
             logger.error(f"Error general en process_stream: {e}")
             raise e
         if self.orchestrator:
+            logger.warning(f"Códigos de estado: {json.dumps(collected_checkpoints)}")
             self.orchestrator.log(f"Códigos de estado: {json.dumps(collected_checkpoints)}")
         # Orchestrator.log(f"Códigos de estado: {json.dumps(collected_checkpoints)}");
         # Enviar todos los checkpoints acumulados al finalizar
@@ -274,35 +284,45 @@ class WebSocketHandler:
         """
         Envía todos los checkpoints acumulados en una sola solicitud HTTP.
         """
+        if not isinstance(checkpoints, list):
+            try:
+                checkpoints = json.loads(checkpoints) if isinstance(checkpoints, str) else []
+            except json.JSONDecodeError:
+                checkpoints = []
+
         if not checkpoints:
             logger.debug("No checkpoints to send. Skipping HTTP request.")
+            LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_customer", "")
+            LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_bot", "")
+            logger.debug("Local storage cleared even when no checkpoints were sent.")
             return
         conn = http.client.HTTPSConnection("app.ccc.uno")
         headers = {"accept": "application/json", "Content-Type": "application/json"}
         dnid = f"{self.stream_sid}#{self.call_sid}#{self.number}"
         for checkpoint in checkpoints:
-                payload = {
-                    "status": checkpoint,
-                    "callerid": dnid
-                }
-                data = json.dumps(payload)
-                try:
-                    conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
-                    response = conn.getresponse()
-                    logger.debug(f"Response from server: {response.status} {response.read().decode()}")
-
-                    if response.status == 200:
-                        logger.debug("Checkpoints sent successfully.")
-                    else:
-                        logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
-                except Exception as e:
-                    logger.error(f"Error al enviar datos al servidor: {e}")
-                finally:
-                    # Limpiar almacenamiento local independientemente del resultado
-                    LocalStorage.set("transcription_for_analysis_customer", "")
-                    LocalStorage.set("transcription_for_analysis_bot", "")
-                    logger.debug("Local storage cleared after attempting to send checkpoints.")
-                    conn.close()
+            payload = {
+                "status": checkpoint,
+                "callerid": dnid
+            }
+            data = json.dumps(payload)
+            try:
+                conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
+                response = conn.getresponse()
+                logger.debug(f"Response from server: {response.status} {response.read().decode()}")
+                logger.warning(f"Enviando a layer7 estado {checkpoint} con dnid {dnid}")
+                self.orchestrator.log(f"Enviando a layer7 estado {checkpoint} con dnid {dnid}")
+                if response.status == 200:
+                    logger.debug("Checkpoints sent successfully.")
+                else:
+                    logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
+            except Exception as e:
+                logger.error(f"Error al enviar datos al servidor: {e}")
+            
+                # Limpiar almacenamiento local independientemente del resultado
+        LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_customer", "")
+        LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_bot", "")
+        logger.debug("Local storage cleared after attempting to send checkpoints.")
+        conn.close()
 
     def _prepare_and_combine(self, customer_data, bot_data):
         """
@@ -397,8 +417,15 @@ class WebSocketHandler:
                 wav_buffer.seek(0)
                 wav_data = wav_buffer.read()
                 self.playsequence.append(raw_audio_data)
+                self.silence_duration = 0
                 return raw_audio_data
             else:
+                self.silence_duration += self.duration
+                if self.silence_duration >= 25.0:
+                    self.silence_duration = 0
+                    logger.warning("Más de 25 segundos de silencio detectados.")
+                    await self.actions_call(self.call_sid,"hangup")
+
                 # Generate silence if below threshold or not in listening state
                 raw_audio_data = await self.generate_silence()
                 return raw_audio_data
@@ -419,7 +446,9 @@ class WebSocketHandler:
             logger.debug("Socket is connected, sending audio frame to customer")
             byte_data = self.base64_wav_to_pcm(audio_data)
             self.playsequence.append(byte_data)
+            self.silence_duration = 0
             await self.actions_call(self.call_sid,"playback",audio_data)
+            self.silence_duration = 0
             # await self.websocket.send_json(
             #     {
             #         "event": "media",

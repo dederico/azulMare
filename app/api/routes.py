@@ -84,7 +84,7 @@ async def websocket_endpoint(ws: WebSocket):
         region="us-east-1",
         sample_rate=8000,
         enhanced=False,
-        language=config["language"]
+        language=config.get("language", "es-US")
     )
 
     function_manager = FunctionManager(registered_functions)

@@ -104,7 +104,7 @@ class WebSocketHandler:
             # Calcular duración
             duration = n_frames / float(frame_rate)
             # adjusted_duration = max(duration - 0.5, 0)
-            adjusted_duration = max(duration, 0)
+            adjusted_duration = max(duration+0.5, 0)
 
             return adjusted_duration
     def base64_wav_to_pcm(self, base64_string):

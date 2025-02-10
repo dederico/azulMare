@@ -258,7 +258,7 @@ class WebSocketHandler:
             try:
                 # Llamar al modelo para obtener la respuesta
                 respuesta = await llm.chat.completions.create(
-                    model="gpt-4-0125-preview",
+                    model="gpt-3.5-turbo-1106",
                     temperature=0.1,
                     messages=messages,
                     response_format={"type": "json_object"},

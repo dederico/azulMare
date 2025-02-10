@@ -43,7 +43,6 @@ async def actions_call(call_sid: str):
         Ends an active call associated with the specified call_sid.
 
         :param call_sid: The ID of the ongoing call.
-        :return: JSON response confirming the hangup. 
 
         """ 
         payload=None

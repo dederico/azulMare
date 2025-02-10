@@ -40,10 +40,9 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
     
 async def actions_call_transfer(call_sid: str):
         """
-        Ends an active call associated with the specified call_sid.
+        Transfer to agent an active call associated with the specified call_sid.
 
         :param call_sid: The ID of the ongoing call.
-        :return: JSON response confirming the hangup. 
 
         """ 
         payload=None

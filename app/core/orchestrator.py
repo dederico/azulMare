@@ -107,7 +107,7 @@ class Orchestrator:
 
     async def greet(self):
         await self.websocket_handler.send_mark("not_listening")
-        greeting = self.config.get("greeting_message") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
+        greeting = self.config.get("greeting_message") or """Hola! Soy un asistente virtual del Senador Enrique Vargas. 
             ¿Con quién tengo el gusto de hablar?
         """
 

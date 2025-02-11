@@ -39,47 +39,69 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
             return adjusted_duration
     
 async def actions_call(call_sid: str):
+        """Terminar interaccion si el usuario asi lo solicita.
+
+        Args:
+            call_sid (string): Indicador unico de la llamada. Proporcionado en mensaje del sistema.
+
+        Returns:
+            A confirmation message indicating the hangup.
+
         """
-        Ends an active call associated with the specified call_sid.
+        #logger.debug(f"ADENTRO DE LA FUNCION hangup_function actions_call called with call_sid: {call_sid}")
 
-        :param call_sid: The ID of the ongoing call.
+        if not call_sid:
+                #logger.error("actions_call called without call_sid")
+                return "Error: No se proporcionó call_sid"
 
-        """ 
-        payload=None
-        duration=None
-        current_dir = os.path.dirname(os.path.abspath(__file__))  # Carpeta actual
-        wav_path = os.path.join(current_dir, "files", "colgar.wav")
-        with open(wav_path, "rb") as wav_file:
-                wav_data = wav_file.read()
-        
-        audio_base64 = base64.b64encode(wav_data).decode(encoding="utf-8")
-        payload = {
-                "call_id": int(call_sid),
-                "action": "playback",
-                "data": {"audio_base64": f"{audio_base64}"}
-            }
-    
-        conn = http.client.HTTPSConnection("websockets.ccc.uno")
-        params = payload  # Parámetros de consulta
-        headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
-        duration = calculate_wav_duration_from_base64(audio_base64)
-        data = json.dumps(params)
-        
-        conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
-        response = conn.getresponse()
-        logger.debug(response.status)
-        logger.debug(response.read().decode())
-        Orchestrator.staticlog(call_sid, "Claro!, muchas gracias por tu tiempo -- COLGAR")
-        await asyncio.sleep(duration)
+        try:
+                payload=None
+                duration=None
+                current_dir = os.path.dirname(os.path.abspath(__file__))  # Carpeta actual
+                wav_path = os.path.join(current_dir, "files", "colgar.wav")
+
+                with open(wav_path, "rb") as wav_file:
+                        wav_data = wav_file.read()
                 
-        payload = {
-                "call_id": int(call_sid),
-                "action": "hangup"
+                audio_base64 = base64.b64encode(wav_data).decode(encoding="utf-8")
+                payload = {
+                        "call_id": int(call_sid),
+                        "action": "playback",
+                        "data": {"audio_base64": f"{audio_base64}"}
                 }
-        params = payload  # Parámetros de consulta
-        data = json.dumps(params)
+
+                #logger.debug(f"Inside the hangup function Payload prepared: {call_sid}")
+
         
-        conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
-        response = conn.getresponse()
-        logger.debug(response.status)
-        logger.debug(response.read().decode())
+                conn = http.client.HTTPSConnection("websockets.ccc.uno")
+                params = payload  # Parámetros de consulta
+                headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
+                duration = calculate_wav_duration_from_base64(audio_base64)
+                data = json.dumps(params)
+                
+                #logger.debug("Sending first request to play audio")
+                conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
+                response = conn.getresponse()
+                #logger.debug(response.status)
+                #logger.debug(response.read().decode())
+
+                Orchestrator.staticlog(call_sid, "Claro!, muchas gracias por tu tiempo -- COLGAR")
+                await asyncio.sleep(duration)
+                        
+                payload = {
+                        "call_id": int(call_sid),
+                        "action": "hangup"
+                        }
+                params = payload  # Parámetros de consulta
+                data = json.dumps(params)
+
+                #logger.debug("Sending second request to hangup")
+                conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
+                response = conn.getresponse()
+                #logger.debug(response.status)
+                #logger.debug(response.read().decode())
+
+                return "Se colgó la llamada de manera exitosa."
+        except Exception as e:
+                logger.error(f"Error in actions_call: {str(e)}")
+                return f"Error al colgar la llamada: {str(e)}"

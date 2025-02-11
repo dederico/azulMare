@@ -76,8 +76,6 @@ async def initial_greet(call_id: str):
     else:
         wav_file_name = "noches.wav"
 
-        
-
     # Ruta al archivo WAV
     current_dir = Path(__file__).resolve().parent
     parent_dir = current_dir.parent
@@ -176,7 +174,9 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Get call SID and customer identity
     call_sid = websocket_handler.call_sid
-  
+    if not isinstance(call_sid, str):
+        call_sid = str(call_sid)
+
     # customer_identity = await get_customer_identity(call_sid)
     #call.callerName = customer_identity
 
@@ -249,161 +249,161 @@ async def websocket_endpoint(ws: WebSocket):
 
     
 
-@router.post("/whatsapp")
-async def whatsapp(request: Request):
-    logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
-    # Configuración de base de datos
-    db = LocalStorage()
-    args = request.query_params
-    config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
-    function_manager = FunctionManager(registered_functions)
+# @router.post("/whatsapp")
+# async def whatsapp(request: Request):
+#     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
+#     # Configuración de base de datos
+#     db = LocalStorage()
+#     args = request.query_params
+#     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
+#     function_manager = FunctionManager(registered_functions)
 
-    try:
-        form_data = await request.form()
-        toN = form_data.get("To").split(":")[1]
-        sender_name = form_data.get("ProfileName")
-        body = form_data.get("Body")
-        from_number = form_data.get("From").split(":")[1]
-        wa_id = form_data.get("WaId")
-        message_type = form_data.get("MessageType")
-        uid = form_data.get("SmsMessageSid")
+#     try:
+#         form_data = await request.form()
+#         toN = form_data.get("To").split(":")[1]
+#         sender_name = form_data.get("ProfileName")
+#         body = form_data.get("Body")
+#         from_number = form_data.get("From").split(":")[1]
+#         wa_id = form_data.get("WaId")
+#         message_type = form_data.get("MessageType")
+#         uid = form_data.get("SmsMessageSid")
 
-        logger.debug(f"Datos recibidos: toN={toN}, sender_name={sender_name}, body={body}, "
-                     f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
+#         logger.debug(f"Datos recibidos: toN={toN}, sender_name={sender_name}, body={body}, "
+#                      f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
         
-        # Verificar si el mensaje incluye coordenadas de ubicación
-        latitude, longitude = None, None
-        if message_type == "location":
-            latitude = form_data.get("Latitude")
-            longitude = form_data.get("Longitude")
-            body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
-            logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}")
+#         # Verificar si el mensaje incluye coordenadas de ubicación
+#         latitude, longitude = None, None
+#         if message_type == "location":
+#             latitude = form_data.get("Latitude")
+#             longitude = form_data.get("Longitude")
+#             body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
+#             logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}")
 
-        # Verificar si el mensaje incluye un audio
-        elif message_type == "audio":
-            body = TranscribeOGG(form_data.get("MediaUrl0"), config["language"])
-            logger.debug(f"Audio transcrito: {body}")
+#         # Verificar si el mensaje incluye un audio
+#         elif message_type == "audio":
+#             body = TranscribeOGG(form_data.get("MediaUrl0"), config["language"])
+#             logger.debug(f"Audio transcrito: {body}")
 
             
-    except KeyError as e:
-        logger.error(f"Falta el parámetro requerido: {e}")
-        return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
+#     except KeyError as e:
+#         logger.error(f"Falta el parámetro requerido: {e}")
+#         return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
 
-    # Crear el historial de conversación en memoria para el usuario si no existe
-    if from_number not in user_histories:
-        logger.debug(f"Creando nuevo historial de conversación para el usuario: {from_number}")
-        user_histories[from_number] = ChatMessageHistory()
+#     # Crear el historial de conversación en memoria para el usuario si no existe
+#     if from_number not in user_histories:
+#         logger.debug(f"Creando nuevo historial de conversación para el usuario: {from_number}")
+#         user_histories[from_number] = ChatMessageHistory()
 
-    conversation_history = user_histories[from_number]
+#     conversation_history = user_histories[from_number]
 
-    # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
-    try:
-        logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
-        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
-        for msg in messages_db:
-            role = "assistant" if msg.direction == "outbound" else "user"
-            if role == "user":
-                conversation_history.add_user_message(msg.message)
-            else:
-                conversation_history.add_ai_message(msg.message)
-            logger.debug(f"Mensaje recuperado para historial: rol={role}, contenido={msg.message}")
-    except Exception as e:
-        logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
-    now_mexico = datetime.now(ZoneInfo("America/Mexico_City"))
-    # Agregar mensaje de usuario al historial y guardar en base de datos
-    conversation_history.add_user_message(body)
-    user_message = Message(
-        time=now_mexico.strftime("%Y-%m-%d %H:%M:%S"),
-        senderName=sender_name,
-        message=body,
-        number=from_number,
-        uid=uid,
-        direction="inbound",
-        mtype=message_type,
-        source="Whatsapp",
-        latitude=latitude,  # Guardar latitud si está disponible
-        longitude=longitude  # Guardar longitud si está disponible
-    )
-    db.Insert(user_message)
+#     # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
+#     try:
+#         logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
+#         messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+#         for msg in messages_db:
+#             role = "assistant" if msg.direction == "outbound" else "user"
+#             if role == "user":
+#                 conversation_history.add_user_message(msg.message)
+#             else:
+#                 conversation_history.add_ai_message(msg.message)
+#             logger.debug(f"Mensaje recuperado para historial: rol={role}, contenido={msg.message}")
+#     except Exception as e:
+#         logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
+#     now_mexico = datetime.now(ZoneInfo("America/Mexico_City"))
+#     # Agregar mensaje de usuario al historial y guardar en base de datos
+#     conversation_history.add_user_message(body)
+#     user_message = Message(
+#         time=now_mexico.strftime("%Y-%m-%d %H:%M:%S"),
+#         senderName=sender_name,
+#         message=body,
+#         number=from_number,
+#         uid=uid,
+#         direction="inbound",
+#         mtype=message_type,
+#         source="Whatsapp",
+#         latitude=latitude,  # Guardar latitud si está disponible
+#         longitude=longitude  # Guardar longitud si está disponible
+#     )
+#     db.Insert(user_message)
 
-    # Configurar el LLM con el historial
-    current_date = now_mexico.strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        # Crear el prompt con el historial de mensajes
-        system_prompt = system_message.format(
-            customer_name=sender_name,
-            call_sid=uid,
-            date2=current_date,
-            now=now_mexico,
-            date=current_date
-        )
+#     # Configurar el LLM con el historial
+#     current_date = now_mexico.strftime("%Y-%m-%d %H:%M:%S")
+#     try:
+#         # Crear el prompt con el historial de mensajes
+#         system_prompt = system_message.format(
+#             customer_name=sender_name,
+#             call_sid=uid,
+#             date2=current_date,
+#             now=now_mexico,
+#             date=current_date
+#         )
 
-        llm_service = OpenAIService(
-            config=config,
-            api_key=OPENAI_API_KEY,
-            system=system_prompt,
-            function_manager=function_manager
-        )
+#         llm_service = OpenAIService(
+#             config=config,
+#             api_key=OPENAI_API_KEY,
+#             system=system_prompt,
+#             function_manager=function_manager
+#         )
         
-        # Formatear el historial de mensajes para el modelo
-        formatted_history = [
-            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
-            else {"role": "assistant", "content": message.content}
-            for message in conversation_history.messages
-        ]
-        logger.debug(f"Historial formateado para el modelo: {formatted_history}")
+#         # Formatear el historial de mensajes para el modelo
+#         formatted_history = [
+#             {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
+#             else {"role": "assistant", "content": message.content}
+#             for message in conversation_history.messages
+#         ]
+#         logger.debug(f"Historial formateado para el modelo: {formatted_history}")
 
-        # Convertir formatted_history en un solo string para user_input
-        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
+#         # Convertir formatted_history en un solo string para user_input
+#         user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
 
-        logger.debug(f"Input concatenado para generate_response: {user_input}")
+#         logger.debug(f"Input concatenado para generate_response: {user_input}")
 
-        # Generar la respuesta del modelo usando el string completo de user_input
-        model_response = llm_service.generate_response(user_input=user_input)
+#         # Generar la respuesta del modelo usando el string completo de user_input
+#         model_response = llm_service.generate_response(user_input=user_input)
 
-        response_content = ""
-        async for response in model_response:
-            response_content += str(response)
-        logger.debug(f"Respuesta parcial: {response_content}")
+#         response_content = ""
+#         async for response in model_response:
+#             response_content += str(response)
+#         logger.debug(f"Respuesta parcial: {response_content}")
 
-        if isinstance(response_content, list):
-            response_content = " ".join([str(item) for item in response_content])
-        elif not isinstance(response_content, str):
-            response_content = str(response_content)
+#         if isinstance(response_content, list):
+#             response_content = " ".join([str(item) for item in response_content])
+#         elif not isinstance(response_content, str):
+#             response_content = str(response_content)
 
-        conversation_history.add_ai_message(response_content)
+#         conversation_history.add_ai_message(response_content)
         
-        assistant_message = Message(
-            time=current_date,
-            senderName="Assistant",
-            message=response_content,
-            number=from_number,
-            uid=wa_id,
-            direction="outbound",
-            mtype=message_type,
-            source="Whatsapp"
-        )
-        db.Insert(assistant_message)
+#         assistant_message = Message(
+#             time=current_date,
+#             senderName="Assistant",
+#             message=response_content,
+#             number=from_number,
+#             uid=wa_id,
+#             direction="outbound",
+#             mtype=message_type,
+#             source="Whatsapp"
+#         )
+#         db.Insert(assistant_message)
 
-    except Exception as e:
-        logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
-        return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
+#     except Exception as e:
+#         logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
+#         return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
 
-    # Enviar la respuesta por WhatsApp usando Twilio
-    try:
-        twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-        twilio_client.messages.create(
-            body=response_content,
-            from_="whatsapp:" + toN,
-            to="whatsapp:" + from_number
-        )
-        logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_content}")
-        content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
-    except Exception as e:
-        logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
-        content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
+#     # Enviar la respuesta por WhatsApp usando Twilio
+#     try:
+#         twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+#         twilio_client.messages.create(
+#             body=response_content,
+#             from_="whatsapp:" + toN,
+#             to="whatsapp:" + from_number
+#         )
+#         logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_content}")
+#         content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
+#     except Exception as e:
+#         logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
+#         content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
 
-    return JSONResponse(content=content)
+#     return JSONResponse(content=content)
 
 # @router.post("/whatsapp")
 # async def whatsapp(request: Request):
@@ -519,109 +519,113 @@ async def whatsapp(request: Request):
 
 
 
-@router.post("/amd_detect")
-async def amd_detect(request: Request):
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+# @router.post("/amd_detect")
+# async def amd_detect(request: Request):
+#     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+#     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 
-    body_bytes = await request.body()
-    body_str = body_bytes.decode()
-    parsed_body = parse_qs(body_str)
+#     body_bytes = await request.body()
+#     body_str = body_bytes.decode()
+#     parsed_body = parse_qs(body_str)
 
-    answered_by = parsed_body["AnsweredBy"][0]
-    if answered_by not in ["human", "unknown"]:
-        call_sid = parsed_body["CallSid"][0]
-        client = Client(account_sid, auth_token)
-        client.calls(call_sid).update(status="completed")
+#     answered_by = parsed_body["AnsweredBy"][0]
+#     if answered_by not in ["human", "unknown"]:
+#         call_sid = parsed_body["CallSid"][0]
+#         client = Client(account_sid, auth_token)
+#         client.calls(call_sid).update(status="completed")
 
-        db = LocalStorage()
-        call = db.Search(Call(callUid = call_sid), True)
-        if call:
-            call.callStatus = "AMD"
-            db.Update(call)
+#         db = LocalStorage()
+#         call = db.Search(Call(callUid = call_sid), True)
+#         if call:
+#             call.callStatus = "AMD"
+#             db.Update(call)
 
-            hooks = Hooks()
-            config = { c.name : c.value for c in db.GetAll(Config) }
-            for hook in hooks.Get(True):
-                if hook["type"] == "POST_CALL":
-                    logger.debug("Hook found for call executing")
-                    hook["function"](call, config)
+#             hooks = Hooks()
+#             config = { c.name : c.value for c in db.GetAll(Config) }
+#             for hook in hooks.Get(True):
+#                 if hook["type"] == "POST_CALL":
+#                     logger.debug("Hook found for call executing")
+#                     hook["function"](call, config)
 
-        logger.warning(f"Machine - {answered_by} detected for: {call_sid}")
+#         logger.warning(f"Machine - {answered_by} detected for: {call_sid}")
 
 
-@router.get("/health")
-async def health():
-    import psutil, ping3
-    ls = LocalStorage()
-    configs = ls.GetAll(Config)
-    configs = { c.name: c.value for c in configs }
+# @router.get("/health")
+# async def health():
+#     import psutil, ping3
+#     ls = LocalStorage()
+#     configs = ls.GetAll(Config)
+#     configs = { c.name: c.value for c in configs }
 
-    domains = json.loads(configs.get("PingDomains")) if 'PingDomains' in configs else []
-    domains.extend([
-        { "name": "AWS", "domain": 'ec2.amazonaws.com'},
-        { "name": "Google", "domain": 'google.com'},
-        { "name": "Twilio", "domain": "chunderw-gll.twilio.com"}
-    ])
+#     domains = json.loads(configs.get("PingDomains")) if 'PingDomains' in configs else []
+#     domains.extend([
+#         { "name": "AWS", "domain": 'ec2.amazonaws.com'},
+#         { "name": "Google", "domain": 'google.com'},
+#         { "name": "Twilio", "domain": "chunderw-gll.twilio.com"}
+#     ])
 
-    try:
-        temperatures = psutil.sensors_temperatures()
-        if temperatures:
-            temperature = temperatures['coretemp'][0].current
-        else:
-            temperature = False
-    except (AttributeError, KeyError):
-        temperature = False
+#     try:
+#         temperatures = psutil.sensors_temperatures()
+#         if temperatures:
+#             temperature = temperatures['coretemp'][0].current
+#         else:
+#             temperature = False
+#     except (AttributeError, KeyError):
+#         temperature = False
     
-    pings = []
-    for domain in domains:
-        ping = ping3.ping(domain["domain"])
-        ping = int(ping * 1000) if ping is not None else False
-        pings.append({ "domain": domain["domain"], "ping": ping, "name": domain["name"] })
+#     pings = []
+#     for domain in domains:
+#         ping = ping3.ping(domain["domain"])
+#         ping = int(ping * 1000) if ping is not None else False
+#         pings.append({ "domain": domain["domain"], "ping": ping, "name": domain["name"] })
 
-    metrics = {
-        'processor': psutil.cpu_percent(interval=1),
-        'memory': psutil.virtual_memory().percent,
-        'storage': psutil.disk_usage('/').percent,
-        'temperature': temperature,
-        'ping': pings
-    }
+#     metrics = {
+#         'processor': psutil.cpu_percent(interval=1),
+#         'memory': psutil.virtual_memory().percent,
+#         'storage': psutil.disk_usage('/').percent,
+#         'temperature': temperature,
+#         'ping': pings
+#     }
     
-    return metrics
+#     return metrics
 
 
-@router.post("/make_call")
-async def make_call(request: Request):
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-    host = os.getenv("HOSTNAME")
-    number = os.getenv("NUMBER")
+# @router.post("/make_call")
+# async def make_call(request: Request):
+#     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+#     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+#     host = os.getenv("HOSTNAME")
+#     number = os.getenv("NUMBER")
 
-    credentials = f"{account_sid}:{auth_token}"
-    token = base64.b64encode(credentials.encode()).decode()
+#     credentials = f"{account_sid}:{auth_token}"
+#     token = base64.b64encode(credentials.encode()).decode()
 
-    payload_params = {
-        "MachineDetection": "Enable",
-        "AsyncAmd": "true",
-        "Url": f"{host}/",
-        "AsyncAmdStatusCallback": f"{host}/amd_detect",
-        "To": "+573134506576",
-        "From": number,
-    }
+#     payload_params = {
+#         "MachineDetection": "Enable",
+#         "AsyncAmd": "true",
+#         "Url": f"{host}/",
+#         "AsyncAmdStatusCallback": f"{host}/amd_detect",
+#         "To": "+573134506576",
+#         "From": number,
+#     }
 
-    payload = urllib.parse.urlencode(payload_params)
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Calls.json"
+#     payload = urllib.parse.urlencode(payload_params)
+#     url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Calls.json"
 
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Basic {token}",
-    }
+#     headers = {
+#         "Content-Type": "application/x-www-form-urlencoded",
+#         "Authorization": f"Basic {token}",
+#     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, data=payload) as response:
-            try:
-                response.raise_for_status()
-                r = await response.text()
-                logger.info(r)
-            except Exception as e:
-                logger.warning(f"Call failed with error: {e}")
+#     async with aiohttp.ClientSession() as session:
+#         async with session.post(url, headers=headers, data=payload) as response:
+#             try:
+#                 response.raise_for_status()
+#                 r = await response.text()
+#                 logger.info(r)
+#             except Exception as e:
+#                 logger.warning(f"Call failed with error: {e}")
+
+
+
+

@@ -39,12 +39,14 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
             return adjusted_duration
     
 async def actions_call_transfer(call_sid: str):
-        """
-        Transfer to agent an active call associated with the specified call_sid.
+        """Transferir al usuario si asi lo solicita.
 
-        :param call_sid: The ID of the ongoing call.
+        Args:
+            call_sid (string): Indicador unico de la llamada. Proporcionado en mensaje del sistema.
 
-        """ 
+        Returns:
+            A confirmation message indicating the transfer.
+    """ 
         payload=None
         duration=None
         current_dir = os.path.dirname(os.path.abspath(__file__))  # Carpeta actual
@@ -67,8 +69,8 @@ async def actions_call_transfer(call_sid: str):
         
         conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
         response = conn.getresponse()
-        logger.debug(response.status)
-        logger.debug(response.read().decode())
+        #logger.debug(response.status)
+        #logger.debug(response.read().decode())
         Orchestrator.staticlog(call_sid, "Claro!, te transfiero con uno de mis compañeros -- TRANSFERIR")
         await asyncio.sleep(duration)
                 
@@ -81,5 +83,6 @@ async def actions_call_transfer(call_sid: str):
         
         conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
         response = conn.getresponse()
-        logger.debug(response.status)
-        logger.debug(response.read().decode())
+        #logger.debug(response.status)
+        #logger.debug(response.read().decode())
+        return "Se transfirió la llamada de manera exitosa."

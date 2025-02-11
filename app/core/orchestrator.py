@@ -9,6 +9,8 @@ from app.services.tts.tts_service import TTSService
 from app.api.websocket_handler import WebSocketHandler
 from app.util.database import LocalStorage
 from app.models.Config import Config
+from app.services.llm.config.system import hello_message
+
 
 # Configurar la zona horaria de México
 MEXICO_TZ = ZoneInfo("America/Mexico_City")
@@ -162,10 +164,19 @@ class Orchestrator:
 
     async def greet(self):
         await self.websocket_handler.send_mark("not_listening")
-        greeting = self.config.get("greeting_message") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
+        context = self.websocket_handler.initial_data['context']
+
+        greeting_template = self.config.get("greeting_message") or """Hola! Mi nombre es Robotino, nos comunicamos de azul-Mar-e. 
             ¿Con quién tengo el gusto de hablar?
         """
-
+        # Intentar formatear el saludo con el contexto
+        try:
+            greeting = greeting_template.format(**context)
+        except KeyError as e:
+            # Si falta alguna clave en el contexto, usamos el template sin formatear
+            self.log(f"Warning: Missing key {e} in context for greeting. Using default greeting.")
+            greeting = greeting_template
+            
         timestamp = datetime.now(MEXICO_TZ).strftime("[%Y-%m-%d %H:%M:%S]")  # ✅ Zona horaria de México
         self.log(f"GREETING at {timestamp}: {greeting}")
         await self.synthesize_and_send(greeting)

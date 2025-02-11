@@ -76,6 +76,8 @@ async def initial_greet(call_id: str):
     else:
         wav_file_name = "noches.wav"
 
+        
+
     # Ruta al archivo WAV
     current_dir = Path(__file__).resolve().parent
     parent_dir = current_dir.parent

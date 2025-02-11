@@ -70,11 +70,11 @@ async def initial_greet(call_id: str):
 
     # Seleccionar el archivo de audio según el momento del día
     if 6 <= current_hour < 12:
-        wav_file_name = "buenos_dias.wav"
+        wav_file_name = "dias.wav"
     elif 12 <= current_hour < 20:
-        wav_file_name = "buen_dia.wav"
+        wav_file_name = "tardes.wav"
     else:
-        wav_file_name = "buenas_noches.wav"
+        wav_file_name = "noches.wav"
 
     # Ruta al archivo WAV
     current_dir = Path(__file__).resolve().parent

@@ -174,8 +174,8 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Get call SID and customer identity
     call_sid = websocket_handler.call_sid
-    if not isinstance(call_sid, str):
-        call_sid = str(call_sid)
+    # if not isinstance(call_sid, str):
+    #     call_sid = str(call_sid)
 
     # customer_identity = await get_customer_identity(call_sid)
     #call.callerName = customer_identity

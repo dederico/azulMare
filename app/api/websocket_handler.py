@@ -239,8 +239,8 @@ class WebSocketHandler:
                     * STC-125: Si el cliente contesta, confirma identidad y paga el día de hoy.
                     * STC-130: Si el cliente contesta, confirma identidad, y no puede pagar hoy.
                     * STC-135: Si el cliente contesta, confirma identidad, y no puede pagar antes de la fecha límite.
-                    * STC-140: Si el cliente contesta, confirma identidad, y puede pagar antes de la fecha límite.
-                    * STC-145: Si el cliente contesta, confirma identidad, no puede pagar antes de la fecha límite, y es transferido a un agente.
+                    * STC-140: Si el cliente contesta, confirma identidad, y puede pagar antes de la fecha límite, no se transiere al agente con exito.
+                    * STC-145: Si el cliente contesta, confirma identidad, no puede pagar antes de la fecha límite, y es transferido a un agente con exito.
                     
                     Ejemplo
                     

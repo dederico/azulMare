@@ -87,22 +87,66 @@ class OpenAIService(LLMService):
         if self.current_function_name:
             self.functions[self.current_function_name] += arguments_chunk
 
+    # async def handle_tool_call_finish(self):
+    #     for k, v in self.functions.items():
+    #         logger.debug(f"Call: {k} with arguments: {v}")
+            
+    #         try:
+    #             arguments = json.loads(v)
+    #             # Extract only the "call_sid" key and format it as a string
+    #             arguments = f'"call_sid": "{arguments["call_sid"]}"'
+
+    #             print(f"Federico: {arguments}")
+    #         except json.decoder.JSONDecodeError as e:
+    #             logger.error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
+    #             continue
+
+    #         for func in self.function_manager.registered_functions:
+    #             if func.__name__ == k:
+    #                 try:
+    #                     response = await func(**arguments)
+    #                 except Exception as e:
+    #                     logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
+    #                     continue
+                    
+    #                 self.add_to_conversation(
+    #                     "function", content=response, name=func.__name__
+    #                 )
+
+    #     generator = await self.llm_generator()
+
+    #     full_message = ""
+    #     async for chunk in generator:
+    #         content = chunk.choices[0].delta.content
+    #         if content:
+    #             yield content
+    #             full_message += content
+
+    #     self.add_to_conversation("assistant", full_message)
+    #     self.functions = {}
+    #     self.current_function_name = None
+
     async def handle_tool_call_finish(self):
         for k, v in self.functions.items():
             logger.debug(f"Call: {k} with arguments: {v}")
             
             try:
                 arguments = json.loads(v)
-            except json.decoder.JSONDecodeError as e:
-                logger.error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
+                # Extract the "call_sid" value and ensure it's a string
+                call_sid = str(arguments.get("call_sid", ""))
+                
+                logger.debug(f"Extracted call_sid: {call_sid}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON for function {k}: {e}. Input was: {v}.")
                 continue
 
             for func in self.function_manager.registered_functions:
                 if func.__name__ == k:
                     try:
-                        response = await func(**arguments)
+                        # Pass the call_sid as a named argument, ensuring it's a string
+                        response = await func(call_sid=f'"{call_sid}"')
                     except Exception as e:
-                        logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
+                        logger.error(f"Error calling function {k} with call_sid {call_sid}: {e}")
                         continue
                     
                     self.add_to_conversation(

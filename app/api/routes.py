@@ -69,12 +69,7 @@ async def initial_greet(call_id: str):
     current_hour = datetime.now(ZoneInfo("America/Mexico_City")).hour
 
     # Seleccionar el archivo de audio según el momento del día
-    if 6 <= current_hour < 12:
-        wav_file_name = "dias.wav"
-    elif 12 <= current_hour < 20:
-        wav_file_name = "tardes.wav"
-    else:
-        wav_file_name = "noches.wav"
+    wav_file_name = "hola_que_tal.wav"
 
     # Ruta al archivo WAV
     current_dir = Path(__file__).resolve().parent
@@ -142,6 +137,7 @@ async def websocket_endpoint(ws: WebSocket):
         enhanced=False,
         language=config["language"]
     )
+
 
     function_manager = FunctionManager(registered_functions)
 

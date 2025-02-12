@@ -224,6 +224,8 @@ class WebSocketHandler:
             # Crear cliente para OpenAI
             llm = openai.AsyncClient()
 
+
+
             # Mensajes para el modelo
             messages = [
                 {

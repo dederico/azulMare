@@ -102,8 +102,10 @@ class Orchestrator:
                 LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_customer", updated_customer_transcription)
                 logger.warning(f"full_transcript_customer: {updated_customer_transcription}")
                 await self.websocket_handler.send_mark("not_listening")
+                logger.warning(f"not_listening")
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
+                logger.warning(f"listening")
 
     async def process_transcript(self, transcript: str) -> None:
         buffer = ""

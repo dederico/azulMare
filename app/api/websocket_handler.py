@@ -357,6 +357,7 @@ class WebSocketHandler:
         if 'text' in data:
             datos = data["text"].strip('"').strip()
             if re.match(self.pattern, datos):
+                self.switch="not_listening"
                 self.stream_sid, self.call_sid, self.number = datos.split('#')
                 logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number}")
                 dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
@@ -394,6 +395,7 @@ class WebSocketHandler:
         # Assume `data` is already in bytes format
         audio_payload = data  # `data` is treated as Base64 bytes
         try:
+            
             # Decode the Base64 payload
             # audio_content = base64.b64decode(audio_payload)
             

@@ -124,14 +124,14 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
     Guardar la información de las preguntas según las respuestas del cliente.
 
     Args:
-        call_sid (str): Indicador único de la llamada. Proporcionado en mensaje del sistema.
-        selection1 (str): Respuesta a la pregunta 1.
-        selection2 (str): Respuesta a la pregunta 2.
-        selection3 (str): Respuesta a la pregunta 3.
-        selection4 (str): Respuesta a la pregunta 4.
-        selection5 (str): Respuesta a la pregunta 5.
-        selection6 (str): Respuesta a la pregunta 6.
-        selection7 (str): Respuesta a la pregunta 7.
+        call_sid (string): Indicador único de la llamada. Proporcionado en mensaje del sistema.
+        selection1 (string): Respuesta a la pregunta 1.
+        selection2 (string): Respuesta a la pregunta 2.
+        selection3 (string): Respuesta a la pregunta 3.
+        selection4 (string): Respuesta a la pregunta 4.
+        selection5 (string): Respuesta a la pregunta 5.
+        selection6 (string): Respuesta a la pregunta 6.
+        selection7 (string): Respuesta a la pregunta 7.
 
     Returns:
         str: Mensaje de confirmación.

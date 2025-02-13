@@ -4,14 +4,18 @@ import logging
 import urllib.parse
 import os
 import json
+import asyncio
 from io import StringIO
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
+from urllib.parse import urlencode
+
 
 
 load_dotenv()
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException
 from twilio.twiml.voice_response import VoiceResponse, Connect
+from twilio.base.exceptions import TwilioRestException
 from app.api.websocket_handler import WebSocketHandler
 from app.core.orchestrator import Orchestrator
 from app.services.stt.deepgram_service import DeepgramService
@@ -185,6 +189,29 @@ async def websocket_endpoint(ws: WebSocket):
     cleanup_call_logger()
 
 @router.post("/whatsapp")
+
+async def send_whatsapp_message(client, body, from_number, to_number, max_retries=3, delay=5):
+    for attempt in range(max_retries):
+        try:
+            # Preparar el cuerpo del mensaje como application/x-www-form-urlencoded
+            message_body = urlencode({'Body': body})
+            
+            message = client.messages.create(
+                body=body,
+                from_=f"whatsapp:{from_number}",
+                to=f"whatsapp:{to_number}",
+                # Especificar el tipo de contenido correcto
+                content_type='application/x-www-form-urlencoded'
+            )
+            return message
+        except TwilioRestException as e:
+            if e.code == 20429:  # HTTP 429 Too Many Requests
+                logger.warning(f"Rate limit hit, attempt {attempt + 1}. Retrying in {delay} seconds...")
+                await asyncio.sleep(delay)
+            else:
+                raise
+    raise Exception("Max retries reached. Unable to send message.")
+
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
     # Configuración de base de datos
@@ -204,7 +231,7 @@ async def whatsapp(request: Request):
         uid = form_data.get("SmsMessageSid")
 
         logger.debug(f"Datos recibidos: toN={toN}, sender_name={sender_name}, body={body}, "
-                     f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
+                    f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
         
         # Verificar si el mensaje incluye coordenadas de ubicación
         latitude, longitude = None, None
@@ -327,16 +354,27 @@ async def whatsapp(request: Request):
     # Enviar la respuesta por WhatsApp usando Twilio
     try:
         twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-        twilio_client.messages.create(
-            body=response_content,
-            from_="whatsapp:" + toN,
-            to="whatsapp:" + from_number
+        message = await send_whatsapp_message(
+            twilio_client,
+            response_content,
+            toN,
+            from_number
         )
-        logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_content}")
+        logger.debug(f"Mensaje enviado con éxito a WhatsApp: {message.sid}")
         content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
+    except TwilioRestException as e:
+        if e.code == 20429:  # HTTP 429 Too Many Requests
+            logger.error(f"Límite de tasa de Twilio excedido: {str(e)}")
+            content = {"status": False, "error": "Límite de tasa de mensajes excedido. Por favor, intente más tarde."}
+        elif e.code == 12300:  # Invalid Content-Type
+            logger.error(f"Error de Content-Type inválido: {str(e)}")
+            content = {"status": False, "error": "Error en el tipo de contenido del mensaje. Contacte al soporte técnico."}
+        else:
+            logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
+            content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
     except Exception as e:
-        logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
-        content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
+        logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
+        content = {"status": False, "error": "Error inesperado al enviar el mensaje."}
 
     return JSONResponse(content=content)
 

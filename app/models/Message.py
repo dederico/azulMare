@@ -10,6 +10,8 @@ class Message(metaclass=DirtyTrackingMeta):
     uid: str
     url: str
     message: str
+    latitude: float = None
+    longitude: float = None
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():

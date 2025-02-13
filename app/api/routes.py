@@ -38,6 +38,7 @@ from langchain_community.chat_message_histories.in_memory import ChatMessageHist
 from langchain.schema import HumanMessage, AIMessage
 from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
+from twilio.base.exceptions import TwilioRestException
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
@@ -331,8 +332,11 @@ async def whatsapp(request: Request):
         )
         logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_content}")
         content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
+    except TwilioRestException as e:
+        logger.error(f"Error de Twilio: {e.code} - {e.msg}")
+        content = {"status": False, "error": f"Error de Twilio: {e.code} - {e.msg}"}
     except Exception as e:
-        logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
+        logger.error(f"Error inesperado al enviar mensaje con Twilio: {str(e)}")
         content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
 
     return JSONResponse(content=content)

@@ -222,3 +222,7 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
         print(f"POST to {POST_ENDPOINT} failed: {e}")
     
     return "Selecciones guardadas correctamente."
+
+
+
+

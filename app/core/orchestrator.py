@@ -157,13 +157,13 @@ class Orchestrator:
         if any(palabra in text.lower() for palabra in para_colgar):
             self.log("Detected word to hang up the call")
             logger.warning(f"Detected word to hang up the call")
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
             self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
             await actions_call(self.call_sid) 
         elif any(palabra in text.lower() for palabra in para_transferir):
             self.log("Detected word to transfer the call")
             logger.warning(f"Detected word to transfer the call")
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
             self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
             await actions_call_transfer(self.call_sid)  
     def contains_punctuation(self, sentence: str):

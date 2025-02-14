@@ -23,7 +23,7 @@ class WebSocketHandler:
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
         self.stream_sid = None
-        self.initial_data = None
+        self.initial_data = None 
         self.switch = "not_listening"
         self.playsequence = []
         self.number=None
@@ -31,9 +31,21 @@ class WebSocketHandler:
         self.pattern=r"^[a-zA-Z0-9]+#[a-zA-Z0-9]+#[a-zA-Z0-9]+$"
         self.orchestrator = None 
         self.silence_duration = 0
+        self.queue = asyncio.Queue()
+        self.queue_task = asyncio.create_task(self.process_queue())
+    async def process_queue(self):
+        while True:  
+            call_id, action, data = await self.queue.get()
+            duration=await self._execute_action(call_id, action, data)
+            if duration:
+                await asyncio.sleep(duration) 
+            self.queue.task_done()
+    async def actions_call(self, call_id: str, action: str, data: bytes = None):
+        """Agrega la acción a la cola para su ejecución asincrónica."""
+        await self.queue.put((call_id, action, data))
     async def get_lead(self,dnid: str):
-        """
-        Fetches lead information associated with the provided DNID.
+        """ 
+        Fetches lead information associated with the provided DNID. 
 
         :param dnid: The DNID to fetch lead information for.
         :return: JSON response with lead information.
@@ -104,7 +116,7 @@ class WebSocketHandler:
             # Calcular duración
             duration = n_frames / float(frame_rate)
             # adjusted_duration = max(duration - 0.5, 0)
-            adjusted_duration = max( duration + 0.2, 0)
+            adjusted_duration = max( duration + 0.5, 0)
 
             return adjusted_duration
     def base64_wav_to_pcm(self, base64_string):
@@ -129,14 +141,7 @@ class WebSocketHandler:
             pcm_bytes = wav_file.readframes(n_frames)
 
         return pcm_bytes
-    async def actions_call(self,call_id: str,action:str,data:bytes=None):
-        """
-        Ends an active call associated with the specified call_id.
-
-        :param call_id: The ID of the ongoing call.
-        :param action: The action to execute, can be hangup,transfer_agent or playback 
-        :return: JSON response confirming the hangup.
-        """
+    async def _execute_action(self, call_id: str, action: str, data: bytes = None):
         payload=None
         duration=None
         if data:
@@ -162,8 +167,8 @@ class WebSocketHandler:
         response = conn.getresponse()
         logger.debug(response.status)
         logger.debug(response.read().decode())
-        if duration:
-            await asyncio.sleep(duration)
+        return duration
+        
     
     async def connect(self):
         await self.websocket.accept()
@@ -408,7 +413,7 @@ class WebSocketHandler:
             umbral = self.calcular_umbral(audio_payload)
             rms = audioop.rms(audio_payload, 2)  # Calculate RMS
             # Check if the audio is loud enough and in "listening" state
-            if rms > 350 and (self.switch == "listening" or self.switch is None):
+            if rms > 350 and self.switch == "listening":
                 pcm = audioop.ulaw2lin(audio_payload, 2)
                 wav_buffer = io.BytesIO()
                 with wave.open(wav_buffer, 'wb') as wf:

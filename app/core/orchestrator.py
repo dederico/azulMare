@@ -144,7 +144,7 @@ class Orchestrator:
         # Guardar la transcripción actualizada
         LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_bot", updated_bot_transcription)
         logger.warning(f"full_transcript_bot: {updated_bot_transcription}")
-        para_colgar = ["Gracias por preferir", "Disculpe la molestia", "volveremos a llamar"]
+        para_colgar = ["Gracias por preferir", "Disculpe la molestia", "volveremos a llamar","excelente día"]
         para_transferir = ["sigue en la linea","Sigue en la línea"]
           
         if self.tts_service.stream_results:

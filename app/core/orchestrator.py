@@ -10,7 +10,8 @@ from app.api.websocket_handler import WebSocketHandler
 from app.util.database import LocalStorage
 from app.models.Config import Config
 from app.services.llm.config.system import hello_message
-
+from app.services.functions.implementations.hangup_function import actions_call 
+from app.services.functions.implementations.transfer_agent_function import actions_call_transfer 
 
 # Configurar la zona horaria de México
 MEXICO_TZ = ZoneInfo("America/Mexico_City")
@@ -143,6 +144,9 @@ class Orchestrator:
         # Guardar la transcripción actualizada
         LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_bot", updated_bot_transcription)
         logger.warning(f"full_transcript_bot: {updated_bot_transcription}")
+        para_colgar = ["Gracias por preferir", "Disculpe la molestia", "volveremos a llamar"]
+        para_transferir = ["sigue en la linea"]
+          
         if self.tts_service.stream_results:
             generator = self.tts_service.stream_synthesize(text)
             async for encoded_audio in generator:  # type:ignore
@@ -150,7 +154,16 @@ class Orchestrator:
         else:
             encoded_audio = await self.tts_service.synthesize(text)
             await self.websocket_handler.send_audio(encoded_audio)
-
+        if any(palabra in text.lower() for palabra in para_colgar):
+            self.log("Detected word to hang up the call")
+            logger.warning(f"Detected word to hang up the call")
+            
+            await actions_call(self.call_sid) 
+        elif any(palabra in text.lower() for palabra in para_transferir):
+            self.log("Detected word to transfer the call")
+            logger.warning(f"Detected word to transfer the call")
+            
+            await actions_call_transfer(self.call_sid)  
     def contains_punctuation(self, sentence: str):
         punctuation_pattern = r"([.,;:?!]) "
         matches = list(re.finditer(punctuation_pattern, sentence))

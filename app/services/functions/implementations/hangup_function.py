@@ -14,7 +14,6 @@ import binascii
 import wave
 import asyncio
 import os
-from app.core.orchestrator import Orchestrator
 def calculate_wav_duration_from_base64(base64_audio: str) -> float:
         """
         Calcula la duración de un archivo WAV a partir de su representación Base64.
@@ -153,7 +152,7 @@ async def actions_call(call_sid: str):
     logger.debug(f"Response status: {response.status}")
     logger.debug(f"Response body: {response.read().decode()}")
 
-    Orchestrator.staticlog(str(call_id), "Claro!, muchas gracias por tu tiempo -- COLGAR")
+    # Orchestrator.staticlog(str(call_id), "Claro!, muchas gracias por tu tiempo -- COLGAR")
     await asyncio.sleep(duration)
             
     hangup_payload = {

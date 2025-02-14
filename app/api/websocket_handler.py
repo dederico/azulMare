@@ -24,7 +24,7 @@ class WebSocketHandler:
         self.websocket = websocket
         self.stream_sid = None
         self.initial_data = None
-        self.switch = None
+        self.switch = "not_listening"
         self.playsequence = []
         self.number=None
         self.call_sid=None

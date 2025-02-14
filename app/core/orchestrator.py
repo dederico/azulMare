@@ -1,7 +1,7 @@
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo  # Python 3.9+
-
+import asyncio
 from app.util.logger import logger
 from app.services.stt.stt_service import STTService
 from app.services.llm.llm_service import LLMService
@@ -38,7 +38,7 @@ class Orchestrator:
         self._instances[call_sid] = self  # Guardar la instancia en el diccionario
 
         self.log(f"Orchestrator for call {call_sid} has been initialized")
-
+        self.logScript("Iniciando orquestador")
     def log(self, msg):
         logger.debug(msg)
         self.stats["Logs"].append(msg)
@@ -145,7 +145,7 @@ class Orchestrator:
         LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_bot", updated_bot_transcription)
         logger.warning(f"full_transcript_bot: {updated_bot_transcription}")
         para_colgar = ["Gracias por preferir", "Disculpe la molestia", "volveremos a llamar"]
-        para_transferir = ["sigue en la linea"]
+        para_transferir = ["sigue en la linea","Sigue en la línea"]
           
         if self.tts_service.stream_results:
             generator = self.tts_service.stream_synthesize(text)
@@ -157,12 +157,14 @@ class Orchestrator:
         if any(palabra in text.lower() for palabra in para_colgar):
             self.log("Detected word to hang up the call")
             logger.warning(f"Detected word to hang up the call")
-            
+            await asyncio.sleep(1)
+            self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
             await actions_call(self.call_sid) 
         elif any(palabra in text.lower() for palabra in para_transferir):
             self.log("Detected word to transfer the call")
             logger.warning(f"Detected word to transfer the call")
-            
+            await asyncio.sleep(1)
+            self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
             await actions_call_transfer(self.call_sid)  
     def contains_punctuation(self, sentence: str):
         punctuation_pattern = r"([.,;:?!]) "

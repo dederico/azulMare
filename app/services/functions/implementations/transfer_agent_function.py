@@ -73,7 +73,7 @@ async def actions_call_transfer(call_sid: str):
         async with httpx.AsyncClient() as client:
             headers = {"accept": "application/json", "Content-Type": "application/json"}
             
-            duration = await calculate_wav_duration_from_base64(audio_base64)
+            duration = calculate_wav_duration_from_base64(audio_base64)
 
             # Primera solicitud para reproducir el audio
             logger.debug("Enviando solicitud para reproducir el audio antes de transferir")
@@ -81,14 +81,14 @@ async def actions_call_transfer(call_sid: str):
             logger.debug(f"Playback response status: {response.status_code}")
             logger.debug(f"Response body: {response.text}")
 
-            await asyncio.sleep(duration)
+            await asyncio.sleep(duration) 
 
             # Segunda solicitud para realizar la transferencia
             transfer_payload = {"call_id": call_id, "action": "transfer_agent"}
             logger.debug("Enviando solicitud para transferir la llamada")
             response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=transfer_payload, headers=headers)
             logger.debug(f"Transfer response status: {response.status_code}")
-            logger.debug(f"Transfer response body: {response.text}")
+            logger.debug(f"Transfer response body: {response.text}") 
 
         return "Se inició la transferencia al agente humano de manera exitosa."
 

@@ -43,7 +43,7 @@ from langchain_community.chat_message_histories.in_memory import ChatMessageHist
 from langchain.schema import HumanMessage, AIMessage
 from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
-from pathlib import Path
+from pathlib import Path 
 import http.client
 from zoneinfo import ZoneInfo
 import asyncio
@@ -59,6 +59,8 @@ AWS_REGION = os.environ.get("AWS_REGION")
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
+def gettime():
+    return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
 user_histories = {}
 
 async def initial_greet(call_id: str):
@@ -123,13 +125,24 @@ async def post(request: Request):
 
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
+    now = datetime.now(ZoneInfo("America/Mexico_City"))
+    logger.warning(f"Got new INCOMING_CALL - {gettime()}")
     
-    logger.info("Got new INCOMING_CALL")
-
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
+    # Esperar hasta 2 segundos para que `call_sid` se asigne correctamente
+    for _ in range(4):  # Intentar 4 veces (0.5s * 4 = 2s máx.)
+        if websocket_handler.call_sid is not None: 
+            break
+        await asyncio.sleep(0.5)
+
+    if websocket_handler.call_sid is None:
+        logger.error(f"Error: call_sid sigue siendo None después de la espera - {gettime()}")
+        return
+    logger.warning(f"Start Initial geet - {gettime()} - call_sid {websocket_handler.call_sid}")
     
     await initial_greet(call_id=websocket_handler.call_sid)
+    logger.warning(f"Initialize local storage - {gettime()} - call_sid {websocket_handler.call_sid}")
     # Set up Deepgram as the Speech-to-Text (STT) Model
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)
     db = LocalStorage()
@@ -139,7 +152,7 @@ async def websocket_endpoint(ws: WebSocket):
     logHandler = get_thread_log_handler(config.get("rawLogs", 10))
 
     # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
-    logger.debug("Setting up transcription service")
+    # logger.debug("Setting up transcription service")
     # stt_service = AmazonTranscribeService(
     #     region="us-east-1",
     #     sample_rate=8000,
@@ -162,17 +175,18 @@ async def websocket_endpoint(ws: WebSocket):
         secret_key=AWS_SECRET_ACCESS_KEY, 
         region_name=AWS_REGION, 
         stream_results=False, 
-        language=config["language"]
+        language=config["language"] 
     )
     current_date_task = get_current_date()
+    logger.warning(f"Starting stt, function_manager and tts - {gettime()} - call_sid {websocket_handler.call_sid}")
     stt_service, function_manager, tts_service, current_date = await asyncio.gather(
         stt_task, function_task, tts_task, current_date_task
     )
-
+    logger.warning(f"Ending stt, function_manager and tts - {gettime()} - call_sid {websocket_handler.call_sid}")
     # function_manager = FunctionManager(registered_functions)
 
     # Get the current date and time
-    now = datetime.now(ZoneInfo("America/Mexico_City"))
+    logger.warning(f"Starting insert call to beholder - {gettime()} - call_sid {websocket_handler.call_sid}")
     callDirection = "Inbound"
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
 
@@ -193,7 +207,7 @@ async def websocket_endpoint(ws: WebSocket):
             callUid=websocket_handler.call_sid
         )
         call = db.Insert(call)
-
+    logger.warning(f"Ending insert call to beholder - {gettime()} - call_sid {websocket_handler.call_sid}")
     # Format the date as a string
     date_string = now.strftime("%Y-%m-%d")
     
@@ -206,8 +220,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     # customer_identity = await get_customer_identity(call_sid)
     #call.callerName = customer_identity
-
-    logger.warning("Initializing LLM service for the new call")
+    logger.warning(f"Initializing LLM service for the new call - {gettime()} - call_sid {websocket_handler.call_sid}")
 
     llm_service = OpenAIService(
         config=config,
@@ -215,7 +228,7 @@ async def websocket_endpoint(ws: WebSocket):
         system=system_message.format(customer_name=call.callerName, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context, NOMBRE=context['context']['NOMBRE'], TELEFONO = context['context']['TELEFONO'], MARCA = context['context']['MARCA'], PRODUCTO = context['context']['PRODUCTO'],ADEUDO = context['context']['ADEUDO'], FECHA_LIMITE_PAGO = context['context']['FECHA_LIMITE_PAGO']),
         function_manager=function_manager
     )
-
+    logger.warning(f"Ending LLM service for the new call - {gettime()} - call_sid {websocket_handler.call_sid}")
     # tts_service = ElevenTTSService(
     #     api_key=ELEVENLABS_API_KEY,
     #     voice_id=VOICE_ID,
@@ -224,7 +237,7 @@ async def websocket_endpoint(ws: WebSocket):
     #     stream_results=True,
     # )
 
-    logger.debug("Initializing TTS engine for call")
+    # logger.debug("Initializing TTS engine for call")
     # tts_service = AmazonTTSService(
     #     access_key=AWS_ACCESS_KEY_ID,
     #     secret_key=AWS_SECRET_ACCESS_KEY,
@@ -232,8 +245,7 @@ async def websocket_endpoint(ws: WebSocket):
     #     stream_results=False,
     #     language=config["language"]
     # )
-
-    logger.debug("Initializing orchestrator for the call")
+    logger.warning(f"Initializing orchestrator for the call - {gettime()} - call_sid {websocket_handler.call_sid}")
     orchestrator = Orchestrator(
         call_sid=call_sid,
         config=config,
@@ -243,15 +255,16 @@ async def websocket_endpoint(ws: WebSocket):
         tts_service=tts_service,
     )
     websocket_handler.orchestrator = orchestrator
-    logger.debug("Starting a conversation with caller")
+    logger.warning(f"Starting a conversation with caller - {gettime()} - call_sid {websocket_handler.call_sid}")
     
     try:
         # stats = await orchestrator.process_audio_stream()
         stats = await asyncio.shield(orchestrator.process_audio_stream())
     except Exception as e:
         logger.warning("Cacha excepción al final de la llamada")
-    logger.warning("registrando cambios al finalizar")
+    logger.warning(f"Updating call in beholder - {gettime()} - call_sid {websocket_handler.call_sid}")
     # call = db.Search(Call(callUid = websocket_handler.call_sid), True)
+    
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     
     call.callLogs = logHandler.stream.getvalue()
@@ -268,7 +281,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     call.callDuration = (datetime.now(ZoneInfo("America/Mexico_City")) - now).seconds
     db.Update(call)
-    
+    logger.warning(f"Hooks - {gettime()} - call_sid {websocket_handler.call_sid}")
     hooks = Hooks()
     for hook in hooks.Get(True):
         if hook["type"] == "POST_CALL":

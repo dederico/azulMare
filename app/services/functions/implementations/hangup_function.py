@@ -138,7 +138,7 @@ async def actions_call(call_sid: str):
     async with httpx.AsyncClient() as client:
         headers = {"accept": "application/json", "Content-Type": "application/json"}
         
-        duration = await calculate_wav_duration_from_base64(audio_base64)
+        duration = calculate_wav_duration_from_base64(audio_base64)
         
         # Primera solicitud para reproducir el audio
         logger.debug("Enviando primera solicitud para reproducir el audio")

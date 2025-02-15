@@ -7,7 +7,7 @@ from app.services.stt.stt_service import STTService
 from app.services.llm.llm_service import LLMService
 from app.services.tts.tts_service import TTSService
 from app.api.websocket_handler import WebSocketHandler
-from app.util.database import LocalStorage
+from app.util.database import LocalStorage 
 from app.models.Config import Config
 from app.services.llm.config.system import hello_message
 from app.services.functions.implementations.hangup_function import actions_call 
@@ -39,6 +39,8 @@ class Orchestrator:
 
         self.log(f"Orchestrator for call {call_sid} has been initialized")
         self.logScript("Iniciando orquestador")
+    def gettime(self):
+        return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
     def log(self, msg):
         logger.debug(msg)
         self.stats["Logs"].append(msg)
@@ -61,10 +63,10 @@ class Orchestrator:
             instance.logScript(msg)
         else:
             logger.warning(f"No instance found for call_id {call_sid}")
-
-    async def process_audio_stream(self):
-        try:
-            self.log("Greeting the caller")
+  
+    async def process_audio_stream(self): 
+        try: 
+            # self.log("Greeting the caller")
             await self.greet()
 
             await self.stt_service.start_transcription()
@@ -91,6 +93,7 @@ class Orchestrator:
             full_transcript = transcription["channel"]["alternatives"][0]["transcript"]
             
             if full_transcript:
+                logger.warning(f"Start customer transcription - {self.gettime()} - call_sid {self.call_sid}")
                 timestamp = datetime.now(MEXICO_TZ).strftime("[%Y-%m-%d %H:%M:%S]")  # ✅ Zona horaria de México
                 self.stats["Script"].append({ "role": "CUSTOMER", "dialog":  f"{timestamp} - {full_transcript}" })
                 logger.warning(f"CUSTOMER: {timestamp} - {full_transcript}")
@@ -107,6 +110,7 @@ class Orchestrator:
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
                 logger.warning(f"listening")
+                logger.warning(f"End customer transcription and audio send - {self.gettime()} - call_sid {self.call_sid}")
 
     async def process_transcript(self, transcript: str) -> None:
         buffer = ""
@@ -133,6 +137,7 @@ class Orchestrator:
         return buffer
 
     async def synthesize_and_send(self, text: str) -> None:
+        logger.warning(f"Start bot transcription - {self.gettime()} - call_sid {self.call_sid}")
         timestamp = datetime.now(MEXICO_TZ).strftime("[%Y-%m-%d %H:%M:%S]")  # ✅ Zona horaria de México
         logger.warning(f"Speaking: {text}")
         self.stats["Script"].append({ "role": "BOT", "dialog": f"{timestamp} - {text}" })
@@ -154,18 +159,19 @@ class Orchestrator:
         else:
             encoded_audio = await self.tts_service.synthesize(text)
             await self.websocket_handler.send_audio(encoded_audio)
+        logger.warning(f"End bot transcription and audio send - {self.gettime()} - call_sid {self.call_sid}")
         if any(palabra in text.lower() for palabra in para_colgar):
             self.log("Detected word to hang up the call")
             logger.warning(f"Detected word to hang up the call")
             await asyncio.sleep(20)
             self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
-            await actions_call(self.call_sid) 
+            await actions_call(str(self.call_sid)) 
         elif any(palabra in text.lower() for palabra in para_transferir):
             self.log("Detected word to transfer the call")
             logger.warning(f"Detected word to transfer the call")
             await asyncio.sleep(20)
             self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
-            await actions_call_transfer(self.call_sid)  
+            await actions_call_transfer(str(self.call_sid))  
     def contains_punctuation(self, sentence: str):
         punctuation_pattern = r"([.,;:?!]) "
         matches = list(re.finditer(punctuation_pattern, sentence))
@@ -180,6 +186,7 @@ class Orchestrator:
             return None, None
 
     async def greet(self):
+        logger.warning(f"Starting greeting_message - {self.gettime()} - call_sid {self.call_sid}")
         await self.websocket_handler.send_mark("not_listening")
         context = self.websocket_handler.initial_data['context']
 
@@ -199,3 +206,4 @@ class Orchestrator:
         await self.synthesize_and_send(greeting)
         self.llm_service.add_to_conversation("assistant", greeting)
         await self.websocket_handler.send_mark("listening")
+        logger.warning(f"Ending greeting_message - {self.gettime()} - call_sid {self.call_sid}")

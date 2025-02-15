@@ -14,6 +14,8 @@ import asyncio
 import openai
 from app.util.database import LocalStorage
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo  # Python 3.9+
 # from app.core.orchestrator import Orchestrator
 class WebSocketHandler:
     duration = 0.02
@@ -30,14 +32,19 @@ class WebSocketHandler:
         self.orchestrator = None 
         self.silence_duration = 0
         self.queue = asyncio.Queue()
+        self.now = datetime.now(ZoneInfo("America/Mexico_City"))
         self.queue_task = asyncio.create_task(self.process_queue())
+    def gettime(self):
+        return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
     async def process_queue(self):
         while True:  
             call_id, action, data = await self.queue.get()
-            duration=await self._execute_action(call_id, action, data)
+            self.switch = "playing"
+            duration = await self._execute_action(call_id, action, data)
             if duration:
-                await asyncio.sleep(duration) 
+                await asyncio.sleep(duration)  # Espera la duración del audio antes de reanudar la escucha
             self.queue.task_done()
+            self.switch = "listening"
     async def actions_call(self, call_id: str, action: str, data: bytes = None):
         """Agrega la acción a la cola para su ejecución asincrónica."""
         await self.queue.put((call_id, action, data))
@@ -56,6 +63,7 @@ class WebSocketHandler:
                 response.raise_for_status()
 
             lead_info = response.json()
+            
             logger.debug(f"Lead information retrieved: {lead_info}")
             return lead_info
         except httpx.RequestError as e:
@@ -134,6 +142,7 @@ class WebSocketHandler:
 
         return pcm_bytes
     async def _execute_action(self, call_id: str, action: str, data: bytes = None):
+        
         payload=None
         duration=None
         if data:
@@ -153,6 +162,7 @@ class WebSocketHandler:
 
         async with httpx.AsyncClient() as client:
             try:
+                logger.warning(f"post playback - {self.gettime()} - call_sid {self.call_sid}")
                 response = await client.post(
                     "https://websockets.ccc.uno/api/v1/autoagent",
                     json=payload,
@@ -209,6 +219,7 @@ class WebSocketHandler:
                 except Exception as e:
                     logger.error(f"Error procesando el flujo de audio: {e}")
                     raise e
+            logger.warning(f"Getting conversation for analysis - {self.gettime()} - call_sid {self.call_sid}")
             # Obtener los datos del almacenamiento local
             transcription_for_analysis_customer = LocalStorage.get(f"{self.call_sid}_transcription_for_analysis_customer", "")
             transcription_for_analysis_bot = LocalStorage.get(f"{self.call_sid}_transcription_for_analysis_bot", "")
@@ -259,9 +270,10 @@ class WebSocketHandler:
                     "content": combined_text,
                 },
             ]
-            logger.warning(f"messages: {messages}")
+            # logger.warning(f"messages: {messages}")
             try:
                 # Llamar al modelo para obtener la respuesta
+                logger.warning(f"Send to bot for checkpoints - {self.gettime()} - call_sid {self.call_sid}")
                 respuesta = await llm.chat.completions.create(
                     model="gpt-3.5-turbo-1106",
                     temperature=0.1,
@@ -269,7 +281,8 @@ class WebSocketHandler:
                     response_format={"type": "json_object"},
                 )
                 # Extraer checkpoints de la respuesta
-                logger.warning(f"Extraer checkpoints de la respuesta {respuesta.choices[0].message.content}")
+                logger.warning(f"Extraer checkpoints de la respuesta {respuesta.choices[0].message.content} - {self.gettime()} - call_sid {self.call_sid}")
+             
                 checkpoints = json.loads(respuesta.choices[0].message.content).get("checkpoints", [])
                 collected_checkpoints.extend(checkpoints)  # Acumular checkpoints generados
             except Exception as e:
@@ -312,7 +325,7 @@ class WebSocketHandler:
                 conn.request("POST", "/api/autoagent/call-state", body=data, headers=headers)
                 response = conn.getresponse()
                 logger.debug(f"Response from server: {response.status} {response.read().decode()}")
-                logger.warning(f"Enviando a layer7 estado {checkpoint} con dnid {dnid}")
+                logger.warning(f"Enviando a layer7 estado {checkpoint} con dnid {dnid} - {self.gettime()} - call_sid {self.call_sid}")
                 self.orchestrator.log(f"Enviando a layer7 estado {checkpoint} con dnid {dnid}")
                 if response.status == 200:
                     logger.debug("Checkpoints sent successfully.")
@@ -361,7 +374,7 @@ class WebSocketHandler:
             if re.match(self.pattern, datos):
                 self.switch="not_listening"
                 self.stream_sid, self.call_sid, self.number = datos.split('#')
-                logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number}")
+                logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number} - {self.gettime()} - call_sid {self.call_sid}")
                 dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
                 # logger.debug(dnid)
                 context=await self.get_lead(dnid=dnid)
@@ -420,9 +433,8 @@ class WebSocketHandler:
         return await asyncio.to_thread(audioop.lin2ulaw, silence_data, sample_width)
 
     async def send_audio(self, audio_data):
-        logger.debug("Received audio frame from Robot")
         if self.is_connected:
-            logger.debug("Socket is connected, sending audio frame to customer")
+            logger.warning(f"sending audio frame to customer - {self.gettime()} - call_sid {self.call_sid}")
             byte_data = self.base64_wav_to_pcm(audio_data)
             self.playsequence.append(byte_data)
             self.silence_duration = 0

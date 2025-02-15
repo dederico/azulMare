@@ -46,6 +46,9 @@ from app.services.stt.media_transcriber import TranscribeOGG
 from pathlib import Path
 import http.client
 from zoneinfo import ZoneInfo
+import asyncio
+import httpx
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
@@ -60,10 +63,10 @@ user_histories = {}
 
 async def initial_greet(call_id: str):
     """
-    Ends an active call associated with the specified call_id.
+    Envía un saludo inicial en la llamada especificada por `call_id`.
 
-    :param call_id: The ID of the ongoing call.
-    :return: JSON response confirming the hangup.
+    :param call_id: ID de la llamada en curso.
+    :return: JSON con la confirmación de la reproducción del saludo.
     """
     # Obtener la hora actual
     current_hour = datetime.now(ZoneInfo("America/Mexico_City")).hour
@@ -75,30 +78,35 @@ async def initial_greet(call_id: str):
     current_dir = Path(__file__).resolve().parent
     parent_dir = current_dir.parent
     wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", wav_file_name)
-    
-    # Leer el archivo WAV
-    with open(wav_path, "rb") as wav_file:
-        wav_data = wav_file.read()
-    
-    # Codificar el audio en base64
-    audio_base64 = base64.b64encode(wav_data).decode(encoding="utf-8")
 
-    # Crear el payload
-    payload = {
-        "call_id": int(call_id),
-        "action": "playback",
-        "data": {"audio_base64": f"{audio_base64}"}
-    }
+    try:
+        # Leer el archivo WAV de manera asíncrona
+        wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
 
-    # Enviar la solicitud
-    conn = http.client.HTTPSConnection("websockets.ccc.uno")
-    headers = {"accept": "application/json", "Content-Type": "application/json"}
-    data = json.dumps(payload)
+        # Convertir a Base64 en un hilo separado
+        audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
+        audio_base64 = audio_base64.decode("utf-8")
 
-    conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
-    response = conn.getresponse()
-    logger.debug(response.status)
-    logger.debug(response.read().decode())
+        # Crear el payload
+        payload = {
+            "call_id": int(call_id),
+            "action": "playback",
+            "data": {"audio_base64": audio_base64}
+        }
+
+        async with httpx.AsyncClient() as client:
+            headers = {"accept": "application/json", "Content-Type": "application/json"}
+
+            # Enviar la solicitud de manera asíncrona
+            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+            logger.debug(f"Response status: {response.status_code}")
+            logger.debug(f"Response body: {response.text}")
+
+        return response.json()
+
+    except Exception as e:
+        logger.error(f"Error en initial_greet: {str(e)}")
+        return {"error": str(e)}
     
 @router.post("/")
 async def post(request: Request):
@@ -125,26 +133,49 @@ async def websocket_endpoint(ws: WebSocket):
     # Set up Deepgram as the Speech-to-Text (STT) Model
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)
     db = LocalStorage()
+    # config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
     logger.info(f"config {config}")
     logHandler = get_thread_log_handler(config.get("rawLogs", 10))
 
     # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
     logger.debug("Setting up transcription service")
-    stt_service = AmazonTranscribeService(
-        region="us-east-1",
-        sample_rate=8000,
-        enhanced=False,
+    # stt_service = AmazonTranscribeService(
+    #     region="us-east-1",
+    #     sample_rate=8000,
+    #     enhanced=False,
+    #     language=config["language"]
+    # )
+    stt_task = asyncio.to_thread(AmazonTranscribeService, 
+        region="us-east-1", 
+        sample_rate=8000, 
+        enhanced=False, 
         language=config["language"]
     )
 
+    function_task = asyncio.to_thread(FunctionManager, 
+        registered_functions=registered_functions
+    )
 
-    function_manager = FunctionManager(registered_functions)
+    tts_task = asyncio.to_thread(AmazonTTSService, 
+        access_key=AWS_ACCESS_KEY_ID, 
+        secret_key=AWS_SECRET_ACCESS_KEY, 
+        region_name=AWS_REGION, 
+        stream_results=False, 
+        language=config["language"]
+    )
+    current_date_task = get_current_date()
+    stt_service, function_manager, tts_service, current_date = await asyncio.gather(
+        stt_task, function_task, tts_task, current_date_task
+    )
+
+    # function_manager = FunctionManager(registered_functions)
 
     # Get the current date and time
     now = datetime.now(ZoneInfo("America/Mexico_City"))
     callDirection = "Inbound"
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
+
     context = websocket_handler.initial_data
     if call:
         callDirection = "Outbound"
@@ -152,14 +183,14 @@ async def websocket_endpoint(ws: WebSocket):
         db.Update(call)
     else:
         call = Call(
-            callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
-            callerName= context['context']['NOMBRE'],
-            callSource = "Layer7",
-            callType = "IP",
-            callDirection = "IN_COMING",
-            callStatus = "IN_PROGRESS",
-            callNumber = websocket_handler.number,
-            callUid = websocket_handler.call_sid
+            callTime=now.strftime("%Y-%m-%d %H:%M:%S"),
+            callerName=context['context']['NOMBRE'],
+            callSource="Layer7",
+            callType="IP",
+            callDirection="IN_COMING",
+            callStatus="IN_PROGRESS",
+            callNumber=websocket_handler.number,
+            callUid=websocket_handler.call_sid
         )
         call = db.Insert(call)
 
@@ -194,13 +225,13 @@ async def websocket_endpoint(ws: WebSocket):
     # )
 
     logger.debug("Initializing TTS engine for call")
-    tts_service = AmazonTTSService(
-        access_key=AWS_ACCESS_KEY_ID,
-        secret_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
-        stream_results=False,
-        language=config["language"]
-    )
+    # tts_service = AmazonTTSService(
+    #     access_key=AWS_ACCESS_KEY_ID,
+    #     secret_key=AWS_SECRET_ACCESS_KEY,
+    #     region_name=AWS_REGION,
+    #     stream_results=False,
+    #     language=config["language"]
+    # )
 
     logger.debug("Initializing orchestrator for the call")
     orchestrator = Orchestrator(
@@ -215,11 +246,14 @@ async def websocket_endpoint(ws: WebSocket):
     logger.debug("Starting a conversation with caller")
     
     try:
-        stats = await orchestrator.process_audio_stream()
+        # stats = await orchestrator.process_audio_stream()
+        stats = await asyncio.shield(orchestrator.process_audio_stream())
     except Exception as e:
         logger.warning("Cacha excepción al final de la llamada")
     logger.warning("registrando cambios al finalizar")
+    # call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
+    
     call.callLogs = logHandler.stream.getvalue()
 
     if config.get(f"saveScript{callDirection}", False):
@@ -240,6 +274,7 @@ async def websocket_endpoint(ws: WebSocket):
         if hook["type"] == "POST_CALL":
             logger.debug("Hook found for call executing function " + hook["name"])
             hook["function"](call, config)
+
 
     cleanup_call_logger()
 

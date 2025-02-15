@@ -24,18 +24,12 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
         # Decodificar Base64 a bytes
         wav_bytes = base64.b64decode(base64_audio)
 
-        # Leer el archivo WAV desde los bytes decodificados
         with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
-            frame_rate = wf.getframerate()  # Frecuencia de muestreo (Hz)
-            n_frames = wf.getnframes()  # Número total de frames
-            channels = wf.getnchannels()  # Número de canales
-            sample_width = wf.getsampwidth()  # Ancho de muestra en bytes
-
-            # Calcular duración
+            frame_rate = wf.getframerate()
+            n_frames = wf.getnframes()
             duration = n_frames / float(frame_rate)
-            adjusted_duration = max(duration, 0)
-          
-            return adjusted_duration
+        
+        return max(duration, 0)
     
 # async def actions_call(call_sid: str):
 #         """Terminar interaccion si el usuario asi lo solicita.
@@ -117,54 +111,48 @@ async def actions_call(call_sid: str):
         logger.error("actions_call called without call_sid")
         return "Error: No se proporcionó call_sid"
     
-    # Asegurarse de que call_sid sea un entero
     try:
-        call_id = int(call_sid.strip('"'))  # Eliminar comillas extras si las hay y convertir a entero
+        call_id = int(call_sid.strip('"'))
     except ValueError:
         logger.error(f"Invalid call_sid: {call_sid}. Cannot convert to integer.")
         return "Error: call_sid inválido"
 
-    payload = None
-    duration = None
-    current_dir = os.path.dirname(os.path.abspath(__file__))  # Carpeta actual
+    current_dir = os.path.dirname(os.path.abspath(__file__))
     wav_path = os.path.join(current_dir, "files", "colgar.wav")
 
-    with open(wav_path, "rb") as wav_file:
-        wav_data = wav_file.read()
-    
-    audio_base64 = base64.b64encode(wav_data).decode(encoding="utf-8")
+    # Leer archivo WAV de manera asíncrona
+    wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
+
+    # Convertir a Base64 en un hilo separado
+    audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
+    audio_base64 = audio_base64.decode("utf-8")
+
     payload = {
-        "call_id": call_id,  # Usar el call_id convertido
+        "call_id": call_id,
         "action": "playback",
         "data": {"audio_base64": audio_base64}
     }
 
-    logger.debug(f"Inside the hangup function Payload prepared: {call_id}")
+    logger.debug(f"Payload preparado: {call_id}")
 
-    conn = http.client.HTTPSConnection("websockets.ccc.uno")
-    headers = {"accept": "application/json", "Content-Type": "application/json"}
-    duration = calculate_wav_duration_from_base64(audio_base64)
-    data = json.dumps(payload)
-    
-    logger.debug("Sending first request to play audio")
-    conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
-    response = conn.getresponse()
-    logger.debug(f"Response status: {response.status}")
-    logger.debug(f"Response body: {response.read().decode()}")
+    async with httpx.AsyncClient() as client:
+        headers = {"accept": "application/json", "Content-Type": "application/json"}
+        
+        duration = await calculate_wav_duration_from_base64(audio_base64)
+        
+        # Primera solicitud para reproducir el audio
+        logger.debug("Enviando primera solicitud para reproducir el audio")
+        response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+        logger.debug(f"Response status: {response.status_code}")
+        logger.debug(f"Response body: {response.text}")
 
-    # Orchestrator.staticlog(str(call_id), "Claro!, muchas gracias por tu tiempo -- COLGAR")
-    await asyncio.sleep(duration)
-            
-    hangup_payload = {
-        "call_id": call_id,
-        "action": "hangup"
-    }
-    hangup_data = json.dumps(hangup_payload)
+        await asyncio.sleep(duration)
 
-    logger.debug("Sending second request to hangup")
-    conn.request("POST", "/api/v1/autoagent", body=hangup_data, headers=headers)
-    response = conn.getresponse()
-    logger.debug(f"Hangup response status: {response.status}")
-    logger.debug(f"Hangup response body: {response.read().decode()}")
+        # Segunda solicitud para colgar la llamada
+        hangup_payload = {"call_id": call_id, "action": "hangup"}
+        logger.debug("Enviando segunda solicitud para colgar la llamada")
+        response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
+        logger.debug(f"Hangup response status: {response.status_code}")
+        logger.debug(f"Hangup response body: {response.text}")
 
     return "Se colgó la llamada de manera exitosa."

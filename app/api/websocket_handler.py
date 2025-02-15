@@ -7,9 +7,7 @@ import json
 from fastapi import WebSocket,HTTPException
 from app.util.logger import logger
 from fastapi.websockets import WebSocketState
-from starlette.websockets import WebSocketDisconnect
 import io
-from pydub import AudioSegment
 import binascii
 import wave
 import asyncio
@@ -110,9 +108,6 @@ class WebSocketHandler:
         with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
             frame_rate = wf.getframerate()  # Frecuencia de muestreo (Hz)
             n_frames = wf.getnframes()  # Número total de frames
-            channels = wf.getnchannels()  # Número de canales
-            sample_width = wf.getsampwidth()  # Ancho de muestra en bytes
-
             # Calcular duración
             duration = n_frames / float(frame_rate)
             # adjusted_duration = max(duration - 0.5, 0)
@@ -132,9 +127,6 @@ class WebSocketHandler:
         # Cargar el WAV en un buffer de memoria
         with wave.open(io.BytesIO(wav_bytes), 'rb') as wav_file:
             # Obtener información del audio
-            n_channels = wav_file.getnchannels()
-            sample_width = wav_file.getsampwidth()
-            frame_rate = wav_file.getframerate()
             n_frames = wav_file.getnframes()
 
             # Leer los datos PCM (sin encabezado WAV)
@@ -145,7 +137,6 @@ class WebSocketHandler:
         payload=None
         duration=None
         if data:
-            # audio_base64 = base64.b64encode(data).decode(encoding="utf-8")
             payload = {
                 "call_id": int(call_id),
                 "action": action,
@@ -156,17 +147,24 @@ class WebSocketHandler:
                 "call_id": int(call_id),
                 "action": action
             }
-        conn = http.client.HTTPSConnection("websockets.ccc.uno")
-        params = payload  # Parámetros de consulta
         headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
         if data:
-            duration = self.calculate_wav_duration_from_base64(data)
-        data = json.dumps(params)
-        
-        conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
-        response = conn.getresponse()
-        logger.debug(response.status)
-        logger.debug(response.read().decode())
+            duration = await asyncio.to_thread(self.calculate_wav_duration_from_base64, data)
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    "https://websockets.ccc.uno/api/v1/autoagent",
+                    json=payload,
+                    headers=headers,
+                )
+                logger.debug(f"Response status: {response.status_code}")
+                logger.debug(f"Response body: {response.text}")
+
+            except httpx.RequestError as e:
+                logger.error(f"Error en la solicitud HTTP: {e}")
+                return None
+
         return duration
         
     
@@ -283,8 +281,6 @@ class WebSocketHandler:
         if self.orchestrator:
             logger.warning(f"Códigos de estado: {json.dumps(collected_checkpoints)}")
             self.orchestrator.log(f"Códigos de estado: {json.dumps(collected_checkpoints)}")
-        # Orchestrator.log(f"Códigos de estado: {json.dumps(collected_checkpoints)}");
-        # Enviar todos los checkpoints acumulados al finalizar
         await self._send_collected_checkpoints(collected_checkpoints)
 
     async def _send_collected_checkpoints(self, checkpoints):
@@ -356,7 +352,6 @@ class WebSocketHandler:
         customer_list = ensure_list(customer_data)
         bot_list = ensure_list(bot_data)
 
-        # Combinar las listas
         return customer_list + bot_list
 
 
@@ -375,17 +370,7 @@ class WebSocketHandler:
         elif 'bytes' in data:
             datos= data["bytes"]
             return await self.process_media_event(datos)
-             
-        # if data["event"] == "start":
-        #     self.initial_data = data["start"]
-        #     self.stream_sid = data["streamSid"]
-        #     self.call_sid = data["start"]["callSid"]
 
-        # elif data["event"] == "media":
-        #     return await self.process_media_event(data)
-
-        # elif data["event"] == "mark":
-        #     self.switch = data["mark"]["name"]
     def detect_audio_format(self, data):
         try:
             # Intentar convertir desde µ-law a PCM 16-bit
@@ -402,38 +387,21 @@ class WebSocketHandler:
         # Assume `data` is already in bytes format
         audio_payload = data  # `data` is treated as Base64 bytes
         try:
-            
-            # Decode the Base64 payload
-            # audio_content = base64.b64decode(audio_payload)
-            
-            # Convert from µ-law to PCM linear format
-            # raw_audio_data = audioop.ulaw2lin(audio_payload, 2)
+     
             raw_audio_data = audio_payload
-            # self.detect_audio_format(data)
-            umbral = self.calcular_umbral(audio_payload)
-            rms = audioop.rms(audio_payload, 2)  # Calculate RMS
-            # Check if the audio is loud enough and in "listening" state
+            # umbral = self.calcular_umbral(audio_payload)
+            # rms = audioop.rms(audio_payload, 2)  # Calculate RMS
+            rms = await asyncio.to_thread(audioop.rms, data, 2)
             if rms > 350 and self.switch == "listening":
-                pcm = audioop.ulaw2lin(audio_payload, 2)
-                wav_buffer = io.BytesIO()
-                with wave.open(wav_buffer, 'wb') as wf:
-                    wf.setnchannels(1)  # Mono
-                    wf.setsampwidth(2)  # PCM 16 bits usa 2 bytes por muestra
-                    wf.setframerate(8000)  # Frecuencia de muestreo 8 kHz
-                    wf.writeframes(pcm)  # Guardar datos PCM 16 bits
-
-                # 📌 Guardar el audio en Base64 para enviarlo al frontend
-                wav_buffer.seek(0)
-                wav_data = wav_buffer.read()
                 self.playsequence.append(raw_audio_data)
                 self.silence_duration = 0
                 return raw_audio_data
             else:
                 self.silence_duration += self.duration
-                if self.silence_duration >= 25.0:
+                if self.silence_duration >= 30.0:
                     self.silence_duration = 0
-                    logger.warning("Más de 25 segundos de silencio detectados.")
-                    await self.actions_call(self.call_sid,"hangup")
+                    logger.warning("Más de 30 segundos de silencio detectados.")
+                    asyncio.create_task(self.actions_call(self.call_sid, "hangup"))
 
                 # Generate silence if below threshold or not in listening state
                 raw_audio_data = await self.generate_silence()
@@ -447,7 +415,9 @@ class WebSocketHandler:
         # logger.debug("Generating and forwarding silence frame")
         num_samples = int(self.duration * sample_rate)
         silence_data = b"\x00" * (num_samples * sample_width)
-        return audioop.lin2ulaw(silence_data, sample_width)
+        
+        # Convertir a µ-law en un hilo separado para evitar bloqueos
+        return await asyncio.to_thread(audioop.lin2ulaw, silence_data, sample_width)
 
     async def send_audio(self, audio_data):
         logger.debug("Received audio frame from Robot")
@@ -458,13 +428,7 @@ class WebSocketHandler:
             self.silence_duration = 0
             await self.actions_call(self.call_sid,"playback",audio_data)
             self.silence_duration = 0
-            # await self.websocket.send_json(
-            #     {
-            #         "event": "media",
-            #         "streamSid": self.stream_sid,
-            #         "media": {"payload": audio_data},
-            #     }
-            # )
+          
         else:
             logger.debug("User is not connected anymore skipping audio sending to customer")
 
@@ -472,13 +436,7 @@ class WebSocketHandler:
         logger.debug("Sending {} mark to Twilio".format(mark))
         if self.is_connected:
             self.switch=mark
-            # await self.websocket.send_json(
-            #     {
-            #         "event": "mark",
-            #         "streamSid": self.stream_sid,
-            #         "mark": {"name": mark},
-            #     }
-            # )
+           
         else:
             logger.debug("Socket not connected hence mark Not_Sent")
 

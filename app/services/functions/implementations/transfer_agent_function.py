@@ -24,18 +24,12 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
         # Decodificar Base64 a bytes
         wav_bytes = base64.b64decode(base64_audio)
 
-        # Leer el archivo WAV desde los bytes decodificados
         with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
-            frame_rate = wf.getframerate()  # Frecuencia de muestreo (Hz)
-            n_frames = wf.getnframes()  # Número total de frames
-            channels = wf.getnchannels()  # Número de canales
-            sample_width = wf.getsampwidth()  # Ancho de muestra en bytes
-
-            # Calcular duración
+            frame_rate = wf.getframerate()
+            n_frames = wf.getnframes()
             duration = n_frames / float(frame_rate)
-            adjusted_duration = max(duration, 0)
-          
-            return adjusted_duration
+        
+        return max(duration, 0)
     
 async def actions_call_transfer(call_sid: str):
     """Transferir al usuario si asi lo solicita.
@@ -52,53 +46,52 @@ async def actions_call_transfer(call_sid: str):
         logger.error("actions_call_transfer called without call_sid")
         return "Error: No se proporcionó call_sid"
     
-    # Eliminar comillas extras si las hay
-    call_sid = call_sid.strip('"')
+    # Eliminar comillas extras si las hay y validar ID
+    try:
+        call_id = int(call_sid.strip('"'))
+    except ValueError:
+        logger.error(f"Invalid call_sid: {call_sid}. Cannot convert to integer.")
+        return "Error: call_sid inválido"
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    wav_path = os.path.join(current_dir, "files", "transferir.wav")
 
     try:
-        # Preparar el audio para reproducir antes de transferir
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        wav_path = os.path.join(current_dir, "files", "transferir.wav")
+        # Leer archivo WAV de forma asíncrona
+        wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
 
-        with open(wav_path, "rb") as wav_file:
-            wav_data = wav_file.read()
-        
-        audio_base64 = base64.b64encode(wav_data).decode(encoding="utf-8")
-        
-        # Reproducir el audio
+        # Convertir a Base64 en un hilo separado
+        audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
+        audio_base64 = audio_base64.decode("utf-8")
+
         payload = {
-            "call_id": int(call_sid),
+            "call_id": call_id,
             "action": "playback",
             "data": {"audio_base64": audio_base64}
         }
 
-        conn = http.client.HTTPSConnection("websockets.ccc.uno")
-        headers = {"accept": "application/json", "Content-Type": "application/json"}
-        
-        data = json.dumps(payload)
-        conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
-        response = conn.getresponse()
-        logger.debug(f"Playback response status: {response.status}")
-        logger.debug(response.read().decode())
+        async with httpx.AsyncClient() as client:
+            headers = {"accept": "application/json", "Content-Type": "application/json"}
+            
+            duration = await calculate_wav_duration_from_base64(audio_base64)
 
-        # Esperar a que se reproduzca el audio (ajusta este tiempo según sea necesario)
-        await asyncio.sleep(5)
+            # Primera solicitud para reproducir el audio
+            logger.debug("Enviando solicitud para reproducir el audio antes de transferir")
+            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+            logger.debug(f"Playback response status: {response.status_code}")
+            logger.debug(f"Response body: {response.text}")
 
-        # Realizar la transferencia
-        transfer_payload = {
-            "call_id": int(call_sid),
-            "action": "transfer_agent"
-        }
-        
-        data = json.dumps(transfer_payload)
-        conn.request("POST", "/api/v1/autoagent", body=data, headers=headers)
-        response = conn.getresponse()
-        logger.debug(f"Transfer response status: {response.status}")
-        logger.debug(response.read().decode())
+            await asyncio.sleep(duration)
 
-        # Orchestrator.staticlog(call_sid, "Transferencia al agente humano iniciada")
+            # Segunda solicitud para realizar la transferencia
+            transfer_payload = {"call_id": call_id, "action": "transfer_agent"}
+            logger.debug("Enviando solicitud para transferir la llamada")
+            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=transfer_payload, headers=headers)
+            logger.debug(f"Transfer response status: {response.status_code}")
+            logger.debug(f"Transfer response body: {response.text}")
 
         return "Se inició la transferencia al agente humano de manera exitosa."
+
     except Exception as e:
         logger.error(f"Error en la función de transferencia: {str(e)}")
         return f"Error al intentar transferir la llamada: {str(e)}"

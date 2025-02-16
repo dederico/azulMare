@@ -220,8 +220,8 @@ async def websocket_endpoint(ws: WebSocket):
     
     call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     
-    # call.callLogs = logHandler.stream.getvalue()
-    call.callLogs = json.dumps(stats['Logs'])
+    call.callLogs = logHandler.stream.getvalue()
+    # call.callLogs = json.dumps(stats['Logs'])
 
     if config.get(f"saveScript{callDirection}", False):
         call.callScript = json.dumps(stats['Script'])

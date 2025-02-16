@@ -37,6 +37,8 @@ class WebSocketHandler:
         self.queue = asyncio.Queue()
         self.now = datetime.now(ZoneInfo("America/Mexico_City"))
         self.queue_task = asyncio.create_task(self.process_queue())
+        self.para_colgar = ["disculpe la molestia", "volveremos a llamar", "excelente día"]
+        self.para_transferir = ["sigue en la linea", "sigue en la línea"]
     def gettime(self):
         return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
     async def transfer_function(self,call_sid: str):
@@ -155,12 +157,12 @@ class WebSocketHandler:
             duration = await self._execute_action(call_id, action, data,text)
             if duration:
                 await asyncio.sleep(duration)  # Espera la duración del audio antes de reanudar la escucha
-            self.queue.task_done()
+            
             self.switch = "listening"
-            if text:
-                para_colgar = ["disculpe la molestia", "volveremos a llamar", "excelente día"]
-                para_transferir = ["sigue en la linea", "sigue en la línea"]
-                if any(palabra in text.lower() for palabra in para_colgar):
+            if isinstance(text, str) and text:  # Verifica que text sea una cadena y no esté vacío
+                text_lower = text.lower()  # Convierte el texto a minúsculas solo si es válido
+            
+                if any(palabra in text_lower for palabra in self.para_colgar):
                     self.log("Detected word to hang up the call")
                     logger.warning(f"Detected word to hang up the call - {self.gettime()} - call_sid {self.call_sid}")
                     # await asyncio.sleep(20)
@@ -168,7 +170,7 @@ class WebSocketHandler:
                     # if self.orchestrator:
                     #     self.orchestrator.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
                     await self.hangup_function(str(self.call_sid)) 
-                elif any(palabra in text.lower() for palabra in para_transferir):
+                elif any(palabra in text_lower for palabra in self.para_transferir):
                     self.log("Detected word to transfer the call")
                     logger.warning(f"Detected word to transfer the call - {self.gettime()} - call_sid {self.call_sid}")
                     # await asyncio.sleep(20)
@@ -176,6 +178,7 @@ class WebSocketHandler:
                     # if self.orchestrator:
                     #     self.orchestrator.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
                     await self.transfer_function(str(self.call_sid))  
+            self.queue.task_done()
 
     async def actions_call(self, call_id: str, action: str, data: bytes = None,text:str=None):
         """Agrega la acción a la cola para su ejecución asincrónica."""
@@ -578,7 +581,8 @@ class WebSocketHandler:
             # umbral = self.calcular_umbral(audio_payload)
             # rms = audioop.rms(audio_payload, 2)  # Calculate RMS
             rms = await asyncio.to_thread(audioop.rms, data, 2)
-            if rms > 350 and self.switch == "listening":
+            # if rms > 200 and self.switch == "listening":
+            if rms > 200 and self.switch == "listening":
                 self.playsequence.append(raw_audio_data)
                 self.silence_duration = 0
                 return raw_audio_data

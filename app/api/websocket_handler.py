@@ -225,10 +225,10 @@ class WebSocketHandler:
         headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
         if data:
             duration = await asyncio.to_thread(self.calculate_wav_duration_from_base64, data)
-
+ 
         async with httpx.AsyncClient() as client:
             try:
-                logger.warning(f"post playback - {self.gettime()} - call_sid {self.call_sid}")
+                logger.warning(f"post playback text:{text} - {self.gettime()} - call_sid {self.call_sid}")
                 response = await client.post(
                     "https://websockets.ccc.uno/api/v1/autoagent",
                     json=payload,

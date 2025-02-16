@@ -48,6 +48,8 @@ class WebSocketHandler:
             duration = await self._execute_action(call_id, action, data,text)
             if duration:
                 await asyncio.sleep(duration)  # Espera la duración del audio antes de reanudar la escucha
+            self.queue.task_done()
+            self.switch = "listening"
             if text:
                 para_colgar = ["disculpe la molestia", "volveremos a llamar", "excelente día"]
                 para_transferir = ["sigue en la linea", "sigue en la línea"]
@@ -56,19 +58,18 @@ class WebSocketHandler:
                     logger.warning(f"Detected word to hang up the call - {self.gettime()} - call_sid {self.call_sid}")
                     # await asyncio.sleep(20)
                     # self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
-                    if self.orchestrator:
-                        self.orchestrator.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
+                    # if self.orchestrator:
+                    #     self.orchestrator.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
                     await actions_call(str(self.call_sid)) 
                 elif any(palabra in text.lower() for palabra in para_transferir):
                     self.log("Detected word to transfer the call")
                     logger.warning(f"Detected word to transfer the call - {self.gettime()} - call_sid {self.call_sid}")
                     # await asyncio.sleep(20)
                     # self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
-                    if self.orchestrator:
-                        self.orchestrator.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
+                    # if self.orchestrator:
+                    #     self.orchestrator.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
                     await actions_call_transfer(str(self.call_sid))  
-            self.queue.task_done()
-            self.switch = "listening"
+            
     async def actions_call(self, call_id: str, action: str, data: bytes = None,text:str=None):
         """Agrega la acción a la cola para su ejecución asincrónica."""
         await self.queue.put((call_id, action, data,text))
@@ -228,7 +229,7 @@ class WebSocketHandler:
  
         async with httpx.AsyncClient() as client:
             try:
-                logger.warning(f"post playback text:{text} - {self.gettime()} - call_sid {self.call_sid}")
+                logger.warning(f"post playback text:{text} duration: {duration} - {self.gettime()} - call_sid {self.call_sid}")
                 response = await client.post(
                     "https://websockets.ccc.uno/api/v1/autoagent",
                     json=payload,
@@ -257,7 +258,7 @@ class WebSocketHandler:
 
     async def process_stream(self):
         collected_checkpoints = []  # Lista para acumular los checkpoints
-
+ 
         try:
             while True:
                 # Verificar si el WebSocket sigue conectado
@@ -479,7 +480,7 @@ class WebSocketHandler:
                 if self.silence_duration >= 45.0:
                     self.silence_duration = 0
                     logger.warning("Más de 45 segundos de silencio detectados.")
-                    self.actions_call(self.call_sid, "hangup")
+                    await self.actions_call(self.call_sid, "hangup")
 
                 # Generate silence if below threshold or not in listening state
                 raw_audio_data = await self.generate_silence()

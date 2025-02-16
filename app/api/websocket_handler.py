@@ -18,8 +18,6 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo  # Python 3.9+
 from pathlib import Path 
-from app.services.functions.implementations.hangup_function import actions_call 
-from app.services.functions.implementations.transfer_agent_function import actions_call_transfer
 
 # from app.core.orchestrator import Orchestrator
 class WebSocketHandler:
@@ -41,6 +39,115 @@ class WebSocketHandler:
         self.queue_task = asyncio.create_task(self.process_queue())
     def gettime(self):
         return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
+    async def transfer_function(self,call_sid: str):
+        logger.debug(f"ADENTRO DE LA FUNCION transfer_agent_function actions_call_transfer called with call_sid: {call_sid}")
+
+        if not call_sid:
+            logger.error("actions_call_transfer called without call_sid")
+            return "Error: No se proporcionó call_sid"
+        
+        # Eliminar comillas extras si las hay y validar ID
+        try:
+            call_id = int(call_sid.strip('"'))
+        except ValueError:
+            logger.error(f"Invalid call_sid: {call_sid}. Cannot convert to integer.")
+            return "Error: call_sid inválido"
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        wav_path = os.path.join(current_dir, "files", "transferir.wav")
+
+        try:
+            # Leer archivo WAV de forma asíncrona
+            wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
+
+            # Convertir a Base64 en un hilo separado
+            audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
+            audio_base64 = audio_base64.decode("utf-8")
+
+            payload = {
+                "call_id": call_id,
+                "action": "playback",
+                "data": {"audio_base64": audio_base64}
+            }
+
+            async with httpx.AsyncClient() as client:
+                headers = {"accept": "application/json", "Content-Type": "application/json"}
+                
+                duration = self.calculate_wav_duration_from_base64(audio_base64)
+
+                # Primera solicitud para reproducir el audio
+                logger.debug("Enviando solicitud para reproducir el audio antes de transferir")
+                response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+                logger.debug(f"Playback response status: {response.status_code}")
+                logger.debug(f"Response body: {response.text}")
+
+                await asyncio.sleep(duration) 
+
+                # Segunda solicitud para realizar la transferencia
+                transfer_payload = {"call_id": call_id, "action": "transfer_agent"}
+                logger.debug("Enviando solicitud para transferir la llamada")
+                response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=transfer_payload, headers=headers)
+                logger.debug(f"Transfer response status: {response.status_code}")
+                logger.debug(f"Transfer response body: {response.text}") 
+
+            return "Se inició la transferencia al agente humano de manera exitosa."
+
+        except Exception as e:
+            logger.error(f"Error en la función de transferencia: {str(e)}")
+            return f"Error al intentar transferir la llamada: {str(e)}"
+
+    async def hangup_function(self,call_sid: str):
+        logger.debug(f"ADENTRO DE LA FUNCION hangup_function actions_call called with call_sid: {call_sid}")
+
+        if not call_sid:
+            logger.error("actions_call called without call_sid")
+            return "Error: No se proporcionó call_sid"
+        
+        try:
+            call_id = int(call_sid.strip('"'))
+        except ValueError:
+            logger.error(f"Invalid call_sid: {call_sid}. Cannot convert to integer.")
+            return "Error: call_sid inválido"
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        wav_path = os.path.join(current_dir, "files", "colgar.wav")
+
+        # Leer archivo WAV de manera asíncrona
+        wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
+
+        # Convertir a Base64 en un hilo separado
+        audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
+        audio_base64 = audio_base64.decode("utf-8")
+
+        payload = {
+            "call_id": call_id,
+            "action": "playback",
+            "data": {"audio_base64": audio_base64}
+        }
+
+        logger.debug(f"Payload preparado: {call_id}")
+
+        async with httpx.AsyncClient() as client:
+            headers = {"accept": "application/json", "Content-Type": "application/json"}
+            
+            duration = self.calculate_wav_duration_from_base64(audio_base64)
+            
+            # Primera solicitud para reproducir el audio
+            logger.debug("Enviando primera solicitud para reproducir el audio")
+            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+            logger.debug(f"Response status: {response.status_code}")
+            logger.debug(f"Response body: {response.text}")
+
+            await asyncio.sleep(duration)
+
+            # Segunda solicitud para colgar la llamada
+            hangup_payload = {"call_id": call_id, "action": "hangup"}
+            logger.debug("Enviando segunda solicitud para colgar la llamada")
+            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
+            logger.debug(f"Hangup response status: {response.status_code}")
+            logger.debug(f"Hangup response body: {response.text}")
+
+        return "Se colgó la llamada de manera exitosa."
     async def process_queue(self):
         while True:  
             call_id, action, data,text = await self.queue.get()
@@ -60,7 +167,7 @@ class WebSocketHandler:
                     # self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
                     # if self.orchestrator:
                     #     self.orchestrator.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
-                    await actions_call(str(self.call_sid)) 
+                    await self.hangup_function(str(self.call_sid)) 
                 elif any(palabra in text.lower() for palabra in para_transferir):
                     self.log("Detected word to transfer the call")
                     logger.warning(f"Detected word to transfer the call - {self.gettime()} - call_sid {self.call_sid}")
@@ -68,8 +175,8 @@ class WebSocketHandler:
                     # self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
                     # if self.orchestrator:
                     #     self.orchestrator.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
-                    await actions_call_transfer(str(self.call_sid))  
-            
+                    await self.transfer_function(str(self.call_sid))  
+
     async def actions_call(self, call_id: str, action: str, data: bytes = None,text:str=None):
         """Agrega la acción a la cola para su ejecución asincrónica."""
         await self.queue.put((call_id, action, data,text))

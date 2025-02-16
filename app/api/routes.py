@@ -63,53 +63,6 @@ def gettime():
     return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
 user_histories = {}
 
-async def initial_greet(call_id: str):
-    """
-    Envía un saludo inicial en la llamada especificada por `call_id`.
-
-    :param call_id: ID de la llamada en curso.
-    :return: JSON con la confirmación de la reproducción del saludo.
-    """
-    # Obtener la hora actual
-    current_hour = datetime.now(ZoneInfo("America/Mexico_City")).hour
-
-    # Seleccionar el archivo de audio según el momento del día
-    wav_file_name = "hola_que_tal.wav"
-
-    # Ruta al archivo WAV
-    current_dir = Path(__file__).resolve().parent
-    parent_dir = current_dir.parent
-    wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", wav_file_name)
-
-    try:
-        # Leer el archivo WAV de manera asíncrona
-        wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
-
-        # Convertir a Base64 en un hilo separado
-        audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
-        audio_base64 = audio_base64.decode("utf-8")
-
-        # Crear el payload
-        payload = {
-            "call_id": int(call_id),
-            "action": "playback",
-            "data": {"audio_base64": audio_base64}
-        }
-
-        async with httpx.AsyncClient() as client:
-            headers = {"accept": "application/json", "Content-Type": "application/json"}
-
-            # Enviar la solicitud de manera asíncrona
-            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
-            logger.debug(f"Response status: {response.status_code}")
-            logger.debug(f"Response body: {response.text}")
-
-        return response.json()
-
-    except Exception as e:
-        logger.error(f"Error en initial_greet: {str(e)}")
-        return {"error": str(e)}
-    
 @router.post("/")
 async def post(request: Request):
     response = VoiceResponse()
@@ -141,7 +94,7 @@ async def websocket_endpoint(ws: WebSocket):
         return
     logger.warning(f"Start Initial geet - {gettime()} - call_sid {websocket_handler.call_sid}")
     
-    await initial_greet(call_id=websocket_handler.call_sid)
+    await websocket_handler.initial_greet()
     logger.warning(f"Initialize local storage - {gettime()} - call_sid {websocket_handler.call_sid}")
     # Set up Deepgram as the Speech-to-Text (STT) Model
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)

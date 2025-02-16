@@ -10,8 +10,7 @@ from app.api.websocket_handler import WebSocketHandler
 from app.util.database import LocalStorage 
 from app.models.Config import Config
 from app.services.llm.config.system import hello_message
-from app.services.functions.implementations.hangup_function import actions_call 
-from app.services.functions.implementations.transfer_agent_function import actions_call_transfer 
+ 
 
 # Configurar la zona horaria de México
 MEXICO_TZ = ZoneInfo("America/Mexico_City")
@@ -104,12 +103,12 @@ class Orchestrator:
                 updated_customer_transcription = f"{current_customer_transcription} {full_transcript}".strip()
                 # Guardar la transcripción actualizada en LocalStorage
                 LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_customer", updated_customer_transcription)
-                logger.warning(f"full_transcript_customer: {updated_customer_transcription}")
+                # logger.warning(f"full_transcript_customer: {updated_customer_transcription}")
                 await self.websocket_handler.send_mark("not_listening")
-                logger.warning(f"not_listening")
+                # logger.warning(f"not_listening")
                 await self.process_transcript(full_transcript)
                 await self.websocket_handler.send_mark("listening")
-                logger.warning(f"listening")
+                # logger.warning(f"listening")
                 logger.warning(f"End customer transcription and audio send - {self.gettime()} - call_sid {self.call_sid}")
 
     async def process_transcript(self, transcript: str) -> None:
@@ -149,29 +148,17 @@ class Orchestrator:
         # Guardar la transcripción actualizada
         LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_bot", updated_bot_transcription)
         logger.warning(f"full_transcript_bot: {updated_bot_transcription}")
-        para_colgar = ["Gracias por preferir", "Disculpe la molestia", "volveremos a llamar","excelente día"]
-        para_transferir = ["sigue en la linea","Sigue en la línea"]
+        
           
         if self.tts_service.stream_results:
             generator = self.tts_service.stream_synthesize(text)
             async for encoded_audio in generator:  # type:ignore
-                await self.websocket_handler.send_audio(encoded_audio)
+                await self.websocket_handler.send_audio(encoded_audio,text)
         else:
             encoded_audio = await self.tts_service.synthesize(text)
-            await self.websocket_handler.send_audio(encoded_audio)
+            await self.websocket_handler.send_audio(encoded_audio,text)
         logger.warning(f"End bot transcription and audio send - {self.gettime()} - call_sid {self.call_sid}")
-        if any(palabra in text.lower() for palabra in para_colgar):
-            self.log("Detected word to hang up the call")
-            logger.warning(f"Detected word to hang up the call")
-            await asyncio.sleep(20)
-            self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
-            await actions_call(str(self.call_sid)) 
-        elif any(palabra in text.lower() for palabra in para_transferir):
-            self.log("Detected word to transfer the call")
-            logger.warning(f"Detected word to transfer the call")
-            await asyncio.sleep(20)
-            self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
-            await actions_call_transfer(str(self.call_sid))  
+        
     def contains_punctuation(self, sentence: str):
         punctuation_pattern = r"([.,;:?!]) "
         matches = list(re.finditer(punctuation_pattern, sentence))

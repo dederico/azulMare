@@ -8,6 +8,7 @@ from fastapi import WebSocket,HTTPException
 from app.util.logger import logger
 from fastapi.websockets import WebSocketState
 import io
+import os
 import binascii
 import wave
 import asyncio
@@ -16,6 +17,10 @@ from app.util.database import LocalStorage
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo  # Python 3.9+
+from pathlib import Path 
+from app.services.functions.implementations.hangup_function import actions_call 
+from app.services.functions.implementations.transfer_agent_function import actions_call_transfer
+
 # from app.core.orchestrator import Orchestrator
 class WebSocketHandler:
     duration = 0.02
@@ -38,16 +43,77 @@ class WebSocketHandler:
         return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
     async def process_queue(self):
         while True:  
-            call_id, action, data = await self.queue.get()
+            call_id, action, data,text = await self.queue.get()
             self.switch = "playing"
-            duration = await self._execute_action(call_id, action, data)
+            duration = await self._execute_action(call_id, action, data,text)
             if duration:
                 await asyncio.sleep(duration)  # Espera la duración del audio antes de reanudar la escucha
+            if text:
+                para_colgar = ["disculpe la molestia", "volveremos a llamar", "excelente día"]
+                para_transferir = ["sigue en la linea", "sigue en la línea"]
+                if any(palabra in text.lower() for palabra in para_colgar):
+                    self.log("Detected word to hang up the call")
+                    logger.warning(f"Detected word to hang up the call - {self.gettime()} - call_sid {self.call_sid}")
+                    # await asyncio.sleep(20)
+                    # self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
+                    if self.orchestrator:
+                        self.orchestrator.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
+                    await actions_call(str(self.call_sid)) 
+                elif any(palabra in text.lower() for palabra in para_transferir):
+                    self.log("Detected word to transfer the call")
+                    logger.warning(f"Detected word to transfer the call - {self.gettime()} - call_sid {self.call_sid}")
+                    # await asyncio.sleep(20)
+                    # self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
+                    if self.orchestrator:
+                        self.orchestrator.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
+                    await actions_call_transfer(str(self.call_sid))  
             self.queue.task_done()
             self.switch = "listening"
-    async def actions_call(self, call_id: str, action: str, data: bytes = None):
+    async def actions_call(self, call_id: str, action: str, data: bytes = None,text:str=None):
         """Agrega la acción a la cola para su ejecución asincrónica."""
-        await self.queue.put((call_id, action, data))
+        await self.queue.put((call_id, action, data,text))
+    async def initial_greet(self):
+        """
+        Envía un saludo inicial en la llamada especificada por `call_id`.
+
+        :return: JSON con la confirmación de la reproducción del saludo.
+        """
+        wav_file_name = "hola_que_tal.wav"
+
+        # Ruta al archivo WAV
+        current_dir = Path(__file__).resolve().parent
+        parent_dir = current_dir.parent
+        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", wav_file_name)
+        call_id=self.call_sid
+        try:
+            # Leer el archivo WAV de manera asíncrona
+            wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
+
+            # Convertir a Base64 en un hilo separado
+            audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
+            audio_base64 = audio_base64.decode("utf-8")
+
+            # Crear el payload
+            payload = {
+                "call_id": int(call_id),
+                "action": "playback",
+                "data": {"audio_base64": audio_base64}
+            }
+
+            async with httpx.AsyncClient() as client:
+                headers = {"accept": "application/json", "Content-Type": "application/json"}
+                logger.warning(f"post playback initial greet - {self.gettime()} - call_sid {self.call_sid}")
+                # Enviar la solicitud de manera asíncrona
+                response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+                logger.debug(f"Response status: {response.status_code}")
+                logger.debug(f"Response body: {response.text}")
+
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Error en initial_greet: {str(e)}")
+            return {"error": str(e)}
+        
     async def get_lead(self,dnid: str):
         """ 
         Fetches lead information associated with the provided DNID. 
@@ -141,7 +207,7 @@ class WebSocketHandler:
             pcm_bytes = wav_file.readframes(n_frames)
 
         return pcm_bytes
-    async def _execute_action(self, call_id: str, action: str, data: bytes = None):
+    async def _execute_action(self, call_id: str, action: str, data: bytes = None,text:str=None):
         
         payload=None
         duration=None
@@ -168,9 +234,7 @@ class WebSocketHandler:
                     json=payload,
                     headers=headers,
                 )
-                logger.debug(f"Response status: {response.status_code}")
-                logger.debug(f"Response body: {response.text}")
-
+                logger.warning(f"post playback response {response.status_code} {response.text} - {self.gettime()} - call_sid {self.call_sid}")
             except httpx.RequestError as e:
                 logger.error(f"Error en la solicitud HTTP: {e}")
                 return None
@@ -183,8 +247,9 @@ class WebSocketHandler:
         #debug
         #logger.debug("Customer call connected processing audio channel")
         client_ip = self.websocket.client.host
-        client_port = self.websocket.client.port
-        logger.warning(f"Cliente conectado desde {client_ip}:{client_port}")
+        # client_port = self.websocket.client.port
+        identificador=id(self.websocket)
+        logger.warning(f"Cliente conectado desde {client_ip} identificador {identificador}")
         async for _ in self.process_stream():
             if self.stream_sid:
                 logger.debug("stream_sid break")
@@ -411,10 +476,10 @@ class WebSocketHandler:
                 return raw_audio_data
             else:
                 self.silence_duration += self.duration
-                if self.silence_duration >= 30.0:
+                if self.silence_duration >= 45.0:
                     self.silence_duration = 0
-                    logger.warning("Más de 30 segundos de silencio detectados.")
-                    asyncio.create_task(self.actions_call(self.call_sid, "hangup"))
+                    logger.warning("Más de 45 segundos de silencio detectados.")
+                    self.actions_call(self.call_sid, "hangup")
 
                 # Generate silence if below threshold or not in listening state
                 raw_audio_data = await self.generate_silence()
@@ -432,13 +497,13 @@ class WebSocketHandler:
         # Convertir a µ-law en un hilo separado para evitar bloqueos
         return await asyncio.to_thread(audioop.lin2ulaw, silence_data, sample_width)
 
-    async def send_audio(self, audio_data):
+    async def send_audio(self, audio_data,text:str=None):
         if self.is_connected:
             logger.warning(f"sending audio frame to customer - {self.gettime()} - call_sid {self.call_sid}")
             byte_data = self.base64_wav_to_pcm(audio_data)
             self.playsequence.append(byte_data)
             self.silence_duration = 0
-            await self.actions_call(self.call_sid,"playback",audio_data)
+            await self.actions_call(self.call_sid,"playback",audio_data,text)
             self.silence_duration = 0
           
         else:

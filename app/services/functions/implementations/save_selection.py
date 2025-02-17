@@ -123,7 +123,7 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
     """Guardar la información de las preguntas segun las respuestas del cliente.
 
     Args:
-        call_sid (string): Indicador unico de la llamada. Proporcionado en mensaje del sistema.
+        call_sid (string): Indicador unico de la llamada o mensaje. Proporcionado en mensaje del sistema.
         selection1 (string): Respuesta a la pregunta 1.
         selection2 (string): Respuesta a la pregunta 2.
         selection3 (string): Respuesta a la pregunta 3.
@@ -133,10 +133,10 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
         selection7 (string): Respuesta a la pregunta 7.
 
     Returns:
-        string: Mensaje de confirmacion.
+        string: Mensaje de confirmación con el número de folio.
     """
     try:
-        # Fetch the call
+        # Fetch the call or message
         if call_sid.startswith("CA"):
             call = client.calls(call_sid).fetch()
             caller_number = call.from_formatted
@@ -149,13 +149,13 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
             print(f"Sender number from message: {caller_number}")
         else:
             print("El SID proporcionado no es válido para llamadas o mensajes.")
+            return "Error: SID no válido"
     except Exception as e:
         print(f"Error al procesar el SID: {e}")
+        return f"Error: {str(e)}"
+
     # Fetch the token
     token = get_token()
-    # Get the caller's phone number
-    #caller_number = call.from_formatted  # Use `from_formatted` to get the caller's phone number
-    #print(f"Caller number: {caller_number}")
 
     # Save selections for each question
     await find_row_and_update_selection(caller_number, 1, selection1)
@@ -166,30 +166,10 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
     await find_row_and_update_selection(caller_number, 6, selection6)
     await find_row_and_update_selection(caller_number, 7, selection7)
 
-
-    
     # Prepare the JSON payload
-    # payload = {
-    #     "fname": selection1,  # Example mapping
-    #     "lname": selection2,  # Example mapping
-    #     "email": "Anónimo",  # Example hardcoded value
-    #     "phone": caller_number,
-    #     "titulo": caller_number,  # Example hardcoded value
-    #     "descripcion": selection3,  # Example mapping
-
-    #     "consejerias": "[\"fef66114-d97c-4f25-ad10-fd8af1ebef71\"]",
-    #     "tipo": TIPO,
-    #     "estado": ESTADO,
-    #     "htmlContent": HTML_CONTENT,
-    #     "canal": "Centralita Voz",  # Example hardcoded value
-    #     "idCli": "-1",  # Example hardcoded value
-    #     "idConversacion": -1,  # Example hardcoded value
-    #     "conector_id": -1  # Example hardcoded value
-    # }
-
     payload = {
         "idAsunto": selection1,
-        "nombreCiudadano": selection2 + " " + selection3,
+        "nombreCiudadano": f"{selection2} {selection3}",
         "numWhastApp": caller_number.replace("whatsapp:+", ""),
         "anonimo": False,
         "detalleSolicitud": selection4,
@@ -218,11 +198,12 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
         response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
         response.raise_for_status()  # Raise an HTTPError on bad status
         print(f"POST to {POST_ENDPOINT} successful. Response: {response.status_code} {response.text}")
+        folio = response.text.strip()
+        return f"Selecciones guardadas correctamente. Número de folio: {folio}"
     except requests.exceptions.RequestException as e:
         print(f"POST to {POST_ENDPOINT} failed: {e}")
+        return f"Error al guardar las selecciones: {str(e)}"
     
-    return "Selecciones guardadas correctamente."
-
 
 
 

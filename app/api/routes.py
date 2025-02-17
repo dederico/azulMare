@@ -32,6 +32,7 @@ from app.models.Message import Message
 from app.models.Config import Config
 from app.util.factory import Hooks
 from app.util.database import LocalStorage
+from app.services.functions.implementations.save_selection import save_client_selection, find_row_and_update_selection
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
@@ -120,11 +121,21 @@ async def websocket_endpoint(ws: WebSocket):
     customer_identity = await get_customer_identity(call_sid)
     call.callerName = customer_identity
 
+    selection1 = await find_row_and_update_selection(call.callNumber, 1)
+    selection2 = await find_row_and_update_selection(call.callNumber, 2)
+    selection3 = await find_row_and_update_selection(call.callNumber, 3)
+    selection4 = await find_row_and_update_selection(call.callNumber, 4)
+    selection5 = await find_row_and_update_selection(call.callNumber, 5)
+    selection6 = await find_row_and_update_selection(call.callNumber, 6)
+    selection7 = await find_row_and_update_selection(call.callNumber, 7)
+
+    folio = await save_client_selection(call_sid, selection1, selection2, selection3, selection4, selection5, selection6, selection7)
+
     logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
+        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date, folio=folio),
         function_manager=function_manager
     )
 
@@ -261,6 +272,7 @@ async def whatsapp(request: Request):
 
     # Configurar el LLM con el historial
     current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    folio = await save_client_selection(wa_id, "", "", "", "", "", "", "")
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(
@@ -268,7 +280,8 @@ async def whatsapp(request: Request):
             call_sid=uid,
             date2=current_date,
             now=datetime.now(),
-            date=current_date
+            date=current_date,
+            folio=folio
         )
 
         llm_service = OpenAIService(

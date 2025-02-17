@@ -22,6 +22,8 @@ from app.services.tts.polly_service import AmazonTTSService
 from app.services.functions.function_registry import registered_functions
 from app.services.llm.config.system import system_message
 from app.services.functions.function_manager import FunctionManager
+from app.services.functions.implementations.geocoding import latlong_to_address
+
 from twilio.rest import Client
 from urllib.parse import parse_qs
 from datetime import datetime
@@ -220,8 +222,14 @@ async def whatsapp(request: Request):
         if message_type == "location":
             latitude = form_data.get("Latitude")
             longitude = form_data.get("Longitude")
-            body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
-            logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}")
+            try:
+                #Convertir la latitud y longitud a dirección
+                address = await latlong_to_address(float(latitude), float(longitude))
+                body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
+            except Exception as e:
+                logger.error(f"Error al convertir coordenadas a dirección: {str(e)}")
+                body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
+            logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
 
         # Verificar si el mensaje incluye un audio
         elif message_type == "audio":

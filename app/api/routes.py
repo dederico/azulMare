@@ -7,6 +7,9 @@ import json
 from io import StringIO
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import pytz
 
 
 load_dotenv()
@@ -113,8 +116,9 @@ async def websocket_endpoint(ws: WebSocket):
         )
         call = db.Insert(call)
 
-    # Format the date as a string
-    date_string = now.strftime("%Y-%m-%d")
+    monterrey_tz = pytz.timezone('America/Monterrey')
+    monterrey_now = datetime.now(monterrey_tz)
+    date_string = monterrey_now.strftime("%Y-%m-%d %H:%M:%S")
 
     current_date = await get_current_date()
 

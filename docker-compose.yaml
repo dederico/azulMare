@@ -26,15 +26,3 @@ services:
       options:
         max-size: "100m"
         max-file: "1"
-
-  grafana:
-    image: grafana/grafana
-    container_name: grafana
-    restart: unless-stopped
-    ports:
-      - '3001:3000'
-    volumes:
-      - grafana-storage:/var/lib/grafana
-
-volumes:
-  grafana-storage:

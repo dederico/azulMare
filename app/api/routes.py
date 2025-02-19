@@ -10,6 +10,10 @@ from fastapi.responses import JSONResponse
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pytz
+from io import BytesIO
+import requests
+from openai import OpenAI
+
 
 
 load_dotenv()
@@ -116,11 +120,26 @@ async def websocket_endpoint(ws: WebSocket):
         )
         call = db.Insert(call)
 
-    monterrey_tz = pytz.timezone('America/Monterrey')
-    monterrey_now = datetime.now(monterrey_tz)
-    date_string = monterrey_now.strftime("%Y-%m-%d %H:%M:%S")
+    # monterrey_tz = pytz.timezone('America/Chicago')
+    # monterrey_now = datetime.now(monterrey_tz)
+    # date_string = monterrey_now.strftime("%Y-%m-%d %H:%M:%S")
+    # now = datetime.now()
+    # adjusted_time = now - timedelta(hours=6)
+    # date_string = adjusted_time.strftime("%Y-%m-%d %H:%M:%S")
+    # current_datetime = datetime.now(pytz.UTC).astimezone(pytz.FixedOffset(-360))  # -360 minutos = GMT-6
+    # date_string = current_datetime.strftime("%Y-%m-%d")
+    # hour = current_datetime.strftime("%I:%M %p")
 
-    current_date = await get_current_date()
+    mexico_tz = pytz.timezone('America/Mexico_City')
+    current_datetime = datetime.now(mexico_tz)
+    print(f"Hora original (MX): {current_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
+    #new_datetime = current_datetime - timedelta(days=6)
+    #print(f"Hora ajustada (MX - 6h): {new_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
+    date_string = current_datetime.strftime("%Y-%m-%d")
+    hour = current_datetime.strftime("%I:%M:%S %p")
+    print(f"\nRESULTADO FINAL -> Fecha: {date_string}, Hora: {hour}")
+
+    #current_date = await get_current_date()
 
     # Get call SID and customer identity
     call_sid = websocket_handler.call_sid
@@ -141,7 +160,7 @@ async def websocket_endpoint(ws: WebSocket):
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date, folio=folio),
+        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio=folio),
         function_manager=function_manager
     )
 
@@ -207,6 +226,7 @@ async def whatsapp(request: Request):
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
     try:
         form_data = await request.form()
@@ -222,6 +242,7 @@ async def whatsapp(request: Request):
                      f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
         
         # Verificar si el mensaje incluye coordenadas de ubicación
+        address = None
         latitude, longitude = None, None
         if message_type == "location":
             latitude = form_data.get("Latitude")
@@ -238,8 +259,51 @@ async def whatsapp(request: Request):
         # Verificar si el mensaje incluye un audio
         elif message_type == "audio":
             body = TranscribeOGG(form_data.get("MediaUrl0"), config["language"])
-            logger.debug(f"Audio transcrito: {body}")
 
+
+
+            logger.debug(f"Audio transcrito: {body}")
+        elif message_type == "image":
+            #Manejar imagen aquí
+            media_url = form_data.get("MediaUrl0")
+            if media_url:
+                try:
+                    # Descargar la imagen 
+                    response = requests.get(media_url)
+                    image_content = BytesIO(response.content)
+
+                    # Analizar la imagen
+                    image_analysis = client.chat.completions.create(
+                        model="gpt-4o",  # Asegúrate de usar el modelo correcto
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Describe esta imagen en detalle."},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                    max_tokens=300,
+                )
+                # Obtener la descripción de la imagen
+                    image_description = image_analysis.choices[0].message.content
+                    body = f"Imagen recibida. Descripción: {image_description}"
+                    logger.debug(f"Descripción de la imagen: {image_description}")
+                except requests.RequestException as e:
+                    logger.error(f"Error al descargar la imagen: {str(e)}")
+                    body = "Se recibió una imagen, pero no se pudo descargar. Por favor, intenta enviarla de nuevo."
+                except Exception as e:
+                    logger.error(f"Error al analizar la imagen: {str(e)}")
+                    body = "Se recibió una imagen, pero hubo un problema al analizarla. El equipo técnico ha sido notificado."
+            else:
+                body = "Se recibió una notificación de imagen, pero no se encontró la URL de la imagen."
+                logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
             
     except KeyError as e:
         logger.error(f"Falta el parámetro requerido: {e}")
@@ -268,6 +332,7 @@ async def whatsapp(request: Request):
 
     # Agregar mensaje de usuario al historial y guardar en base de datos
     conversation_history.add_user_message(body)
+
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName=sender_name,
@@ -281,19 +346,28 @@ async def whatsapp(request: Request):
         longitude=longitude  # Guardar longitud si está disponible
     )
     db.Insert(user_message)
-
+    mexico_tz = pytz.timezone('America/Mexico_City')
+    current_datetime = datetime.now(mexico_tz)
+    print(f"Hora original (MX): {current_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
+    #new_datetime = current_datetime - timedelta(hours=6)
+    #print(f"Hora ajustada (MX - 6h): {new_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
+    date_string = current_datetime.strftime("%Y-%m-%d")
+    hour = current_datetime.strftime("%I:%M:%S %p")
+    print(f"\nRESULTADO FINAL -> Fecha: {date_string}, Hora: {hour}")
     # Configurar el LLM con el historial
-    current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    #current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     folio = await save_client_selection(wa_id, "", "", "", "", "", "", "")
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(
             customer_name=sender_name,
             call_sid=uid,
-            date2=current_date,
-            now=datetime.now(),
-            date=current_date,
-            folio=folio
+            date2=date_string,
+            #now=datetime.now(),
+            now=hour,
+            folio=folio,
+            address=address if 'address' in locals() else "No he recibido ubicación",
+            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
         )
 
         llm_service = OpenAIService(
@@ -302,10 +376,19 @@ async def whatsapp(request: Request):
             system=system_prompt,
             function_manager=function_manager
         )
-        
+        # Agregar mensaje de usuario al historial y guardar en base de datos
+        #conversation_history.add_user_message(body)
+        # Procesar la imagen si está disponible
+
+        if 'image_description' in locals() and image_description:
+            image_message = f"[Imagen recibida. Descripción: {image_description}]"
+            conversation_history.add_user_message(image_message)
+            conversation_history.add_ai_message("Por favor, analiza y comenta sobre la imagen en tu próxima respuesta.")
+
         # Formatear el historial de mensajes para el modelo
         formatted_history = [
             {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
+            else {"role": "system", "content": message.content} if isinstance(message, AIMessage)
             else {"role": "assistant", "content": message.content}
             for message in conversation_history.messages
         ]
@@ -332,7 +415,7 @@ async def whatsapp(request: Request):
         conversation_history.add_ai_message(response_content)
         
         assistant_message = Message(
-            time=current_date,
+            time=current_datetime,
             senderName="Assistant",
             message=response_content,
             number=from_number,

@@ -18,7 +18,7 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo  # Python 3.9+
 from pathlib import Path 
-
+import unicodedata
 # from app.core.orchestrator import Orchestrator
 class WebSocketHandler:
     duration = 0.02
@@ -37,26 +37,35 @@ class WebSocketHandler:
         self.queue = asyncio.Queue()
         self.now = datetime.now(ZoneInfo("America/Mexico_City"))
         self.queue_task = asyncio.create_task(self.process_queue())
-        self.para_colgar = ["disculpe la molestia", "volveremos a llamar", "excelente día"]
-        self.para_transferir = ["sigue en la linea", "sigue en la línea"]
+        self.para_colgar = ["excelente dia"]
+        self.para_transferir = ["sigue en la linea"]
+    def remove_accents(self, text):
+        return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
+
+    def clean_text(self, text):
+        text = unicodedata.normalize("NFKC", text).strip().lower()
+        text = self.remove_accents(text)  # Elimina tildes
+        text = text.replace("\n", " ").replace("\t", " ").replace("  ", " ")
+        return text
+    def normalize_text(self,text):
+        return unicodedata.normalize("NFKC", text).strip().lower()
     def gettime(self):
         return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
-    async def transfer_function(self,call_sid: str):
-        logger.debug(f"ADENTRO DE LA FUNCION transfer_agent_function actions_call_transfer called with call_sid: {call_sid}")
-
-        if not call_sid:
+    async def transfer_function(self):
+        if not self.call_sid:
             logger.error("actions_call_transfer called without call_sid")
             return "Error: No se proporcionó call_sid"
         
         # Eliminar comillas extras si las hay y validar ID
         try:
-            call_id = int(call_sid.strip('"'))
+            call_id = int(self.call_sid.strip('"'))
         except ValueError:
-            logger.error(f"Invalid call_sid: {call_sid}. Cannot convert to integer.")
+            logger.error(f"Invalid call_sid: {self.call_sid}. Cannot convert to integer.")
             return "Error: call_sid inválido"
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        wav_path = os.path.join(current_dir, "files", "transferir.wav")
+        current_dir = Path(__file__).resolve().parent
+        parent_dir = current_dir.parent
+        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", "transferir.wav")
 
         try:
             # Leer archivo WAV de forma asíncrona
@@ -78,7 +87,7 @@ class WebSocketHandler:
                 duration = self.calculate_wav_duration_from_base64(audio_base64)
 
                 # Primera solicitud para reproducir el audio
-                logger.debug("Enviando solicitud para reproducir el audio antes de transferir")
+                logger.warning(f"Enviando solicitud para reproducir el audio antes de transferir - {self.gettime()} - call_sid {self.call_sid}")
                 response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
                 logger.debug(f"Playback response status: {response.status_code}")
                 logger.debug(f"Response body: {response.text}")
@@ -87,7 +96,7 @@ class WebSocketHandler:
 
                 # Segunda solicitud para realizar la transferencia
                 transfer_payload = {"call_id": call_id, "action": "transfer_agent"}
-                logger.debug("Enviando solicitud para transferir la llamada")
+                logger.warning(f"Enviando solicitud para transferir la llamada - {self.gettime()} - call_sid {self.call_sid}")
                 response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=transfer_payload, headers=headers)
                 logger.debug(f"Transfer response status: {response.status_code}")
                 logger.debug(f"Transfer response body: {response.text}") 
@@ -98,21 +107,20 @@ class WebSocketHandler:
             logger.error(f"Error en la función de transferencia: {str(e)}")
             return f"Error al intentar transferir la llamada: {str(e)}"
 
-    async def hangup_function(self,call_sid: str):
-        logger.debug(f"ADENTRO DE LA FUNCION hangup_function actions_call called with call_sid: {call_sid}")
-
-        if not call_sid:
+    async def hangup_function(self):
+        if not self.call_sid:
             logger.error("actions_call called without call_sid")
             return "Error: No se proporcionó call_sid"
         
         try:
-            call_id = int(call_sid.strip('"'))
+            call_id = int(self.call_sid)
         except ValueError:
-            logger.error(f"Invalid call_sid: {call_sid}. Cannot convert to integer.")
+            logger.error(f"Invalid call_sid: {self.call_sid}. Cannot convert to integer.")
             return "Error: call_sid inválido"
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        wav_path = os.path.join(current_dir, "files", "colgar.wav")
+        current_dir = Path(__file__).resolve().parent
+        parent_dir = current_dir.parent
+        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", "colgar.wav")
 
         # Leer archivo WAV de manera asíncrona
         wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
@@ -127,15 +135,13 @@ class WebSocketHandler:
             "data": {"audio_base64": audio_base64}
         }
 
-        logger.debug(f"Payload preparado: {call_id}")
-
         async with httpx.AsyncClient() as client:
             headers = {"accept": "application/json", "Content-Type": "application/json"}
             
             duration = self.calculate_wav_duration_from_base64(audio_base64)
             
             # Primera solicitud para reproducir el audio
-            logger.debug("Enviando primera solicitud para reproducir el audio")
+            logger.warning(f"Enviando primera solicitud para reproducir el audio de colgar - {self.gettime()} - call_sid {self.call_sid}")
             response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
             logger.debug(f"Response status: {response.status_code}")
             logger.debug(f"Response body: {response.text}")
@@ -144,7 +150,7 @@ class WebSocketHandler:
 
             # Segunda solicitud para colgar la llamada
             hangup_payload = {"call_id": call_id, "action": "hangup"}
-            logger.debug("Enviando segunda solicitud para colgar la llamada")
+            logger.warning(f"Enviando segunda solicitud para colgar la llamada - {self.gettime()} - call_sid {self.call_sid}")
             response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
             logger.debug(f"Hangup response status: {response.status_code}")
             logger.debug(f"Hangup response body: {response.text}")
@@ -156,28 +162,36 @@ class WebSocketHandler:
             self.switch = "playing"
             duration = await self._execute_action(call_id, action, data,text)
             if duration:
+                logger.warning(f"esperando sleep duracion:{duration} text:{text} - {self.gettime()} - call_sid {self.call_sid}")
                 await asyncio.sleep(duration)  # Espera la duración del audio antes de reanudar la escucha
             
             self.switch = "listening"
-            if isinstance(text, str) and text:  # Verifica que text sea una cadena y no esté vacío
-                text_lower = text.lower()  # Convierte el texto a minúsculas solo si es válido
             
-                if any(palabra in text_lower for palabra in self.para_colgar):
-                    self.log("Detected word to hang up the call")
-                    logger.warning(f"Detected word to hang up the call - {self.gettime()} - call_sid {self.call_sid}")
-                    # await asyncio.sleep(20)
-                    # self.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
-                    # if self.orchestrator:
-                    #     self.orchestrator.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
-                    await self.hangup_function(str(self.call_sid)) 
-                elif any(palabra in text_lower for palabra in self.para_transferir):
-                    self.log("Detected word to transfer the call")
-                    logger.warning(f"Detected word to transfer the call - {self.gettime()} - call_sid {self.call_sid}")
-                    # await asyncio.sleep(20)
-                    # self.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
-                    # if self.orchestrator:
-                    #     self.orchestrator.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
-                    await self.transfer_function(str(self.call_sid))  
+            if text is not None and isinstance(text, str) and text.strip():  # Verifica que text sea una cadena y no esté vacío
+                text_lower = self.clean_text(text)  # Convierte el texto a minúsculas solo si es válido 
+                logger.warning(f"Entra a la comparación de palabras para transferir o colgar - {text_lower} - {self.gettime()} - call_sid {self.call_sid}")
+                self.para_colgar = [self.clean_text(phrase) for phrase in self.para_colgar]
+                self.para_transferir = [self.clean_text(phrase) for phrase in self.para_transferir]
+                for phrase in self.para_colgar:
+                    logger.warning(f"Buscando '{phrase}' en '{text_lower}' colgar")
+                    if phrase in text_lower:
+                        # self.log("Detected word to hang up the call")
+                        logger.warning(f"Detected word to hang up the call - {self.gettime()} - call_sid {self.call_sid}") 
+                        if self.orchestrator:
+                            self.orchestrator.logScript(f"Claro!, muchas gracias por tu tiempo -- COLGAR -- call_sid={self.call_sid}")
+                        await self.hangup_function()
+                    else:
+                        logger.warning(f"Frase '{phrase}' NO encontrada en '{text_lower}'") 
+                for phrase in self.para_transferir:
+                    logger.warning(f"Buscando '{phrase}' en '{text_lower}' transferir")
+                    if phrase in text_lower: 
+                        # self.log("Detected word to transfer the call")
+                        logger.warning(f"Detected word to transfer the call - {self.gettime()} - call_sid {self.call_sid}")
+                        if self.orchestrator:
+                            self.orchestrator.logScript(f"Claro!, lo transfiero con uno de mis compañeros -- TRANSFERIR -- call_sid={self.call_sid}")
+                        await self.transfer_function()  
+                    else:
+                        logger.warning(f"Frase '{phrase}' NO encontrada en '{text_lower}'") 
             self.queue.task_done()
 
     async def actions_call(self, call_id: str, action: str, data: bytes = None,text:str=None):
@@ -319,7 +333,7 @@ class WebSocketHandler:
 
         return pcm_bytes
     async def _execute_action(self, call_id: str, action: str, data: bytes = None,text:str=None):
-        
+        logger.warning(f"inicia post playback text:{text} - {self.gettime()} - call_sid {self.call_sid}")
         payload=None
         duration=None
         if data:
@@ -335,6 +349,7 @@ class WebSocketHandler:
             }
         headers = {"accept": "application/json","Content-Type": "application/json"}  # Encabezados
         if data:
+            logger.warning(f"obtiene duración post playback text:{text} - {self.gettime()} - call_sid {self.call_sid}")
             duration = await asyncio.to_thread(self.calculate_wav_duration_from_base64, data)
  
         async with httpx.AsyncClient() as client:
@@ -348,6 +363,7 @@ class WebSocketHandler:
                 logger.warning(f"post playback response {response.status_code} {response.text} - {self.gettime()} - call_sid {self.call_sid}")
             except httpx.RequestError as e:
                 logger.error(f"Error en la solicitud HTTP: {e}")
+                logger.warning(f"post playback error {e} - {self.gettime()} - call_sid {self.call_sid}")
                 return None
 
         return duration

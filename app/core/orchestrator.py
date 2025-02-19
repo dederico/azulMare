@@ -37,7 +37,7 @@ class Orchestrator:
         self._instances[call_sid] = self  # Guardar la instancia en el diccionario
 
         self.log(f"Orchestrator for call {call_sid} has been initialized")
-        self.logScript("Iniciando orquestador")
+        self.logScript(f"Iniciando orquestador call_sid={call_sid}")
     def gettime(self):
         return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
     def log(self, msg):

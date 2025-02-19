@@ -63,6 +63,7 @@ def gettime():
     return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
 user_histories = {}
 
+
 @router.post("/")
 async def post(request: Request):
     response = VoiceResponse()
@@ -78,6 +79,8 @@ async def post(request: Request):
 
 @router.websocket("/stream")
 async def websocket_endpoint(ws: WebSocket):
+    global stt_service, function_manager, tts_service
+    
     now = datetime.now(ZoneInfo("America/Mexico_City"))
     logger.warning(f"Got new INCOMING_CALL - {gettime()}")
     
@@ -91,7 +94,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     if websocket_handler.call_sid is None:
         logger.error(f"Error: call_sid sigue siendo None después de la espera - {gettime()}")
-        return
+        return 
     logger.warning(f"Start Initial geet - {gettime()} - call_sid {websocket_handler.call_sid}")
     
     await websocket_handler.initial_greet()
@@ -104,21 +107,13 @@ async def websocket_endpoint(ws: WebSocket):
     logger.info(f"config {config}")
     logHandler = get_thread_log_handler(config.get("rawLogs", 10))
 
-    # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
-    # logger.debug("Setting up transcription service")
-    # stt_service = AmazonTranscribeService(
-    #     region="us-east-1",
-    #     sample_rate=8000,
-    #     enhanced=False,
-    #     language=config["language"]
-    # )
-    # stt_task = asyncio.to_thread(AmazonTranscribeService, 
-    #     region="us-east-1", 
-    #     sample_rate=8000, 
-    #     enhanced=False, 
-    #     language=config["language"]
-    # )
-    stt_task = asyncio.to_thread(DeepgramService, DEEPGRAM_API_KEY)
+    stt_task = asyncio.to_thread(AmazonTranscribeService, 
+        region="us-east-1", 
+        sample_rate=8000, 
+        enhanced=False, 
+        language=config["language"]
+    )
+    # stt_task = asyncio.to_thread(DeepgramService, DEEPGRAM_API_KEY)
 
     function_task = asyncio.to_thread(FunctionManager, 
         registered_functions=registered_functions
@@ -131,10 +126,10 @@ async def websocket_endpoint(ws: WebSocket):
         stream_results=False, 
         language=config["language"] 
     )
-    current_date_task = get_current_date()
+    current_date = get_current_date()
     logger.warning(f"Starting stt, function_manager and tts - {gettime()} - call_sid {websocket_handler.call_sid}")
-    stt_service, function_manager, tts_service, current_date = await asyncio.gather(
-        stt_task, function_task, tts_task, current_date_task
+    stt_service, function_manager, tts_service = await asyncio.gather(
+        stt_task, function_task, tts_task
     )
     logger.warning(f"Ending stt, function_manager and tts - {gettime()} - call_sid {websocket_handler.call_sid}")
     # function_manager = FunctionManager(registered_functions)

@@ -120,26 +120,12 @@ async def websocket_endpoint(ws: WebSocket):
         )
         call = db.Insert(call)
 
-    # monterrey_tz = pytz.timezone('America/Chicago')
-    # monterrey_now = datetime.now(monterrey_tz)
-    # date_string = monterrey_now.strftime("%Y-%m-%d %H:%M:%S")
-    # now = datetime.now()
-    # adjusted_time = now - timedelta(hours=6)
-    # date_string = adjusted_time.strftime("%Y-%m-%d %H:%M:%S")
-    # current_datetime = datetime.now(pytz.UTC).astimezone(pytz.FixedOffset(-360))  # -360 minutos = GMT-6
-    # date_string = current_datetime.strftime("%Y-%m-%d")
-    # hour = current_datetime.strftime("%I:%M %p")
-
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
     print(f"Hora original (MX): {current_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
-    #new_datetime = current_datetime - timedelta(days=6)
-    #print(f"Hora ajustada (MX - 6h): {new_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
     date_string = current_datetime.strftime("%Y-%m-%d")
     hour = current_datetime.strftime("%I:%M:%S %p")
     print(f"\nRESULTADO FINAL -> Fecha: {date_string}, Hora: {hour}")
-
-    #current_date = await get_current_date()
 
     # Get call SID and customer identity
     call_sid = websocket_handler.call_sid
@@ -154,7 +140,7 @@ async def websocket_endpoint(ws: WebSocket):
     selection6 = await find_row_and_update_selection(call.callNumber, 6)
     selection7 = await find_row_and_update_selection(call.callNumber, 7)
 
-    folio = await save_client_selection(call_sid, selection1, selection2, selection3, selection4, selection5, selection6, selection7)
+    #folio = await save_client_selection(call_sid, selection1, selection2, selection3, selection4, selection5, selection6, selection7)
 
     logger.debug("Initializing LLM service for the new call")
     llm_service = OpenAIService(

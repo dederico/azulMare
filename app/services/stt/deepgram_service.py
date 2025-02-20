@@ -20,6 +20,7 @@ class DeepgramService(STTService):
                     "model": "general",
                     "tier": "enhanced",
                     "sample_rate": sample_rate,
+                    "keepAlive": True,
                 }
             )
             self.deepgramLive.register_handler(

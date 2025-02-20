@@ -107,13 +107,13 @@ async def websocket_endpoint(ws: WebSocket):
     logger.info(f"config {config}")
     logHandler = get_thread_log_handler(config.get("rawLogs", 10))
 
-    stt_task = asyncio.to_thread(AmazonTranscribeService, 
-        region="us-east-1", 
-        sample_rate=8000, 
-        enhanced=False, 
-        language=config["language"]
-    )
-    # stt_task = asyncio.to_thread(DeepgramService, DEEPGRAM_API_KEY)
+    # stt_task = asyncio.to_thread(AmazonTranscribeService, 
+    #     region="us-east-1", 
+    #     sample_rate=8000, 
+    #     enhanced=False, 
+    #     language=config["language"]
+    # )
+    stt_task = asyncio.to_thread(DeepgramService, DEEPGRAM_API_KEY)
 
     function_task = asyncio.to_thread(FunctionManager, 
         registered_functions=registered_functions

@@ -13,11 +13,12 @@ import pytz
 from io import BytesIO
 import requests
 from openai import OpenAI
-
+import asyncio
+from contextlib import asynccontextmanager
 
 
 load_dotenv()
-from fastapi import APIRouter, Request, Response, WebSocket, HTTPException
+from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, FastAPI
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from app.api.websocket_handler import WebSocketHandler
 from app.core.orchestrator import Orchestrator
@@ -204,15 +205,67 @@ async def websocket_endpoint(ws: WebSocket):
 
     cleanup_call_logger()
 
+# Diccionario global para almacenar las sesiones de WhatsApp.
+# En vez de user_histories, usamos user_sessions para incluir la marca de última actividad.
+user_sessions = {}  # key: from_number, value: WhatsAppSession
+
+# Tiempo de inactividad (en segundos) antes de desconectar la sesión (5 minutos)
+INACTIVITY_THRESHOLD = 5 * 60
+
+class WhatsAppSession:
+    def __init__(self, history):
+        self.history = history
+        self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
+    
+    def update_activity(self):
+        self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
+
+async def check_inactivity():
+    """
+    Tarea en background que revisa cada minuto las sesiones activas.
+    Si alguna sesión ha estado inactiva más de 5 minutos, se envía un mensaje
+    de alerta por Twilio y se elimina la sesión.
+    """
+    while True:
+        await asyncio.sleep(60)  # Revisar cada minuto
+        now = datetime.now(pytz.timezone('America/Mexico_City'))
+        for number, session in list(user_sessions.items()):
+            elapsed = (now - session.last_active).total_seconds()
+            if elapsed > INACTIVITY_THRESHOLD:
+                try:
+                    twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+                    disconnection_message = "Se ha desconectado la sesión por inactividad."
+                    # Asegúrate de tener configurado el número de WhatsApp de Twilio en TWILIO_WHATSAPP_NUMBER
+                    twilio_client.messages.create(
+                        body=disconnection_message,
+                        from_="whatsapp:" + os.getenv("TWILIO_WHATSAPP_NUMBER"),
+                        to="whatsapp:" + number
+                    )
+                    logger.debug(f"Sesión de {number} desconectada por inactividad.")
+                except Exception as e:
+                    logger.error(f"Error enviando mensaje de desconexión para {number}: {str(e)}")
+                del user_sessions[number]
+
+# ------------------------------
+# Función de ciclo de vida (lifespan)
+# ------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: se lanza la tarea de verificación de inactividad
+    asyncio.create_task(check_inactivity())
+    yield
+    # Shutdown: se puede agregar lógica de limpieza si se requiere
+app = FastAPI(lifespan=lifespan)
+
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
-    # Configuración de base de datos
+    # Configuración de base de datos y demás servicios
     db = LocalStorage()
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     try:
         form_data = await request.form()
@@ -227,14 +280,15 @@ async def whatsapp(request: Request):
         logger.debug(f"Datos recibidos: toN={toN}, sender_name={sender_name}, body={body}, "
                      f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
         
-        # Verificar si el mensaje incluye coordenadas de ubicación
+        # Variables para ubicación e imagen
         address = None
         latitude, longitude = None, None
+        
         if message_type == "location":
             latitude = form_data.get("Latitude")
             longitude = form_data.get("Longitude")
             try:
-                #Convertir la latitud y longitud a dirección
+                # Convertir la latitud y longitud a dirección
                 address = await latlong_to_address(float(latitude), float(longitude))
                 body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
             except Exception as e:
@@ -242,42 +296,36 @@ async def whatsapp(request: Request):
                 body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
             logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
 
-        # Verificar si el mensaje incluye un audio
         elif message_type == "audio":
             body = TranscribeOGG(form_data.get("MediaUrl0"), config["language"])
-
-
-
             logger.debug(f"Audio transcrito: {body}")
         elif message_type == "image":
-            #Manejar imagen aquí
             media_url = form_data.get("MediaUrl0")
             if media_url:
                 try:
                     # Descargar la imagen 
                     response = requests.get(media_url)
                     image_content = BytesIO(response.content)
-
                     # Analizar la imagen
                     image_analysis = client.chat.completions.create(
                         model="gpt-4o",  # Asegúrate de usar el modelo correcto
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Describe esta imagen en detalle."},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Describe esta imagen en detalle."},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
+                                        },
                                     },
-                                },
-                            ],
-                        }
-                    ],
-                    max_tokens=300,
-                )
-                # Obtener la descripción de la imagen
+                                ],
+                            }
+                        ],
+                        max_tokens=300,
+                    )
+                    # Obtener la descripción de la imagen
                     image_description = image_analysis.choices[0].message.content
                     body = f"Imagen recibida. Descripción: {image_description}"
                     logger.debug(f"Descripción de la imagen: {image_description}")
@@ -295,12 +343,13 @@ async def whatsapp(request: Request):
         logger.error(f"Falta el parámetro requerido: {e}")
         return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
 
-    # Crear el historial de conversación en memoria para el usuario si no existe
-    if from_number not in user_histories:
-        logger.debug(f"Creando nuevo historial de conversación para el usuario: {from_number}")
-        user_histories[from_number] = ChatMessageHistory()
-
-    conversation_history = user_histories[from_number]
+    # Crear o actualizar la sesión del usuario
+    if from_number not in user_sessions:
+        logger.debug(f"Creando nueva sesión para el usuario: {from_number}")
+        user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+    session = user_sessions[from_number]
+    session.update_activity()  # Actualiza la marca de actividad
+    conversation_history = session.history
 
     # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
     try:
@@ -316,9 +365,8 @@ async def whatsapp(request: Request):
     except Exception as e:
         logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
 
-    # Agregar mensaje de usuario al historial y guardar en base de datos
+    # Agregar mensaje de usuario al historial y guardar en la base de datos
     conversation_history.add_user_message(body)
-
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName=sender_name,
@@ -332,24 +380,19 @@ async def whatsapp(request: Request):
         longitude=longitude  # Guardar longitud si está disponible
     )
     db.Insert(user_message)
+    
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
-    print(f"Hora original (MX): {current_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
-    #new_datetime = current_datetime - timedelta(hours=6)
-    #print(f"Hora ajustada (MX - 6h): {new_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
     date_string = current_datetime.strftime("%Y-%m-%d")
     hour = current_datetime.strftime("%I:%M:%S %p")
-    print(f"\nRESULTADO FINAL -> Fecha: {date_string}, Hora: {hour}")
-    # Configurar el LLM con el historial
-    #current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    folio = await save_client_selection(wa_id, "", "", "", "", "", "", "")
+    folio = await save_client_selection(wa_id, "", "", "", "", "", "", "", "")
+    
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(
             customer_name=sender_name,
             call_sid=uid,
             date2=date_string,
-            #now=datetime.now(),
             now=hour,
             folio=folio,
             address=address if 'address' in locals() else "No he recibido ubicación",
@@ -358,14 +401,11 @@ async def whatsapp(request: Request):
 
         llm_service = OpenAIService(
             config=config,
-            api_key=OPENAI_API_KEY,
+            api_key=os.getenv("OPENAI_API_KEY"),
             system=system_prompt,
             function_manager=function_manager
         )
-        # Agregar mensaje de usuario al historial y guardar en base de datos
-        #conversation_history.add_user_message(body)
         # Procesar la imagen si está disponible
-
         if 'image_description' in locals() and image_description:
             image_message = f"[Imagen recibida. Descripción: {image_description}]"
             conversation_history.add_user_message(image_message)
@@ -382,12 +422,10 @@ async def whatsapp(request: Request):
 
         # Convertir formatted_history en un solo string para user_input
         user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
-
         logger.debug(f"Input concatenado para generate_response: {user_input}")
 
         # Generar la respuesta del modelo usando el string completo de user_input
         model_response = llm_service.generate_response(user_input=user_input)
-
         response_content = ""
         async for response in model_response:
             response_content += str(response)
@@ -399,7 +437,6 @@ async def whatsapp(request: Request):
             response_content = str(response_content)
 
         conversation_history.add_ai_message(response_content)
-        
         assistant_message = Message(
             time=current_datetime,
             senderName="Assistant",
@@ -434,120 +471,6 @@ async def whatsapp(request: Request):
         content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
 
     return JSONResponse(content=content)
-
-# @router.post("/whatsapp")
-# async def whatsapp(request: Request):
-#     db = LocalStorage()
-#     config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
-
-#     # Obtener los parámetros de la URL
-#     args = request.query_params
-#     try:
-#         toN = args.get("To")
-#         if toN:
-#             toN = toN.split(":")[1]
-#         else:
-#             logger.error("El campo 'To' no está presente en los parámetros")
-#             return JSONResponse(content={"error": "El campo 'To' es obligatorio"}, status_code=400)
-
-#         sender_name = args["ProfileName"]
-#         body = args["Body"]
-#         from_number = args["From"].split(":")[1]
-#         wa_id = args["WaId"]
-#     except KeyError as e:
-#         logger.error(f"Falta el parámetro requerido: {e}")
-#         return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
-
-#     # Crear el mensaje actual
-#     message = Message(
-#         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-#         senderName=sender_name,
-#         message=body,
-#         number=from_number,
-#         uid=wa_id,
-#         direction="inbound",
-#         mtype=args["MessageType"].split("/")[0],
-#         source="Whatsapp"
-#     )
-
-#     # Recuperar mensajes históricos de la conversación
-#     try:
-#         messages = db.Search(Message(number=message.number, source="whatsapp"), order='asc', limit=50) or []
-#         logger.debug(f"Mensajes recuperados para {message.number}: {[m.message for m in messages]}")
-#     except Exception as e:
-#         logger.error(f"Error al recuperar mensajes históricos: {str(e)}")
-#         messages = []
-    
-#     # Confirmar que estamos construyendo la conversación histórica
-#     conversation_history = []
-#     for m in messages:
-#         role = "assistant" if m.direction == "outbound" else "user"
-#         conversation_history.append({"role": role, "content": m.message})
-#         logger.debug(f"Mensaje agregado al historial: rol={role}, contenido={m.message}")
-
-#     # Configurar el LLM con la conversación histórica
-#     current_date = await get_current_date()
-#     function_manager = FunctionManager(registered_functions)
-#     now = datetime.now()
-
-#     try:
-#         llm_service = OpenAIService(
-#             config=config,
-#             api_key=OPENAI_API_KEY,
-#             system=system_message.format(customer_name=message.senderName, call_sid=message.uid, date2=current_date, now=now, date=current_date),
-#             function_manager=function_manager
-#         )
-#     except Exception as e:
-#         logger.error(f"Error al configurar el servicio OpenAI: {str(e)}")
-#         return JSONResponse(content={"error": "Error al configurar el servicio de inteligencia artificial"}, status_code=500)
-
-#     # Añadir cada mensaje del historial a la sesión del LLM
-#     for entry in conversation_history:
-#         llm_service.add_to_conversation(entry["role"], entry["content"])
-
-#     # Generar respuesta y enviar por WhatsApp
-#     try:
-#         response = llm_service.generate_response(message.message)
-#         response = "".join([token async for token in response])
-#     except Exception as e:
-#         logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
-#         return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
-
-#     reply = deepcopy(message)
-#     reply.direction = "outbound"
-#     reply.message = response
-#     reply.mtype = "text"
-#     reply.time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-#     # Enviar mensaje usando Twilio
-#     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-#     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-#     client = Client(account_sid, auth_token)
-
-#     content = { "status": True, "message": "A response has been sent back to Sender via WhatsApp" }
-#     try:
-#         client.messages.create(
-#             body=reply.message,
-#             from_="whatsapp:"+toN,
-#             to="whatsapp:"+reply.number
-#         )
-#     except Exception as e:
-#         logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
-#         content = { "status": False, "error": f"Cannot reply to WhatsApp message, possibly Access Denied: {str(e)}" }
-
-#     # Guardar en base de datos
-#     try:
-#         db.Insert(message)  # Guardar el mensaje original
-#         db.Insert(reply)    # Guardar el mensaje de respuesta
-#         logger.debug(f"Mensajes almacenados: {message.message}, {reply.message}")
-#     except Exception as e:
-#         logger.error(f"Error al insertar en la base de datos: {str(e)}")
-#         return JSONResponse(content={"error": "Error al guardar los mensajes en la base de datos"}, status_code=500)
-    
-#     return JSONResponse(content=content)
-
-
-
 
 @router.post("/amd_detect")
 async def amd_detect(request: Request):
@@ -655,3 +578,10 @@ async def make_call(request: Request):
                 logger.info(r)
             except Exception as e:
                 logger.warning(f"Call failed with error: {e}")
+
+
+# ---------------------
+# Definición de la aplicación FastAPI
+# ---------------------
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)

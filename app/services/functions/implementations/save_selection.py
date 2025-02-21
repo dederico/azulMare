@@ -6,6 +6,7 @@ import os
 import re
 import requests
 import json
+import base64
 
 def get_token():
     req_url = "https://api.neurocity.solutions/api/auth/authenticate"
@@ -119,7 +120,7 @@ async def find_row_and_update_selection(phone_number, question_number, selection
 
     print("Phone number not found.")
 
-async def save_client_selection(call_sid: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str):
+async def save_client_selection(call_sid: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str, selection8: str = None):
     """Guardar la información de las preguntas segun las respuestas del cliente.
 
     Args:
@@ -131,10 +132,12 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
         selection5 (string): Respuesta a la pregunta 5.
         selection6 (string): Respuesta a la pregunta 6.
         selection7 (string): Respuesta a la pregunta 7.
+        selection8 (string, optional): URL o ruta de la imagen para la pregunta 8. Por defecto es None.
 
     Returns:
         string: Mensaje de confirmación con el número de folio.
     """
+
     try:
         # Fetch the call or message
         if call_sid.startswith("CA"):
@@ -157,53 +160,80 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
     # Fetch the token
     token = get_token()
 
-    # Save selections for each question
-    await find_row_and_update_selection(caller_number, 1, selection1)
-    await find_row_and_update_selection(caller_number, 2, selection2)
-    await find_row_and_update_selection(caller_number, 3, selection3)
-    await find_row_and_update_selection(caller_number, 4, selection4)
-    await find_row_and_update_selection(caller_number, 5, selection5)
-    await find_row_and_update_selection(caller_number, 6, selection6)
-    await find_row_and_update_selection(caller_number, 7, selection7)
+        # Save selections for each question if they are not empty
+    for i, selection in enumerate([selection1, selection2, selection3, selection4, selection5, selection6, selection7, selection8], start=1):
+        if selection:
+            await find_row_and_update_selection(caller_number, i, selection)
 
-    # Prepare the JSON payload
-    payload = {
-        "idAsunto": selection1,
-        "nombreCiudadano": f"{selection2} {selection3}",
-        "numWhastApp": caller_number.replace("whatsapp:+", ""),
-        "anonimo": False,
-        "detalleSolicitud": selection4,
-        "_lat": "0",
-        "_long": "0",
-        "_direccionReporte": {
-            "calle": f"{selection5}",
-            "noExt": f"{selection6}",
-            "colonia": f"{selection7}",
-            "entreCalles": "Aramberri",
-            "referencias": f"{selection4}"
+    # Check if all required fields are filled
+    required_fields = [selection1, selection2, selection3, selection4, selection5, selection6, selection7]
+    if all(field for field in required_fields):
+
+        # Prepare the JSON payload
+        payload = {
+            "idAsunto": selection1,
+            "nombreCiudadano": f"{selection2} {selection3}",
+            "numWhastApp": caller_number.replace("whatsapp:+", ""),
+            "anonimo": False,
+            "detalleSolicitud": selection4,
+            "_lat": "0",
+            "_long": "0",
+            "_direccionReporte": {
+                "calle": f"{selection5}",
+                "noExt": f"{selection6}",
+                "colonia": f"{selection7}",
+                "entreCalles": "Aramberri",
+                "referencias": f"{selection4}"
+            }
         }
-    }
-    
-    print(payload)
+        # Manejar la imagen (selection8) si está presente
+        if selection8:
+            image_path = None
+            if selection8.startswith('http'):
+                # Si es una URL, descargar la imagen
+                response = requests.get(selection8)
+                if response.status_code == 200:
+                    # Guardar la imagen localmente
+                    image_path = f"temp_image_{call_sid}.jpg"
+                    with open(image_path, 'wb') as f:
+                        f.write(response.content)
+            else:
+                # Si es una ruta local, usarla directamente
+                image_path = selection8
 
-    # Prepare the headers
-    headers = {
-        "accept": "text/plain",
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    # Send the JSON payload via POST to the endpoint
-    try:
-        response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
-        response.raise_for_status()  # Raise an HTTPError on bad status
-        print(f"POST to {POST_ENDPOINT} successful. Response: {response.status_code} {response.text}")
-        folio = response.text.strip()
-        return f"Selecciones guardadas correctamente. Número de folio: {folio}"
-    except requests.exceptions.RequestException as e:
-        print(f"POST to {POST_ENDPOINT} failed: {e}")
-        return f"Error al guardar las selecciones: {str(e)}"
-    
+            # Añadir la imagen al payload si existe
+            if image_path:
+                with open(image_path, "rb") as image_file:
+                    encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                    payload["imagen"] = encoded_string
+
+                # Limpiar el archivo temporal si se creó
+                if image_path.startswith('temp_image_'):
+                    os.remove(image_path)
+
+        print(payload)
+
+        # Prepare the headers
+        headers = {
+            "accept": "text/plain",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Send the JSON payload via POST to the endpoint
+        try:
+            response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
+            response.raise_for_status()  # Raise an HTTPError on bad status
+            print(f"POST to {POST_ENDPOINT} successful. Response: {response.status_code} {response.text}")
+            folio = response.text.strip()
+            return f"Selecciones guardadas correctamente. Número de folio: {folio}"
+        except requests.exceptions.RequestException as e:
+            print(f"POST to {POST_ENDPOINT} failed: {e}")
+            return f"Error al guardar las selecciones: {str(e)}"
+    else:
+        # If not all required fields are filled, return a status message
+        filled_fields = sum(1 for field in required_fields if field)
+        return f"Información parcialmente guardada. {filled_fields} de 7 campos requeridos han sido llenados."
 
 
 

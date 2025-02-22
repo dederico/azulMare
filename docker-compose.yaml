@@ -2,8 +2,9 @@ version: "3.4"
 services:
   
   robot:
-    build: .  # Esto le dice a Docker que construya la imagen usando el Dockerfile en el directorio actual
-    container_name: Beholder-Robot
+    build: .
+    deploy:
+      replicas: 5
     command:
       [
         "uvicorn",
@@ -15,7 +16,7 @@ services:
         "--reload",
       ]
     ports:
-      - 8010:8010
+      - "8010-8014:8010"
     env_file:
       - .env
     volumes:

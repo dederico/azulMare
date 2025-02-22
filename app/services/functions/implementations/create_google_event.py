@@ -7,6 +7,8 @@ import pytz
 from google.auth.transport.requests import Request
 #from function_manager import FunctionManager
 from dateutil import parser as date_parser
+from google.oauth2 import service_account
+
 
 
 # Credenciales de Google Calendar
@@ -23,23 +25,27 @@ async def get_credentials():
     Returns:
         Credentials: La credencial obtenida.
     """
-    creds = None
-    # El archivo token.json almacena los tokens de acceso y de actualización del usuario, y se
-    # crea automáticamente cuando se completa el flujo de autorización por primera vez.
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    # Si no hay credenciales (válidas) disponibles, se permite al usuario iniciar sesión.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_console()
-        # Guarda las credenciales para la próxima ejecución
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+    creds = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     return creds
+
+    # creds = None
+    # # El archivo token.json almacena los tokens de acceso y de actualización del usuario, y se
+    # # crea automáticamente cuando se completa el flujo de autorización por primera vez.
+    # if os.path.exists('token.json'):
+    #     creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    # # Si no hay credenciales (válidas) disponibles, se permite al usuario iniciar sesión.
+    # if not creds or not creds.valid:
+    #     if creds and creds.expired and creds.refresh_token:
+    #         creds.refresh(Request())
+    #     else:
+    #         flow = InstalledAppFlow.from_client_secrets_file(
+    #             'credentials.json', SCOPES)
+    #         creds = flow.run_local_server(port=0)
+    #     # Guarda las credenciales para la próxima ejecución
+    #     with open('token.json', 'w') as token:
+    #         token.write(creds.to_json())
+    # return creds
 
 async def create_google_event(start_datetime: str, end_datetime: str, summary="Resumen del evento", location="Monterrey, Mexico", description="Descripción del evento", email_address="dederico@gmail.com"):
     """Crea un evento en Google Calendar.
@@ -92,7 +98,7 @@ async def create_google_event(start_datetime: str, end_datetime: str, summary="R
             },
         }
         print("Event object:", event)
-        service.events().insert(calendarId='primary', body=event).execute()
+        service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
         return "Evento añadido exitosamente."
     except Exception as e:
         return f"Se produjo un error: {e}"

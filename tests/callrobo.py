@@ -96,7 +96,7 @@ ringThread.start();
 
 def main():
     tasks = []
-    ws = websocket.create_connection("ws://localhost:8000/stream")
+    ws = websocket.create_connection("ws://localhost:80/stream")
 
     tasks.append(Thread(target=stream_speaker, args=(ws,)))
     tasks.append(Thread(target=stream_mic, args=(ws,)))

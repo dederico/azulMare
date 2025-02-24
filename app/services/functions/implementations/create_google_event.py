@@ -134,7 +134,8 @@ async def create_google_event(start_datetime: str, end_datetime: str, summary="R
         logger.debug(f"Objeto de evento creado: {event}")
 
         logger.info("Intentando insertar el evento en el calendario")
-        response = service.events().insert(calendarId='primary', body=event).execute()
+        #response = service.events().insert(calendarId='primary', body=event).execute()
+        response = service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
         logger.info(f"Evento creado exitosamente. ID del evento: {response.get('id')}")
         
         return "Evento añadido exitosamente."

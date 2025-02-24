@@ -21,6 +21,8 @@ services:
     volumes:
       - .:/app
     working_dir: /app
+    deploy:
+      replicas: 5
     logging:
       driver: "json-file"
       options:

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCOPES = ['https://www.googleapis.com/auth/calendar.events','https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE= os.path.join(BASE_DIR, 'functions', 'service_account_credentials.json')
-CALENDAR_ID = 'dederico@gmail.com'
+CALENDAR_ID = 'adrianmgd67@gmail.com'
 CREDENTIALS_FILE = os.path.join(BASE_DIR, 'functions', 'implementations', 'credentials.json')
 
 

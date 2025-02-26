@@ -12,13 +12,13 @@ class DeepgramService(STTService):
     async def start_transcription(self, language="es", sample_rate=8000):
         try:
             self.deepgramLive = await self.deepgram.transcription.live(
-                {
+               {
                     "smart_format": True,
                     "interim_results": False,
                     "language": language,
                     "encoding": "linear16",
-                    "model": "nova-3",
-                    "tier": "enhanced",
+                    "model": "2-general",
+                    "tier": "nova",
                     "sample_rate": sample_rate,
                     "keepAlive": True,
                 }

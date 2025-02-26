@@ -38,6 +38,7 @@ from langchain_community.chat_message_histories.in_memory import ChatMessageHist
 from langchain.schema import HumanMessage, AIMessage
 from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
+from app.services.tts.rime_service import RimeTTSService
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
@@ -143,6 +144,11 @@ async def websocket_endpoint(ws: WebSocket):
         stream_results=False,
         language=config["language"]
     )
+#     tts_service = RimeTTSService(
+#     api_key=config.get("RIME_API_KEY", "Y4TqiR1WypvkKdZp3D89soMnnkNBLYwboX81y-z4E9Y"),
+#         speaker="Isa",
+#         language="spa"
+# )
 
     logger.debug("Initializing orchestrator for the call")
     orchestrator = Orchestrator(

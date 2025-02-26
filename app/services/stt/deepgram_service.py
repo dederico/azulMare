@@ -17,8 +17,8 @@ class DeepgramService(STTService):
                     "interim_results": False,
                     "language": language,
                     "encoding": "linear16",
-                    "model": "general",
-                    "tier": "enhanced",
+                    "model": "2-general",
+                    "tier": "nova",
                     "sample_rate": sample_rate,
                     "keepAlive": True,
                 }

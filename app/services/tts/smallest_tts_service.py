@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 from app.services.tts.tts_service import TTSService
 from smallest.tts import Smallest
 from smallest.async_tts import AsyncSmallest
-from smallest.utils import TextToAudioStream
+from smallest import TextToAudioStream
 
 class SmallestTTSService(TTSService):
     def __init__(

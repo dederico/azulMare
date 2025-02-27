@@ -127,23 +127,23 @@ async def websocket_endpoint(ws: WebSocket):
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=now, date=current_date),
         function_manager=function_manager
     )
-
-    # tts_service = ElevenTTSService(
-    #     api_key=ELEVENLABS_API_KEY,
-    #     voice_id=VOICE_ID,
-    #     similarity_boost=0.6,
-    #     stability=0.7,
-    #     stream_results=True,
-    # )
-
     logger.debug("Initializing TTS engine for call")
-    tts_service = AmazonTTSService(
-        access_key=AWS_ACCESS_KEY_ID,
-        secret_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
-        stream_results=False,
-        language=config["language"]
+    tts_service = ElevenTTSService(
+        api_key=ELEVENLABS_API_KEY,
+        voice_id=VOICE_ID,
+        similarity_boost=0.6,
+        stability=0.7,
+        stream_results=True,
     )
+
+
+    # tts_service = AmazonTTSService(
+    #     access_key=AWS_ACCESS_KEY_ID,
+    #     secret_key=AWS_SECRET_ACCESS_KEY,
+    #     region_name=AWS_REGION,
+    #     stream_results=False,
+    #     language=config["language"]
+    # )
 #     tts_service = RimeTTSService(
 #     api_key=config.get("RIME_API_KEY", "Y4TqiR1WypvkKdZp3D89soMnnkNBLYwboX81y-z4E9Y"),
 #         speaker="Isa",

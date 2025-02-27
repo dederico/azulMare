@@ -19,6 +19,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo  # Python 3.9+
 from pathlib import Path 
 import unicodedata
+import traceback
 # from app.core.orchestrator import Orchestrator
 class WebSocketHandler:
     duration = 0.02
@@ -104,7 +105,9 @@ class WebSocketHandler:
             return "Se inició la transferencia al agente humano de manera exitosa."
 
         except Exception as e:
-            logger.error(f"Error en la función de transferencia: {str(e)}")
+            error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+            formatted_traceback = error_traceback.replace("\n", " | ")
+            logger.warning(f"Error en la función de transferencia: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
             return f"Error al intentar transferir la llamada: {str(e)}"
 
     async def hangup_function(self):
@@ -237,6 +240,9 @@ class WebSocketHandler:
 
         except Exception as e:
             logger.error(f"Error en initial_greet: {str(e)}")
+            error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+            formatted_traceback = error_traceback.replace("\n", " | ")
+            logger.warning(f"Error en initial_greet: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
             return {"error": str(e)}
         
     async def get_lead(self,dnid: str):
@@ -410,6 +416,9 @@ class WebSocketHandler:
                         yield chunk
                 except Exception as e:
                     logger.error(f"Error procesando el flujo de audio: {e}")
+                    error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+                    formatted_traceback = error_traceback.replace("\n", " | ")
+                    logger.warning(f"Error procesando el flujo de audio: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
                     raise e
             logger.warning(f"Getting conversation for analysis - {self.gettime()} - call_sid {self.call_sid}")
             # Obtener los datos del almacenamiento local
@@ -478,10 +487,15 @@ class WebSocketHandler:
                 checkpoints = json.loads(respuesta.choices[0].message.content).get("checkpoints", [])
                 collected_checkpoints.extend(checkpoints)  # Acumular checkpoints generados
             except Exception as e:
-                logger.error(f"Error al procesar la respuesta del modelo: {e}")
+                error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+                formatted_traceback = error_traceback.replace("\n", " | ")
+                logger.warning(f"Error al procesar la respuesta del modelo: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
                 return
         except Exception as e:
             logger.error(f"Error general en process_stream: {e}")
+            error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+            formatted_traceback = error_traceback.replace("\n", " | ")
+            logger.warning(f"Error general en process_stream: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
             raise e
         if self.orchestrator:
             logger.warning(f"Códigos de estado: {json.dumps(collected_checkpoints)}")
@@ -524,7 +538,9 @@ class WebSocketHandler:
                 else:
                     logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
             except Exception as e:
-                logger.error(f"Error al enviar datos al servidor: {e}")
+                error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+                formatted_traceback = error_traceback.replace("\n", " | ")
+                logger.warning(f"Error al enviar datos al servidor: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
             
                 # Limpiar almacenamiento local independientemente del resultado
         LocalStorage.set(f"{self.call_sid}_transcription_for_analysis_customer", "")
@@ -550,7 +566,9 @@ class WebSocketHandler:
                     return data
                 return []  # Cualquier otra cosa, lista vacía
             except Exception as e:
-                logger.error(f"Error asegurando lista: {e} | Data: {data}")
+                error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+                formatted_traceback = error_traceback.replace("\n", " | ")
+                logger.warning(f"Error asegurando lista: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
                 return []
 
         # Asegurar que ambos datos sean listas válidas

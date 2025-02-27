@@ -7,6 +7,7 @@ import json
 from io import StringIO
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
+import traceback
 # logging.getLogger("openai").setLevel(logging.WARNING)
 # logging.getLogger("botocore").setLevel(logging.WARNING)
 # logging.getLogger("aiobotocore").setLevel(logging.WARNING)
@@ -48,7 +49,9 @@ import http.client
 from zoneinfo import ZoneInfo
 import asyncio
 import httpx
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.getLogger("websockets").setLevel(logging.INFO)
+logging.getLogger("deepgram").setLevel(logging.INFO)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
@@ -210,7 +213,9 @@ async def websocket_endpoint(ws: WebSocket):
         # stats = await orchestrator.process_audio_stream()
         stats = await asyncio.shield(orchestrator.process_audio_stream())
     except Exception as e:
-        logger.warning("Cacha excepción al final de la llamada")
+        error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+        formatted_traceback = error_traceback.replace("\n", " | ")
+        logger.warning(f"Cacha excepción al final de la llamada: {str(e)}| Traceback: {formatted_traceback} - {gettime()} - call_sid {websocket_handler.call_sid}")
     logger.warning(f"Updating call in beholder - {gettime()} - call_sid {websocket_handler.call_sid}")
     # call = db.Search(Call(callUid = websocket_handler.call_sid), True)
     

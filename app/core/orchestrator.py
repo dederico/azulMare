@@ -10,7 +10,7 @@ from app.api.websocket_handler import WebSocketHandler
 from app.util.database import LocalStorage 
 from app.models.Config import Config
 from app.services.llm.config.system import hello_message
- 
+import traceback
 
 # Configurar la zona horaria de México
 MEXICO_TZ = ZoneInfo("America/Mexico_City")
@@ -75,6 +75,9 @@ class Orchestrator:
                 try:
                     await self.stt_service.transcribe(audio_chunk)
                 except Exception as e:
+                    error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+                    formatted_traceback = error_traceback.replace("\n", " | ")
+                    logger.warning(f"Error al enviar evento de audio a Transcribe: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
                     self.log(f"Error al enviar evento de audio a Transcribe: {e}")
                 
             await self.stt_service.finish_transcription()

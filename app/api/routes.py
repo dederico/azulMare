@@ -40,6 +40,9 @@ from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
 from app.services.tts.rime_service import RimeTTSService
 from app.services.tts.smallest_tts_service import SmallestTTSService
+from app.services.tts.hume_tts_service import HumeTTSService
+
+
 
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -144,14 +147,20 @@ async def websocket_endpoint(ws: WebSocket):
     # )
 
 
-    tts_service = ElevenTTSService(
-        api_key=ELEVENLABS_API_KEY,
-        voice_id=VOICE_ID,
-        similarity_boost=0.6,
-        stability=0.7,
-        stream_results=True,
-    )
+    # tts_service = ElevenTTSService(
+    #     api_key=ELEVENLABS_API_KEY,
+    #     voice_id=VOICE_ID,
+    #     similarity_boost=0.6,
+    #     stability=0.7,
+    #     stream_results=True,
+    # )
 
+    tts_service = HumeTTSService(
+        api_key=config.get("HUME_API_KEY", "6XZvJxMVkdRKYHnrCUKfIpt4jd0PtjtaRqMlKmveANR9uBPf"),
+        stream_results=True,
+        logger=logger,  # Use the existing logger
+        voiceId="0767b007-ea59-4f28-a4f7-8df4e7c5f1cf"  # Correct parameter name is voiceId
+    )
 
     # tts_service = AmazonTTSService(
     #     access_key=AWS_ACCESS_KEY_ID,

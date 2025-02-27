@@ -133,24 +133,24 @@ async def websocket_endpoint(ws: WebSocket):
     )
     logger.debug("Initializing TTS engine for call")
 
-    tts_service = SmallestTTSService(
-        api_key=SMALLEST_API_KEY,  # You might want to use a different API key for Smallest
-        model="lightning-multilingual",  # Or whichever model you prefer
-        voice_id="Carlos",  # Or whichever voice you prefer
-        speed=1.0,  # Adjust speed as needed
-        sample_rate=8000,  # Adjust sample rate as needed
-        add_wav_header=False,  # Set to True if you need WAV headers
-        stream_results=True,  # Keep this consistent with your other services
-    )
-
-
-    # tts_service = ElevenTTSService(
-    #     api_key=ELEVENLABS_API_KEY,
-    #     voice_id=VOICE_ID,
-    #     similarity_boost=0.6,
-    #     stability=0.7,
-    #     stream_results=True,
+    # tts_service = SmallestTTSService(
+    #     api_key=SMALLEST_API_KEY,  # You might want to use a different API key for Smallest
+    #     model="lightning",  # Or whichever model you prefer
+    #     voice_id="Carlos",  # Or whichever voice you prefer
+    #     speed=1.0,  # Adjust speed as needed
+    #     sample_rate=8000,  # Adjust sample rate as needed
+    #     add_wav_header=False,  # Set to True if you need WAV headers
+    #     stream_results=True,  # Keep this consistent with your other services
     # )
+
+
+    tts_service = ElevenTTSService(
+        api_key=ELEVENLABS_API_KEY,
+        voice_id=VOICE_ID,
+        similarity_boost=0.6,
+        stability=0.7,
+        stream_results=True,
+    )
 
 
     # tts_service = AmazonTTSService(

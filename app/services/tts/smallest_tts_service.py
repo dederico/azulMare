@@ -1,24 +1,26 @@
-import asyncio
-import base64
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Literal
 from app.services.tts.tts_service import TTSService
 from smallest.tts import Smallest
 from smallest.async_tts import AsyncSmallest
 from smallest import TextToAudioStream
+import base64
+import logging
 
 class SmallestTTSService(TTSService):
     def __init__(
         self,
         api_key: str,
-        model: str = "lightning-multilingual",
+        model: str = "lightning",
         voice_id: str = "Carlos",
         speed: float = 1.0,
         sample_rate: int = 8000,
         add_wav_header: bool = False,
         transliterate: bool = False,
         remove_extra_silence: bool = True,
-        use_async: bool = True
+        use_async: bool = True,
+        stream_results: bool = False
     ):
+        self.stream_results = stream_results
         self.api_key = api_key
         self.model = model
         self.voice_id = voice_id
@@ -28,11 +30,13 @@ class SmallestTTSService(TTSService):
         self.transliterate = transliterate
         self.remove_extra_silence = remove_extra_silence
 
+        if model == "lightning-multilingual":
+            logging.info("Using Lightning Multilingual model (beta). This model supports 30 languages.")
         if use_async:
             self.tts_instance = AsyncSmallest(
                 api_key=self.api_key,
                 model=self.model,
-                voice=self.voice_id,
+                voice_id=self.voice_id,
                 speed=self.speed,
                 sample_rate=self.sample_rate,
                 add_wav_header=self.add_wav_header,
@@ -43,7 +47,7 @@ class SmallestTTSService(TTSService):
             self.tts_instance = Smallest(
                 api_key=self.api_key,
                 model=self.model,
-                voice=self.voice_id,
+                voice_id=self.voice_id,
                 speed=self.speed,
                 sample_rate=self.sample_rate,
                 add_wav_header=self.add_wav_header,

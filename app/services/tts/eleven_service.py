@@ -27,7 +27,7 @@ class ElevenTTSService(TTSService):
         querystring = {"optimize_streaming_latency": "3", "output_format": "ulaw_8000"}
 
         payload = {
-            "model_id": "eleven_multilingual_v1",
+            "model_id": "eleven_multilingual_v2",
             "text": text,
             "voice_settings": {
                 "similarity_boost": 0.6,

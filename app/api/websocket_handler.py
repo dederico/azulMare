@@ -631,17 +631,21 @@ class WebSocketHandler:
                 raw_audio_data = await self.generate_silence()
                 return raw_audio_data
         except (binascii.Error, ValueError) as e:
-            # Handle invalid Base64 or decoding errors
+            # Handle invalid Base64 or decoding errors 
             logger.error(f"Error decoding Base64: {e}")
             return await self.generate_silence()
 
-    async def generate_silence(self, sample_width=2, sample_rate=8000):
-        # logger.debug("Generating and forwarding silence frame")
-        num_samples = int(self.duration * sample_rate)
+    async def generate_silence(self, duration=0.02, sample_width=2, sample_rate=8000):
+        """Genera un chunk de audio en silencio en formato µ-law."""
+        num_samples = int(duration * sample_rate)
         silence_data = b"\x00" * (num_samples * sample_width)
         
-        # Convertir a µ-law en un hilo separado para evitar bloqueos
-        return await asyncio.to_thread(audioop.lin2ulaw, silence_data, sample_width)
+        ulaw_silence = await asyncio.to_thread(audioop.lin2ulaw, silence_data, sample_width)
+
+        if not isinstance(ulaw_silence, bytes):  # 🔥 Verificar que sea bytes antes de regresar
+            raise TypeError("generate_silence() debe devolver un objeto de tipo bytes")
+
+        return ulaw_silence
 
     async def send_audio(self, audio_data,text:str=None):
         if self.is_connected:

@@ -8,13 +8,38 @@ from pydub import AudioSegment
 import io
 
 class DeepgramService(STTService):
-    def __init__(self, api_key):
+    def __init__(self, api_key, target_chunk_size=4000):  # 🔥 Ajustamos a 3200 bytes (~200 ms)
         self.deepgram = Deepgram(api_key)
         self.deepgramLive = None
         self.transcript_received_callback = None
-        self.timestamps = deque()  # 🔥 Usamos `deque` para manejar orden FIFO
+        self.timestamps = deque() 
         self.chunk_counter = 0
-        self.max_timestamps = 100  # 🔥 Evita overflow de memoria
+        self.max_timestamps = 100
+        self.target_chunk_size = target_chunk_size  # 🔥 Tamaño del chunk acumulado
+        self.audio_buffer = b""  # 🔥 Buffer de audio antes de enviarlo
+    async def transcribe(self, chunk):
+        """Acumula chunks en un buffer antes de enviarlos a Deepgram."""
+        if self.deepgramLive:
+            self.audio_buffer += chunk  # 🔥 Acumula los datos en un buffer
+
+            # 🔥 Solo enviamos si el buffer es suficientemente grande
+            if len(self.audio_buffer) >= self.target_chunk_size:
+                # chunk_size = len(self.audio_buffer)
+                # duration_ms = (chunk_size / (8000 * 2)) * 1000  # 🔥 Estima duración en ms
+                
+                # logging.getLogger("uvicorn").info(
+                #     f"Enviando chunk de {chunk_size} bytes (~{duration_ms:.2f} ms)"
+                # )
+ 
+                # timestamp = time.time()
+                # self.timestamps.append(timestamp)
+
+                # # 🔥 Evita acumulación excesiva de timestamps
+                # if len(self.timestamps) > self.max_timestamps:
+                #     self.timestamps.popleft()
+
+                self.deepgramLive.send(self.audio_buffer)  # 🔥 Envía el buffer acumulado
+                self.audio_buffer = b""  # 🔥 Limpia el buffer después de enviarlo
 
     async def start_transcription(self, language="es", sample_rate=8000):
         """Inicia la conexión a Deepgram."""
@@ -36,7 +61,7 @@ class DeepgramService(STTService):
                 self.deepgramLive.event.CLOSE,
                 lambda c: logging.getLogger("uvicorn").warning(
                     f"Deepgram connection closed with code {c}. Reconnecting..."
-                ) or asyncio.create_task(self.reconnect()),
+                ),
             )
 
         except Exception as e:
@@ -56,38 +81,23 @@ class DeepgramService(STTService):
         try: 
             audio = AudioSegment.from_raw(io.BytesIO(chunk), sample_width=2, frame_rate=8000, channels=1)
             dBFS = audio.dBFS  # Obtiene el nivel de volumen del chunk 
-
-            logging.getLogger("uvicorn").warning(f"🎤 Nivel de audio: {dBFS:.2f} dBFS (Umbral: {silence_threshold})")
- 
             return dBFS < silence_threshold  # Si es menor, lo consideramos silencio
         except Exception as e:
             logging.getLogger("uvicorn").error(f"Error al analizar chunk: {e}")
             return True
-    async def transcribe(self, chunk):
-        """Envía audio a Deepgram y almacena el tiempo de envío en una cola."""
-        if self.deepgramLive:
-            # if not self.is_silent(chunk):
-            timestamp = time.time()
-            self.timestamps.append(timestamp)  # 🔥 Guarda solo timestamps, no IDs
-
-            # 🔥 Elimina registros viejos si la cola excede el límite
-            if len(self.timestamps) > self.max_timestamps:
-                self.timestamps.popleft()
-            self.deepgramLive.send(chunk)
-
     async def set_transcript_received_callback(self, callback):
         """Procesa la transcripción y mide latencia con `deque` para evitar acumulación incorrecta."""
         if self.deepgramLive:
             async def wrapper(response):
-                received_time = time.time()
+                # received_time = time.time()
 
-                if self.timestamps:
-                    sent_time = self.timestamps.popleft()  # 🔥 FIFO, el más antiguo primero
-                    latency_ms = (received_time - sent_time) * 1000  # Convierte a ms
+                # if self.timestamps:
+                #     sent_time = self.timestamps.popleft()  # 🔥 FIFO, el más antiguo primero
+                #     latency_ms = (received_time - sent_time) * 1000  # Convierte a ms
 
-                    logging.getLogger("uvicorn").warning(f"Latencia de transcripción: {latency_ms:.2f} ms")
-                else:
-                    logging.getLogger("uvicorn").warning("No hay timestamps disponibles.")
+                #     logging.getLogger("uvicorn").warning(f"Latencia de transcripción: {latency_ms:.2f} ms")
+                # else:
+                #     logging.getLogger("uvicorn").warning("No hay timestamps disponibles.")
 
                 # Si el callback es async, usa await
                 if asyncio.iscoroutinefunction(callback):

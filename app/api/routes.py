@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
 
 
-load_dotenv()
+load_dotenv(override=True)
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from app.api.websocket_handler import WebSocketHandler
@@ -39,6 +39,8 @@ from langchain.schema import HumanMessage, AIMessage
 from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
 from app.services.tts.rime_service import RimeTTSService
+from app.services.tts.smallest_tts_service import SmallestTTSService
+
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
@@ -47,6 +49,8 @@ VOICE_ID = os.environ.get("VOICE_ID")
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
+SMALLEST_API_KEY = os.environ.get("SMALLEST_API_KEY")
+
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
@@ -128,13 +132,25 @@ async def websocket_endpoint(ws: WebSocket):
         function_manager=function_manager
     )
     logger.debug("Initializing TTS engine for call")
-    tts_service = ElevenTTSService(
-        api_key=ELEVENLABS_API_KEY,
-        voice_id=VOICE_ID,
-        similarity_boost=0.6,
-        stability=0.7,
-        stream_results=True,
+
+    tts_service = SmallestTTSService(
+        api_key=SMALLEST_API_KEY,  # You might want to use a different API key for Smallest
+        model="lightning-multilingual",  # Or whichever model you prefer
+        voice_id="Carlos",  # Or whichever voice you prefer
+        speed=1.0,  # Adjust speed as needed
+        sample_rate=8000,  # Adjust sample rate as needed
+        add_wav_header=False,  # Set to True if you need WAV headers
+        stream_results=True,  # Keep this consistent with your other services
     )
+
+
+    # tts_service = ElevenTTSService(
+    #     api_key=ELEVENLABS_API_KEY,
+    #     voice_id=VOICE_ID,
+    #     similarity_boost=0.6,
+    #     stability=0.7,
+    #     stream_results=True,
+    # )
 
 
     # tts_service = AmazonTTSService(

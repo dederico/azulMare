@@ -34,14 +34,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Copiar y configurar el script de entrada
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Copiar entrypoint.sh al contenedor
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Expone el puerto en el que correrá FastAPI
 EXPOSE 8010
 
 # Usa un entrypoint para configuraciones dinámicas
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Comando por defecto: iniciar Gunicorn con Uvicorn
 CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "4", "-b", "0.0.0.0:8010", "app.main:app"]

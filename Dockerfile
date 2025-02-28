@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Instala dependencias del sistema necesarias
 RUN apt-get update && apt-get install -y \
-    build-essential gcc libffi-dev \
+    build-essential ffmpeg gcc libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Configura Python para mejor rendimiento

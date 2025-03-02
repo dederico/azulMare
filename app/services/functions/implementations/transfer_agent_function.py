@@ -54,7 +54,7 @@ async def actions_call_transfer(call_sid: str):
         return "Error: call_sid inválido"
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    wav_path = os.path.join(current_dir, "files", "transferir.wav")
+    wav_path = os.path.join(current_dir, "files", "actions_call_transfer.wav")
 
     try:
         # Leer archivo WAV de forma asíncrona

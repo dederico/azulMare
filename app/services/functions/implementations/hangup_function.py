@@ -118,7 +118,7 @@ async def actions_call(call_sid: str):
         return "Error: call_sid inválido"
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    wav_path = os.path.join(current_dir, "files", "colgar.wav")
+    wav_path = os.path.join(current_dir, "files", "actions_call_colgado.wav")
 
     # Leer archivo WAV de manera asíncrona
     wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())

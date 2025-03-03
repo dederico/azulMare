@@ -66,7 +66,7 @@ class WebSocketHandler:
 
         current_dir = Path(__file__).resolve().parent
         parent_dir = current_dir.parent
-        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", "transferir.wav")
+        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", "actions_call_transfer.wav")
 
         try:
             # Leer archivo WAV de forma asíncrona
@@ -91,7 +91,7 @@ class WebSocketHandler:
                 logger.warning(f"Enviando solicitud para reproducir el audio antes de transferir - {self.gettime()} - call_sid {self.call_sid}")
                 response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
                 logger.debug(f"Playback response status: {response.status_code}")
-                logger.debug(f"Response body: {response.text}")
+                logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
                 await asyncio.sleep(duration) 
 
@@ -100,7 +100,7 @@ class WebSocketHandler:
                 logger.warning(f"Enviando solicitud para transferir la llamada - {self.gettime()} - call_sid {self.call_sid}")
                 response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=transfer_payload, headers=headers)
                 logger.debug(f"Transfer response status: {response.status_code}")
-                logger.debug(f"Transfer response body: {response.text}") 
+                logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
             return "Se inició la transferencia al agente humano de manera exitosa."
 
@@ -123,7 +123,7 @@ class WebSocketHandler:
 
         current_dir = Path(__file__).resolve().parent
         parent_dir = current_dir.parent
-        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", "colgar.wav")
+        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", "actions_call_colgado.wav")
 
         # Leer archivo WAV de manera asíncrona
         wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
@@ -147,7 +147,7 @@ class WebSocketHandler:
             logger.warning(f"Enviando primera solicitud para reproducir el audio de colgar - {self.gettime()} - call_sid {self.call_sid}")
             response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
             logger.debug(f"Response status: {response.status_code}")
-            logger.debug(f"Response body: {response.text}")
+            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
             await asyncio.sleep(duration)
 
@@ -156,7 +156,7 @@ class WebSocketHandler:
             logger.warning(f"Enviando segunda solicitud para colgar la llamada - {self.gettime()} - call_sid {self.call_sid}")
             response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
             logger.debug(f"Hangup response status: {response.status_code}")
-            logger.debug(f"Hangup response body: {response.text}")
+            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
         return "Se colgó la llamada de manera exitosa."
     async def process_queue(self):
@@ -234,7 +234,7 @@ class WebSocketHandler:
                 # Enviar la solicitud de manera asíncrona
                 response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
                 logger.debug(f"Response status: {response.status_code}")
-                logger.debug(f"Response body: {response.text}")
+                logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
             return response.json()
 
@@ -366,7 +366,7 @@ class WebSocketHandler:
                     json=payload,
                     headers=headers,
                 )
-                logger.warning(f"post playback response {response.status_code} {response.text} - {self.gettime()} - call_sid {self.call_sid}")
+                logger.warning(f"post playback response {response.status_code} {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
             except httpx.RequestError as e:
                 logger.error(f"Error en la solicitud HTTP: {e}")
                 logger.warning(f"post playback error {e} - {self.gettime()} - call_sid {self.call_sid}")

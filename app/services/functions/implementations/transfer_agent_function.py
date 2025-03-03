@@ -14,6 +14,8 @@ import binascii
 import wave
 import asyncio
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo 
 def calculate_wav_duration_from_base64(base64_audio: str) -> float:
         """
         Calcula la duración de un archivo WAV a partir de su representación Base64.
@@ -30,7 +32,8 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
             duration = n_frames / float(frame_rate)
         
         return max(duration, 0)
-    
+def gettime():
+        return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")    
 async def actions_call_transfer(call_sid: str):
     """Transferir al usuario si asi lo solicita.
 
@@ -79,7 +82,7 @@ async def actions_call_transfer(call_sid: str):
             logger.debug("Enviando solicitud para reproducir el audio antes de transferir")
             response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
             logger.debug(f"Playback response status: {response.status_code}")
-            logger.debug(f"Response body: {response.text}")
+            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
 
             await asyncio.sleep(duration) 
 
@@ -88,7 +91,7 @@ async def actions_call_transfer(call_sid: str):
             logger.debug("Enviando solicitud para transferir la llamada")
             response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=transfer_payload, headers=headers)
             logger.debug(f"Transfer response status: {response.status_code}")
-            logger.debug(f"Transfer response body: {response.text}") 
+            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
 
         return "Se inició la transferencia al agente humano de manera exitosa."
 

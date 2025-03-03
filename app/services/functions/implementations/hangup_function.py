@@ -14,6 +14,8 @@ import binascii
 import wave
 import asyncio
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo 
 def calculate_wav_duration_from_base64(base64_audio: str) -> float:
         """
         Calcula la duración de un archivo WAV a partir de su representación Base64.
@@ -94,7 +96,8 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
 #         #logger.debug(response.read().decode())
 
 #         return "Se colgó la llamada de manera exitosa."
-
+def gettime():
+        return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")
 async def actions_call(call_sid: str):
     """Terminar interaccion si el usuario asi lo solicita.
 
@@ -134,7 +137,7 @@ async def actions_call(call_sid: str):
     }
 
     logger.debug(f"Payload preparado: {call_id}")
-
+    
     async with httpx.AsyncClient() as client:
         headers = {"accept": "application/json", "Content-Type": "application/json"}
         
@@ -144,7 +147,7 @@ async def actions_call(call_sid: str):
         logger.debug("Enviando primera solicitud para reproducir el audio")
         response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
         logger.debug(f"Response status: {response.status_code}")
-        logger.debug(f"Response body: {response.text}")
+        logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
 
         await asyncio.sleep(duration)
 
@@ -153,6 +156,6 @@ async def actions_call(call_sid: str):
         logger.debug("Enviando segunda solicitud para colgar la llamada")
         response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
         logger.debug(f"Hangup response status: {response.status_code}")
-        logger.debug(f"Hangup response body: {response.text}")
+        logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
 
     return "Se colgó la llamada de manera exitosa."

@@ -653,7 +653,7 @@ class WebSocketHandler:
                 if self.silence_duration >= 45.0:
                     self.silence_duration = 0
                     logger.warning("Más de 45 segundos de silencio detectados.")
-                    await self.actions_call(self.call_sid, "hangup")
+                    await self.hangup_function()
 
                 # Generate silence if below threshold or not in listening state
                 raw_audio_data = await self.generate_silence()

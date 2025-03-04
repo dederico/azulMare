@@ -89,14 +89,15 @@ async def websocket_endpoint(ws: WebSocket):
     
     websocket_handler = WebSocketHandler(ws)
     await websocket_handler.connect()
-    # Esperar hasta 2 segundos para que `call_sid` se asigne correctamente
-    for _ in range(4):  # Intentar 4 veces (0.5s * 4 = 2s máx.)
+    # Esperar hasta 4 segundos para que `call_sid` se asigne correctamente
+    for _ in range(8):  # Intentar 4 veces (0.5s * 8 = 4s máx.)
         if websocket_handler.call_sid is not None: 
             break
         await asyncio.sleep(0.5)
 
     if websocket_handler.call_sid is None:
         logger.error(f"Error: call_sid sigue siendo None después de la espera - {gettime()}")
+        await websocket_handler.close()
         return 
     logger.warning(f"Start Initial geet - {gettime()} - call_sid {websocket_handler.call_sid}")
     

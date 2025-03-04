@@ -32,8 +32,6 @@ class AmazonTTSService(TTSService):
         self.secret_key = secret_key
         self.region_name = region_name
         self.lang = language
-    async def initialize(self):
-        await self.initialize_client()
 
     async def initialize_client(self):
         session = AioSession()

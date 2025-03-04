@@ -103,7 +103,9 @@ class WebSocketHandler:
                 logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
             return "Se inició la transferencia al agente humano de manera exitosa."
-
+        
+        except httpx.ReadTimeout:
+            logger.warning(f"La solicitud tardó demasiado en responder, transferir: https://websockets.ccc.uno/api/v1/autoagent - {self.gettime()} - call_sid {self.call_sid}")
         except Exception as e:
             error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
             formatted_traceback = error_traceback.replace("\n", " | ")
@@ -137,28 +139,36 @@ class WebSocketHandler:
             "action": "playback",
             "data": {"audio_base64": audio_base64}
         }
-
-        async with httpx.AsyncClient() as client:
-            headers = {"accept": "application/json", "Content-Type": "application/json"}
+        try:
             
-            duration = self.calculate_wav_duration_from_base64(audio_base64)
-            
-            # Primera solicitud para reproducir el audio
-            logger.warning(f"Enviando primera solicitud para reproducir el audio de colgar - {self.gettime()} - call_sid {self.call_sid}")
-            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
-            logger.debug(f"Response status: {response.status_code}")
-            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
+            async with httpx.AsyncClient() as client:
+                headers = {"accept": "application/json", "Content-Type": "application/json"}
+                
+                duration = self.calculate_wav_duration_from_base64(audio_base64)
+                
+                # Primera solicitud para reproducir el audio
+                logger.warning(f"Enviando primera solicitud para reproducir el audio de colgar - {self.gettime()} - call_sid {self.call_sid}")
+                response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+                logger.debug(f"Response status: {response.status_code}")
+                logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
-            await asyncio.sleep(duration)
+                await asyncio.sleep(duration)
 
-            # Segunda solicitud para colgar la llamada
-            hangup_payload = {"call_id": call_id, "action": "hangup"}
-            logger.warning(f"Enviando segunda solicitud para colgar la llamada - {self.gettime()} - call_sid {self.call_sid}")
-            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
-            logger.debug(f"Hangup response status: {response.status_code}")
-            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
+                # Segunda solicitud para colgar la llamada
+                hangup_payload = {"call_id": call_id, "action": "hangup"}
+                logger.warning(f"Enviando segunda solicitud para colgar la llamada - {self.gettime()} - call_sid {self.call_sid}")
+                response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
+                logger.debug(f"Hangup response status: {response.status_code}")
+                logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
-        return "Se colgó la llamada de manera exitosa."
+            return "Se colgó la llamada de manera exitosa."
+        except httpx.ReadTimeout:
+            logger.warning(f"La solicitud tardó demasiado en responder, colgar: https://websockets.ccc.uno/api/v1/autoagent - {self.gettime()} - call_sid {self.call_sid}")
+        except Exception as e:
+            error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+            formatted_traceback = error_traceback.replace("\n", " | ")
+            logger.warning(f"Error en la función de colgado: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
+            return f"Error al intentar colgar la llamada: {str(e)}"
     async def process_queue(self):
         while True:  
             call_id, action, data,text = await self.queue.get()
@@ -238,7 +248,8 @@ class WebSocketHandler:
                 logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
 
             return response.json()
-
+        except httpx.ReadTimeout:
+            logger.warning(f"La solicitud tardó demasiado en responder, initial greet: https://websockets.ccc.uno/api/v1/autoagent - {self.gettime()} - call_sid {self.call_sid}")
         except Exception as e:
             logger.error(f"Error en initial_greet: {str(e)}")
             error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
@@ -264,10 +275,14 @@ class WebSocketHandler:
             
             logger.debug(f"Lead information retrieved: {lead_info}")
             return lead_info
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch lead information: {e}")
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=response.status_code, detail=f"Error from lead service: {e.response.text}")
+        except httpx.ReadTimeout:
+            logger.warning(f"La solicitud tardó demasiado en responder, get_lead: https://websockets.ccc.uno/api/v1/autoagent - {self.gettime()} - call_sid {self.call_sid}")
+        except Exception as e:
+            logger.error(f"Error en get_lead: {str(e)}")
+            error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+            formatted_traceback = error_traceback.replace("\n", " | ")
+            logger.warning(f"Error en get_lead: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
+            return {"error": str(e)}
     def convert_wav_base64_to_ulaw_base64(self,wav_base64):
         """
         Convierte un archivo WAV en formato Base64 (PCM 16 bits) a u-law y lo codifica en Base64.
@@ -368,7 +383,16 @@ class WebSocketHandler:
                     json=payload,
                     headers=headers,
                 )
+                data = response.json()
+            
+                if response.status_code == 200:
+                    if data.get("success") is False and data.get("error") == "There is currently no active call":
+                        logger.warning(f"post playback - no hay una llamada activa - {self.gettime()} - call_sid {self.call_sid}")
+                        await self.websocket.close()
+                        
                 logger.warning(f"post playback response {response.status_code} {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
+            except httpx.ReadTimeout:
+                logger.warning(f"La solicitud tardó demasiado en responder, playback: https://websockets.ccc.uno/api/v1/autoagent - {self.gettime()} - call_sid {self.call_sid}")   
             except httpx.RequestError as e:
                 logger.error(f"Error en la solicitud HTTP: {e}")
                 logger.warning(f"post playback error {e} - {self.gettime()} - call_sid {self.call_sid}")
@@ -539,6 +563,8 @@ class WebSocketHandler:
                     logger.debug("Checkpoints sent successfully.")
                 else:
                     logger.error(f"Error en la solicitud HTTP. Status: {response.status}")
+            except httpx.ReadTimeout:
+                logger.warning(f"La solicitud tardó demasiado en responder, checkpoints: https://websockets.ccc.uno/api/v1/autoagent - {self.gettime()} - call_sid {self.call_sid}")   
             except Exception as e:
                 error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
                 formatted_traceback = error_traceback.replace("\n", " | ")

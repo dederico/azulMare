@@ -16,6 +16,7 @@ import asyncio
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo 
+import traceback
 def calculate_wav_duration_from_base64(base64_audio: str) -> float:
         """
         Calcula la duración de un archivo WAV a partir de su representación Base64.
@@ -137,25 +138,33 @@ async def actions_call(call_sid: str):
     }
 
     logger.debug(f"Payload preparado: {call_id}")
-    
-    async with httpx.AsyncClient() as client:
-        headers = {"accept": "application/json", "Content-Type": "application/json"}
-        
-        duration = calculate_wav_duration_from_base64(audio_base64)
-        
-        # Primera solicitud para reproducir el audio
-        logger.debug("Enviando primera solicitud para reproducir el audio")
-        response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
-        logger.debug(f"Response status: {response.status_code}")
-        logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"accept": "application/json", "Content-Type": "application/json"}
+            
+            duration = calculate_wav_duration_from_base64(audio_base64)
+            
+            # Primera solicitud para reproducir el audio
+            logger.debug("Enviando primera solicitud para reproducir el audio")
+            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+            logger.debug(f"Response status: {response.status_code}")
+            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
 
-        await asyncio.sleep(duration)
+            await asyncio.sleep(duration)
 
-        # Segunda solicitud para colgar la llamada
-        hangup_payload = {"call_id": call_id, "action": "hangup"}
-        logger.debug("Enviando segunda solicitud para colgar la llamada")
-        response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
-        logger.debug(f"Hangup response status: {response.status_code}")
-        logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
+            # Segunda solicitud para colgar la llamada
+            hangup_payload = {"call_id": call_id, "action": "hangup"}
+            logger.debug("Enviando segunda solicitud para colgar la llamada")
+            response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=hangup_payload, headers=headers)
+            logger.debug(f"Hangup response status: {response.status_code}")
+            logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {gettime()} - call_sid {call_sid}")
 
-    return "Se colgó la llamada de manera exitosa."
+        return "Se colgó la llamada de manera exitosa."
+    except httpx.ReadTimeout:
+            logger.warning(f"La solicitud tardó demasiado en responder, colgar: https://websockets.ccc.uno/api/v1/autoagent - {gettime()} - call_sid {call_sid}")
+    except Exception as e:
+        logger.error(f"Error en colgar: {str(e)}")
+        error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+        formatted_traceback = error_traceback.replace("\n", " | ")
+        logger.warning(f"Error en colgar: {str(e)}| Traceback: {formatted_traceback} - {gettime()} - call_sid {call_sid}")
+        return {"error": str(e)}

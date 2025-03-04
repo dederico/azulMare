@@ -134,6 +134,8 @@ async def websocket_endpoint(ws: WebSocket):
     stt_service, function_manager, tts_service = await asyncio.gather(
         stt_task, function_task, tts_task
     )
+    tts_task = asyncio.create_task(tts_service.initialize_client())
+    await tts_task
     logger.warning(f"Ending stt, function_manager and tts - {gettime()} - call_sid {websocket_handler.call_sid}")
     # function_manager = FunctionManager(registered_functions)
 

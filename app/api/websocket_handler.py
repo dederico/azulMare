@@ -162,13 +162,14 @@ class WebSocketHandler:
     async def process_queue(self):
         while True:  
             call_id, action, data,text = await self.queue.get()
-            self.switch = "playing"
-            duration = await self._execute_action(call_id, action, data,text)
-            if duration:
-                logger.warning(f"esperando sleep duracion:{duration} text:{text} - {self.gettime()} - call_sid {self.call_sid}")
-                await asyncio.sleep(duration)  # Espera la duración del audio antes de reanudar la escucha
+            if text is not None and isinstance(text, str) and text.strip():
+                self.switch = "playing"
+                duration = await self._execute_action(call_id, action, data,text)
+                if duration:
+                    logger.warning(f"esperando sleep duracion:{duration} text:{text} - {self.gettime()} - call_sid {self.call_sid}")
+                    await asyncio.sleep(duration)  # Espera la duración del audio antes de reanudar la escucha
             
-            self.switch = "listening"
+                self.switch = "listening"
             
             if text is not None and isinstance(text, str) and text.strip():  # Verifica que text sea una cadena y no esté vacío
                 text_lower = self.clean_text(text)  # Convierte el texto a minúsculas solo si es válido 
@@ -339,6 +340,7 @@ class WebSocketHandler:
 
         return pcm_bytes
     async def _execute_action(self, call_id: str, action: str, data: bytes = None,text:str=None):
+    
         logger.warning(f"inicia post playback text:{text} - {self.gettime()} - call_sid {self.call_sid}")
         payload=None
         duration=None

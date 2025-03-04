@@ -52,7 +52,7 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
 #         payload=None
 #         duration=None
 #         current_dir = os.path.dirname(os.path.abspath(__file__))  # Carpeta actual
-#         wav_path = os.path.join(current_dir, "files", "colgar.wav")
+#         wav_path = os.path.joinx  (current_dir, "files", "colgar.wav")
 
 #         with open(wav_path, "rb") as wav_file:
 #                 wav_data = wav_file.read()

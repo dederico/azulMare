@@ -137,9 +137,6 @@ async def websocket_endpoint(ws: WebSocket):
     )
     
     logger.warning(f"Ending stt, function_manager and tts - {gettime()} - call_sid {websocket_handler.call_sid}")
-    
-    tts_initialize = asyncio.create_task(tts_service.initialize_client())
-    await tts_initialize
     # function_manager = FunctionManager(registered_functions)
 
     # Get the current date and time

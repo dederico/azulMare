@@ -1,5 +1,5 @@
 import json
-import time
+import asyncio
 import openai
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
@@ -18,8 +18,7 @@ class OpenAIService(LLMService):
     ):
         self.config = config
         self.client = openai.AsyncClient(api_key=api_key)
-        self.conversation_history = []
-        self.conversation_history.append({"role": "system", "content": system})
+        self.conversation_history = [{"role": "system", "content": system}]
         self.function_manager = function_manager
         self.functions = {}
         self.current_function_name = None
@@ -35,50 +34,38 @@ class OpenAIService(LLMService):
             user_input = f"Context:\n{kb_context}\n\nQuery:\n{user_input}"
         
         self.add_to_conversation("user", user_input)
-        generator = await self.llm_generator()
+        response = await self.llm_generator()
 
-        full_message = ""
-        async for chunk in generator:
-            tool_call = chunk.choices[0].delta.tool_calls
-            if tool_call:
-                await self.handle_tool_call(tool_call)
-
-            if chunk.choices[0].finish_reason == "tool_calls":
-                async for content in self.handle_tool_call_finish():
-                    yield content
-
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
-                full_message += content
-
+        full_message = response.choices[0].message.content if response.choices else ""
+        
         if full_message:
+            yield full_message
             self.add_to_conversation("assistant", full_message)
 
     async def llm_generator(self):
+        """Genera respuesta de OpenAI sin streaming para evitar fragmentación y latencia."""
         self.conversation_history = [
             msg for msg in self.conversation_history if msg.get("content") is not None
         ]
-        generator = await self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=self.config.get("model") or "gpt-4-0125-preview",
             messages=self.conversation_history,
-            stream=True,
+            stream=False,  # 🚀 Respuesta completa en una sola vez
             tool_choice="auto",
             temperature=0.1,
             tools=self.function_manager.get_function_definition(),
         )
-        return generator
+        return response
 
     async def handle_tool_call(self, tool_call_chunk):
+        """Maneja las llamadas a herramientas asegurando que solo se ejecuten cuando sea necesario."""
         tool_call = tool_call_chunk[0]
 
-        function_name = None
-        if tool_call.function and tool_call.function.name:
-            function_name = tool_call.function.name
+        if not tool_call.function or not tool_call.function.name:
+            return  # ❌ No ejecutar si no hay función válida
 
-        arguments_chunk = ""
-        if tool_call.function.arguments:
-            arguments_chunk = tool_call.function.arguments
+        function_name = tool_call.function.name
+        arguments_chunk = tool_call.function.arguments or ""
 
         if function_name:
             self.current_function_name = function_name
@@ -87,84 +74,43 @@ class OpenAIService(LLMService):
         if self.current_function_name:
             self.functions[self.current_function_name] += arguments_chunk
 
-    # async def handle_tool_call_finish(self):
-    #     for k, v in self.functions.items():
-    #         logger.debug(f"Call: {k} with arguments: {v}")
-            
-    #         try:
-    #             arguments = json.loads(v)
-    #             # Extract only the "call_sid" key and format it as a string
-    #             arguments = f'"call_sid": "{arguments["call_sid"]}"'
-
-    #             print(f"Federico: {arguments}")
-    #         except json.decoder.JSONDecodeError as e:
-    #             logger.error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
-    #             continue
-
-    #         for func in self.function_manager.registered_functions:
-    #             if func.__name__ == k:
-    #                 try:
-    #                     response = await func(**arguments)
-    #                 except Exception as e:
-    #                     logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
-    #                     continue
-                    
-    #                 self.add_to_conversation(
-    #                     "function", content=response, name=func.__name__
-    #                 )
-
-    #     generator = await self.llm_generator()
-
-    #     full_message = ""
-    #     async for chunk in generator:
-    #         content = chunk.choices[0].delta.content
-    #         if content:
-    #             yield content
-    #             full_message += content
-
-    #     self.add_to_conversation("assistant", full_message)
-    #     self.functions = {}
-    #     self.current_function_name = None
-
     async def handle_tool_call_finish(self):
+        """Ejecuta las funciones registradas en paralelo para mejorar la eficiencia."""
+        tasks = []
+
         for k, v in self.functions.items():
             logger.debug(f"Call: {k} with arguments: {v}")
-            
+
             try:
                 arguments = json.loads(v)
-                # Extract the "call_sid" value and ensure it's a string
                 call_sid = str(arguments.get("call_sid", ""))
-                
-                logger.debug(f"Extracted call_sid: {call_sid}")
             except json.JSONDecodeError as e:
                 logger.error(f"Error decoding JSON for function {k}: {e}. Input was: {v}.")
                 continue
 
             for func in self.function_manager.registered_functions:
                 if func.__name__ == k:
-                    try:
-                        # Pass the call_sid as a named argument, ensuring it's a string
-                        response = await func(call_sid=f'"{call_sid}"')
-                    except Exception as e:
-                        logger.error(f"Error calling function {k} with call_sid {call_sid}: {e}")
-                        continue
-                    
-                    self.add_to_conversation(
-                        "function", content=response, name=func.__name__
-                    )
+                    tasks.append(self.execute_function(func, call_sid))
 
-        generator = await self.llm_generator()
+        if tasks:
+            responses = await asyncio.gather(*tasks)  # 🔄 Ejecutar funciones en paralelo
+            for response in responses:
+                if response:
+                    yield response
 
-        full_message = ""
-        async for chunk in generator:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
-                full_message += content
-
-        self.add_to_conversation("assistant", full_message)
         self.functions = {}
         self.current_function_name = None
 
+    async def execute_function(self, func, call_sid):
+        """Ejecuta la función de manera asincrónica y maneja errores."""
+        try:
+            response = await func(call_sid=f'"{call_sid}"')
+            self.add_to_conversation("function", content=response, name=func.__name__)
+            return response
+        except Exception as e:
+            logger.error(f"Error calling function {func.__name__} with call_sid {call_sid}: {e}")
+            return None
+
     def clear_conversation_history(self) -> None:
+        """Limpia el historial de conversación para resetear el contexto."""
         self.conversation_history = []

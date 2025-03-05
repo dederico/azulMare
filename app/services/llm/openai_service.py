@@ -91,7 +91,7 @@ class OpenAIService(LLMService):
 
         if function_name:
             self.current_function_name = function_name
-            self.functions[self.current_function_name] = ""
+            self.functions[self.current_function_name] = "" 
 
         if self.current_function_name:
             self.functions[self.current_function_name] += arguments_chunk

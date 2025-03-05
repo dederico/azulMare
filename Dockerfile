@@ -46,4 +46,5 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Comando por defecto: iniciar Gunicorn con Uvicorn
 # CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "4", "-b", "0.0.0.0:8010", "app.main:app"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+# CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+CMD ["hypercorn", "app.main:app", "--bind", "0.0.0.0:8010", "--workers", "10"]

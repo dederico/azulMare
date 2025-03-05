@@ -93,3 +93,4 @@ SpeechRecognition
 pydub
 ffmpeg
 gunicorn
+hypercorn

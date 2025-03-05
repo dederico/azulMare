@@ -53,6 +53,7 @@ class OpenAIService(LLMService):
             stream=False,  # 🚀 Respuesta completa en una sola vez
             tool_choice="auto",
             temperature=0.1,
+            max_tokens=100,
             tools=self.function_manager.get_function_definition(),
         )
         return response

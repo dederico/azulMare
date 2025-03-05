@@ -29,34 +29,55 @@ class OpenAIService(LLMService):
         self.conversation_history.append({"role": role, "content": content, **kwargs})
 
     async def generate_response(self, user_input: str) -> AsyncGenerator[str, None]:
+        """Genera la respuesta del modelo en streaming, evitando pausas perceptibles."""
         if self.config.get("use_kb"):
             kb_context = self.vectorbase.Query(user_input)
             user_input = f"Context:\n{kb_context}\n\nQuery:\n{user_input}"
-        
-        self.add_to_conversation("user", user_input)
-        response = await self.llm_generator()
 
-        full_message = response.choices[0].message.content if response.choices else ""
-        
+        self.add_to_conversation("user", user_input)
+        generator = await self.llm_generator()
+
+        full_message = ""
+        buffer = ""  # Acumulador de tokens antes de enviarlos
+
+        async for chunk in generator:
+            content = chunk.choices[0].delta.content
+
+            # 🚀 Detecta el final cuando content es None
+            if content is None:
+                break  # Finaliza el bucle si no hay más contenido
+
+            buffer += content
+
+            # Enviar contenido acumulado en el buffer si alcanza cierto tamaño
+            if len(buffer) > 20:  # Ajusta el umbral según necesidad
+                yield buffer
+                full_message += buffer
+                buffer = ""  # Limpiar el buffer
+
+        # Enviar cualquier contenido restante en el buffer
+        if buffer:
+            yield buffer
+            full_message += buffer
+
         if full_message:
-            yield full_message
             self.add_to_conversation("assistant", full_message)
 
     async def llm_generator(self):
-        """Genera respuesta de OpenAI sin streaming para evitar fragmentación y latencia."""
+        """Genera respuesta de OpenAI en streaming para reducir la latencia."""
         self.conversation_history = [
             msg for msg in self.conversation_history if msg.get("content") is not None
         ]
-        response = await self.client.chat.completions.create(
+        generator = await self.client.chat.completions.create(
             model=self.config.get("model") or "gpt-4-0125-preview",
             messages=self.conversation_history,
-            stream=False,  # 🚀 Respuesta completa en una sola vez
+            stream=True,  # 🚀 Ahora en streaming con detección de fin
             tool_choice="auto",
             temperature=0.1,
             max_tokens=100,
             tools=self.function_manager.get_function_definition(),
         )
-        return response
+        return generator
 
     async def handle_tool_call(self, tool_call_chunk):
         """Maneja las llamadas a herramientas asegurando que solo se ejecuten cuando sea necesario."""

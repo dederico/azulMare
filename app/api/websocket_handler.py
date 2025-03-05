@@ -608,16 +608,19 @@ class WebSocketHandler:
 
     async def handle_event(self, data):
         if 'text' in data:
-            datos = data["text"].strip('"').strip()
-            if re.match(self.pattern, datos):
-                self.switch="not_listening"
-                self.stream_sid, self.call_sid, self.number = datos.split('#')
-                logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number} - {self.gettime()} - call_sid {self.call_sid}")
-                dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
-                # logger.debug(dnid)
-                context=await self.get_lead(dnid=dnid)
-                logger.warning(f"context: {context}")
-                self.initial_data=context
+            try:
+                datos = data["text"].strip('"').strip()
+                if re.match(self.pattern, datos):
+                    self.switch="not_listening"
+                    self.stream_sid, self.call_sid, self.number = datos.split('#')
+                    logger.warning(f"Codigo: {self.stream_sid}, Call ID: {self.call_sid}, Number: {self.number} - {self.gettime()} - call_sid {self.call_sid}")
+                    dnid=f"{self.stream_sid}%23{self.call_sid}%23{self.number}"
+                    # logger.debug(dnid)
+                    context=await self.get_lead(dnid=dnid)
+                    logger.warning(f"context: {context}")
+                    self.initial_data=context
+            except Exception as e:
+                logger.debug(f"text {e}")
         elif 'bytes' in data:
             datos= data["bytes"]
             return await self.process_media_event(datos)

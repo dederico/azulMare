@@ -426,7 +426,6 @@ class WebSocketHandler:
                 
                 try:
                     data = await self.websocket.receive()
-                    logger.warning(f"data {data}")
                     # Salir del bucle si no se reciben datos
                     if not data:
                         logger.debug("No data received, exiting loop.")

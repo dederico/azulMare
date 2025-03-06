@@ -1,0 +1,28 @@
+# fly.toml app configuration file generated for azulmare-dawn-sunset-5196 on 2025-03-05T18:47:58-06:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'azulmare-dawn-sunset-5196'
+primary_region = "iad"
+[env]
+  PORT = "8010"
+[build]
+  dockerfile = "Dockerfile"
+[http_service]
+  internal_port = 8010
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+[[services]]
+  protocol = "tcp"
+  internal_port = 8010
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+[[vm]]
+  memory = '8gb'
+  cpu_kind = 'performance'
+  cpus = 4

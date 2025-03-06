@@ -180,7 +180,8 @@ async def websocket_endpoint(ws: WebSocket):
         config=config,
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=call.callerName, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context, NOMBRE=context['context']['NOMBRE'], TELEFONO = context['context']['TELEFONO'], MARCA = context['context']['MARCA'], PRODUCTO = context['context']['PRODUCTO'],ADEUDO = context['context']['ADEUDO'], FECHA_LIMITE_PAGO = context['context']['FECHA_LIMITE_PAGO']),
-        function_manager=function_manager
+        function_manager=function_manager,
+        call_id=call_sid
     )
     logger.warning(f"Ending LLM service for the new call - {gettime()} - call_sid {websocket_handler.call_sid}")
     # tts_service = ElevenTTSService(

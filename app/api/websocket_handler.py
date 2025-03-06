@@ -622,10 +622,14 @@ class WebSocketHandler:
                         logger.warning(f"context: {context}")
                         self.initial_data=context
             except Exception as e:
-                logger.debug(f"text {e}")
+                logger.warning(f"text {e}")
         if 'bytes' in data:
-            datos= data["bytes"]
-            return await self.process_media_event(datos)
+            try:
+                datos= data["bytes"]
+                if datos is not None:
+                    return await self.process_media_event(datos)
+            except Exception as e:
+                logger.warning(f"text {e}")
 
     def detect_audio_format(self, data):
         try:

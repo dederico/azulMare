@@ -54,7 +54,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logging.getLogger("websockets").setLevel(logging.INFO)
 logging.getLogger("deepgram").setLevel(logging.INFO)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-DEEPSEEK_API_KEY = "sk-62a378eb5daa4ea28eeb86e1aecefe41"
+# DEEPSEEK_API_KEY = ""
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 VOICE_ID = os.environ.get("VOICE_ID")

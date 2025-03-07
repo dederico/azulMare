@@ -63,7 +63,7 @@ class OpenAIService(LLMService):
             msg for msg in self.conversation_history if msg.get("content") is not None
         ]
         generator = await self.client.chat.completions.create(
-            model="gpt-4o", # self.config.get("model") or "gpt-4-0125-preview",
+            model=self.config.get("model") or "gpt-4o", 
             messages=self.conversation_history,
             stream=True,
             tool_choice="auto",

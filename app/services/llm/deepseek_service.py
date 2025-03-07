@@ -1,0 +1,126 @@
+import json
+import time
+from openai import AsyncOpenAI
+from app.util.logger import logger
+from typing import Any, AsyncGenerator
+from .llm_service import LLMService
+from app.util.database import VectorBase
+from app.services.functions.function_manager import FunctionManager
+
+
+class DeepSeekService(LLMService):
+    def __init__(
+        self,
+        config,
+        api_key: str | None,
+        function_manager: FunctionManager,
+        system: str = "",
+        call_id: str="",
+        use_stream: bool = True  # Default to using streaming
+    ):
+        self.config = config
+        self.client = AsyncOpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+        self.conversation_history = []
+        self.conversation_history.append({"role": "system", "content": system})
+        self.function_manager = function_manager
+        self.functions = {}
+        self.current_function_name = None
+        self.call_id = call_id
+        self.use_stream = use_stream  # Allow switching streaming dynamically
+        if self.config.get("use_kb"):
+            self.vectorbase = VectorBase(config.get("agent_name", None))
+
+    def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
+        self.conversation_history.append({"role": role, "content": content, **kwargs})
+
+    async def generate_response(self, user_input: str) -> AsyncGenerator[str, None]:
+        if self.config.get("use_kb"):
+            kb_context = self.vectorbase.Query(user_input)
+            user_input = f"Context:\n{kb_context}\n\nQuery:\n{user_input}"
+
+        self.add_to_conversation("user", user_input)
+        full_message = ""
+        
+        async for content in self.llm_generator():
+            yield content
+            full_message += content  
+        
+        if full_message:
+            self.add_to_conversation("assistant", full_message)
+
+    async def llm_generator(self):
+        start_time = time.perf_counter()
+        self.conversation_history = [
+            msg for msg in self.conversation_history if msg.get("content") is not None
+        ][-10:]  # Limitar el historial a 10 mensajes
+
+        response_stream = await self.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=self.conversation_history,
+            stream=self.use_stream,
+            temperature=0.2,  # Ajuste para velocidad
+        )
+
+        if self.use_stream:
+            first_chunk_time = None  # Para medir el primer chunk
+            async for chunk in response_stream:
+                if first_chunk_time is None:
+                    first_chunk_time = time.perf_counter()
+                    first_latency = (first_chunk_time - start_time) * 1000
+                    logger.warning(f"Deepseek latency {first_latency:.2f} ms - call_sid {self.call_id}")
+
+                content = getattr(chunk.choices[0].delta, "content", None)
+                if content:
+                    logger.debug(f"Chunk received: {len(content)} characters")  # Log para analizar tamaño de chunks
+                    yield content
+        else:
+            end_time = time.perf_counter()
+            latency = (end_time - start_time) * 1000
+            logger.warning(f"Deepseek latency not stream: {latency:.2f} ms - call_sid {self.call_id}")
+            full_response = response_stream.choices[0].message.content if response_stream.choices else ""
+            yield full_response
+
+    async def handle_tool_call(self, tool_call_chunk):
+        tool_call = tool_call_chunk[0]
+        function_name = getattr(tool_call.function, "name", None)
+        arguments_chunk = getattr(tool_call.function, "arguments", "")
+
+        if function_name:
+            self.current_function_name = function_name
+            self.functions[self.current_function_name] = ""
+
+        if self.current_function_name:
+            self.functions[self.current_function_name] += arguments_chunk
+
+    async def handle_tool_call_finish(self):
+        for k, v in self.functions.items():
+            logger.debug(f"Call: {k} with arguments: {v}")
+            
+            try:
+                arguments = json.loads(v)
+                call_sid = str(arguments.get("call_sid", ""))
+                logger.debug(f"Extracted call_sid: {call_sid}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON for function {k}: {e}. Input was: {v}.")
+                continue
+
+            for func in self.function_manager.registered_functions:
+                if func.__name__ == k:
+                    try:
+                        response = await func(call_sid=f'"{call_sid}"')
+                    except Exception as e:
+                        logger.error(f"Error calling function {k} with call_sid {call_sid}: {e}")
+                        continue
+                    
+                    self.add_to_conversation(
+                        "function", content=response, name=func.__name__
+                    )
+
+        async for chunk in self.llm_generator():
+            yield chunk
+
+        self.functions = {}
+        self.current_function_name = None
+
+    def clear_conversation_history(self) -> None:
+        self.conversation_history = []

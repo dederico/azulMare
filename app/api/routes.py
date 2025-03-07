@@ -23,6 +23,7 @@ from app.core.orchestrator import Orchestrator
 from app.services.stt.deepgram_service import DeepgramService
 from app.services.stt.amazon_service import AmazonTranscribeService
 from app.services.llm.openai_service import OpenAIService
+from app.services.llm.deepseek_service import DeepSeekService
 from app.services.tts.eleven_service import ElevenTTSService
 from app.services.tts.polly_service import AmazonTTSService
 from app.services.functions.function_registry import registered_functions
@@ -53,6 +54,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logging.getLogger("websockets").setLevel(logging.INFO)
 logging.getLogger("deepgram").setLevel(logging.INFO)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+DEEPSEEK_API_KEY = "sk-62a378eb5daa4ea28eeb86e1aecefe41"
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 VOICE_ID = os.environ.get("VOICE_ID")
@@ -183,6 +185,14 @@ async def websocket_endpoint(ws: WebSocket):
         function_manager=function_manager,
         call_id=call_sid
     )
+    
+    # llm_service = DeepSeekService(
+    #     config=config,
+    #     api_key=DEEPSEEK_API_KEY,
+    #     system=system_message.format(customer_name=call.callerName, call_sid=call_sid, date2=date_string, now=now, date=current_date, context=context, NOMBRE=context['context']['NOMBRE'], TELEFONO = context['context']['TELEFONO'], MARCA = context['context']['MARCA'], PRODUCTO = context['context']['PRODUCTO'],ADEUDO = context['context']['ADEUDO'], FECHA_LIMITE_PAGO = context['context']['FECHA_LIMITE_PAGO']),
+    #     function_manager=function_manager,
+    #     call_id=call_sid
+    # )
     logger.warning(f"Ending LLM service for the new call - {gettime()} - call_sid {websocket_handler.call_sid}")
     # tts_service = ElevenTTSService(
     #     api_key=ELEVENLABS_API_KEY,

@@ -35,6 +35,7 @@ class WebSocketHandler:
         self.pattern=r"^[a-zA-Z0-9]+#[a-zA-Z0-9]+#[a-zA-Z0-9]+$"
         self.orchestrator = None 
         self.silence_duration = 0
+        self.sigue_en_la_linea=False
         self.queue = asyncio.Queue()
         self.now = datetime.now(ZoneInfo("America/Mexico_City"))
         self.queue_task = asyncio.create_task(self.process_queue())
@@ -169,6 +170,54 @@ class WebSocketHandler:
             formatted_traceback = error_traceback.replace("\n", " | ")
             logger.warning(f"Error en la función de colgado: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
             return f"Error al intentar colgar la llamada: {str(e)}"
+    async def enlinea_function(self):
+        if not self.call_sid:
+            logger.error("actions_call called without call_sid")
+            return "Error: No se proporcionó call_sid"
+        
+        try:
+            call_id = int(self.call_sid)
+        except ValueError:
+            logger.error(f"Invalid call_sid: {self.call_sid}. Cannot convert to integer.")
+            return "Error: call_sid inválido"
+
+        current_dir = Path(__file__).resolve().parent
+        parent_dir = current_dir.parent
+        wav_path = os.path.join(parent_dir, "services", "functions", "implementations", "files", "sigue_en_la_linea.wav")
+
+        # Leer archivo WAV de manera asíncrona
+        wav_data = await asyncio.to_thread(lambda: open(wav_path, "rb").read())
+
+        # Convertir a Base64 en un hilo separado
+        audio_base64 = await asyncio.to_thread(base64.b64encode, wav_data)
+        audio_base64 = audio_base64.decode("utf-8")
+
+        payload = {
+            "call_id": call_id,
+            "action": "playback",
+            "data": {"audio_base64": audio_base64}
+        }
+        try:
+            
+            async with httpx.AsyncClient() as client:
+                headers = {"accept": "application/json", "Content-Type": "application/json"}
+                
+                duration = self.calculate_wav_duration_from_base64(audio_base64)
+                
+                # Primera solicitud para reproducir el audio
+                logger.warning(f"Enviando primera solicitud para reproducir el audio de sigue en la linea - {self.gettime()} - call_sid {self.call_sid}")
+                response = await client.post("https://websockets.ccc.uno/api/v1/autoagent", json=payload, headers=headers)
+                logger.debug(f"Response status: {response.status_code}")
+                logger.warning(f"Response body: {json.dumps(response.json(), separators=(',', ':'))} - {self.gettime()} - call_sid {self.call_sid}")
+            return "Se mandó audio de sigue en la linea exitosamente."
+        except httpx.ReadTimeout:
+            logger.warning(f"La solicitud tardó demasiado en responder, colgar: https://websockets.ccc.uno/api/v1/autoagent - {self.gettime()} - call_sid {self.call_sid}")
+        except Exception as e:
+            error_traceback = traceback.format_exc()  # Obtiene el traceback completo como string
+            formatted_traceback = error_traceback.replace("\n", " | ")
+            logger.warning(f"Error en la función de colgado: {str(e)}| Traceback: {formatted_traceback} - {self.gettime()} - call_sid {self.call_sid}")
+            return f"Error al intentar colgar la llamada: {str(e)}"
+    
     async def process_queue(self):
         while True:  
             call_id, action, data,text = await self.queue.get()
@@ -655,11 +704,21 @@ class WebSocketHandler:
             if rms > 200 and self.switch == "listening":
                 self.playsequence.append(raw_audio_data)
                 self.silence_duration = 0
+                self.sigue_en_la_linea=False
                 return raw_audio_data
             else:
-                self.silence_duration += self.duration
+                if self.switch == "listening":
+                    self.silence_duration += self.duration
+                else:   
+                    self.silence_duration = 0
+                    self.sigue_en_la_linea=False
+                    
+                if self.silence_duration >= 10.0 and self.sigue_en_la_linea==False:
+                    self.sigue_en_la_linea=True
+                    await self.enlinea_function()
                 if self.silence_duration >= 45.0:
                     self.silence_duration = 0
+                    self.sigue_en_la_linea=False
                     logger.warning("Más de 45 segundos de silencio detectados.")
                     await self.hangup_function()
 

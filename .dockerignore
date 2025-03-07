@@ -1,29 +1,30 @@
 # flyctl launch added from .gitignore
-# Ignorar cachés de Python
-**\__pycache__
-**\*.py[cod]
-**\*.pyo
 
-# Ignorar archivos de entorno virtual
-**\.venv
-**\venv
-**\__venv__
+# Ignore Python caches
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
 
-# Ignorar archivos de configuración local
-**\.env
-**\.DS_Store
-**\.vscode
+# Ignore virtual environment directories
+**/.venv/
+**/venv/
+**/__venv__/
 
-# Ignorar directorios de subidas
-**\uploads
+# Ignore local configuration files
+**/.env
+**/.DS_Store
+**/.vscode/
 
-# Ignorar binarios y logs
-**\*.log
-**\serve
-**\*.db
+# Ignore upload directories
+**/uploads/
 
-# Ignorar cualquier archivo binario generado
-**\bin
+# Ignore binaries and logs
+**/*.log
+**/serve/
+**/*.db
 
-**\.codegpt
+# Ignore any generated binary files
+**/bin/
+
+**/.codegpt
 fly.toml

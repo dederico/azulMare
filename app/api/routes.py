@@ -29,7 +29,8 @@ from app.util.logger import logger
 from datetime import datetime
 import pytz
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
-
+import traceback
+from app.services.llm.llm_service import LLMService
 
 load_dotenv()
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, FastAPI
@@ -104,6 +105,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Set up Deepgram as the Speech-to-Text (STT) Model
     #stt_service = DeepgramService(DEEPGRAM_API_KEY)
+
 
     # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
     logger.debug("Setting up transcription service")
@@ -277,179 +279,191 @@ router = APIRouter()
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
-    
-    try:
-        # Configuración de base de datos y demás servicios
-        db = LocalStorage()
-        config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
-        function_manager = FunctionManager(registered_functions)
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    # Configuración de base de datos y demás servicios
+    db = LocalStorage()
+    args = request.query_params
+    config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
+    function_manager = FunctionManager(registered_functions)
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Obtener el payload JSON
+    try:
         payload = await request.json()
         logger.debug(f"Payload recibido: {payload}")
-
-        # Extraer información relevante del payload
-        message_id = payload.get("message_id")
-        text = payload.get("text")
-        client_id = payload.get("client_id")
-        client_info = payload.get("client", {})
-        phone = client_info.get("phone")
-        sender_name = client_info.get("name")
-        channel_id = payload.get("channel_id")
         
-        # Manejar diferentes tipos de contenido
-        message_type = "text"
-        if payload.get("coordinates"):
-            message_type = "location"
-            text = f"Ubicación: {payload['coordinates']}"
-        elif payload.get("audio"):
-            message_type = "audio"
-            text = "Audio recibido"
-        elif payload.get("photo"):
-            message_type = "image"
-            text = "Imagen recibida"
+        # Extraer información del payload de Chat2Desk
+        chat_id = payload.get('chat_id')
+        from_number = payload.get('client', {}).get('phone')
+        sender_name = payload.get('client', {}).get('name', 'Usuario')
+        body = payload.get('text', '')
+        message_type = payload.get('type', 'text')
+        uid = payload.get('message_id')
 
-        # Crear o actualizar la sesión del usuario
-        if phone not in user_sessions:
-            user_sessions[phone] = ChatMessageHistory()
-        conversation_history = user_sessions[phone]
+        logger.debug(f"Datos extraídos: chat_id={chat_id}, sender_name={sender_name}, body={body}, "
+                     f"from_number={from_number}, message_type={message_type}")
 
-        # Guardar el mensaje en la base de datos
         mexico_tz = pytz.timezone('America/Mexico_City')
         current_datetime = datetime.now(mexico_tz)
-        
-        user_message = Message(
-            time=current_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-            senderName=sender_name,
-            message=text,
-            number=phone,
-            uid=str(message_id),
-            direction="inbound",
-            mtype=message_type,
-            source="Whatsapp"
-        )
-        db.Insert(user_message)
-
         date_string = current_datetime.strftime("%Y-%m-%d")
         hour = current_datetime.strftime("%I:%M:%S %p")
-        folio = await save_client_selection(message_id, "", "", "", "", "", "", "", "")
-
-        # Crear el prompt con el historial de mensajes
-        system_prompt = system_message.format(
-            customer_name=sender_name,
-            call_sid=message_id,
-            date2=date_string,
-            now=hour,
-            folio=folio
-        )
+        folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
 
         llm_service = OpenAIService(
             config=config,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            system=system_prompt,
+            api_key=OPENAI_API_KEY,
+            system=system_message.format(date2=date_string, now=hour, folio=folio),
             function_manager=function_manager
         )
+        
+        # Variables para ubicación e imagen
+        address = None
+        latitude, longitude = None, None
+        
+        if message_type == "location":
+            # Procesar mensaje de ubicación si es necesario
+            pass
+        elif message_type == "audio":
+            # Procesar mensaje de audio si es necesario
+            pass
+        elif message_type == "image":
+            # Procesar mensaje de imagen si es necesario
+            pass
+            
+    except Exception as e:
+        logger.error(f"Error al procesar el payload: {str(e)}")
+        return JSONResponse(content={"error": "Error al procesar el payload"}, status_code=400)
 
-        # Formatear el historial de mensajes para el modelo
-        formatted_history = [
-            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
-            else {"role": "system", "content": message.content} if isinstance(message, AIMessage)
-            else {"role": "assistant", "content": message.content}
-            for message in conversation_history.messages
-        ]
-        logger.debug(f"Historial formateado para el modelo: {formatted_history}")
+    # Crear o actualizar la sesión del usuario
+    if from_number not in user_sessions:
+        logger.debug(f"Creando nueva sesión para el usuario: {from_number}")
+        user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+    session = user_sessions[from_number]
+    session.update_activity()
+    conversation_history = session.history
 
-        # Convertir formatted_history en un solo string para user_input
-        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
-        logger.debug(f"Input concatenado para generate_response: {user_input}")
+    # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
+    try:
+        logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
+        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        for msg in messages_db:
+            role = "assistant" if msg.direction == "outbound" else "user"
+            if role == "user":
+                conversation_history.add_user_message(msg.message)
+            else:
+                conversation_history.add_ai_message(msg.message)
+            logger.debug(f"Mensaje recuperado para historial: rol={role}, contenido={msg.message}")
+    except Exception as e:
+        logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
 
-        # Generar la respuesta del modelo usando el string completo de user_input
+    # Agregar mensaje de usuario al historial y guardar en la base de datos
+    conversation_history.add_user_message(body)
+    user_message = Message(
+        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        senderName=sender_name,
+        message=body,
+        number=from_number,
+        uid=uid,
+        direction="inbound",
+        mtype=message_type,
+        source="Whatsapp",
+        latitude=latitude,
+        longitude=longitude
+    )
+    db.Insert(user_message)
+    
+    try:
+        # Crear el prompt con el historial de mensajes
+        system_prompt = system_message.format(
+            customer_name=sender_name,
+            call_sid=uid,
+            date2=date_string,
+            now=hour,
+            folio=folio,
+            phone_number=from_number
+        )
+        
+        user_input = "\n".join([f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}" for msg in conversation_history.messages])
+        user_input += f"\nHuman: {body}"
+
+        logger.debug(f"Prompt generado: {user_input}")
+
+        # Generar la respuesta del modelo
         model_response = llm_service.generate_response(user_input=user_input)
         response_content = ""
         async for response in model_response:
             response_content += str(response)
-        logger.debug(f"Respuesta parcial: {response_content}")
+        logger.debug(f"Respuesta del modelo: {response_content}")
 
-        if isinstance(response_content, list):
-            response_content = " ".join([str(item) for item in response_content])
-        elif not isinstance(response_content, str):
-            response_content = str(response_content)
+        if not response_content.strip():
+            logger.warning("La respuesta del modelo está vacía. Usando un mensaje predeterminado.")
+            response_content = "Lo siento, no pude generar una respuesta en este momento. Por favor, intenta de nuevo o contacta a un agente humano para asistencia."
 
         conversation_history.add_ai_message(response_content)
-            
         assistant_message = Message(
-                time=current_datetime,
-                senderName="Assistant",
-                message=response_content,
-                number=phone,
-                uid=message_id,
-                direction="outbound",
-                mtype=message_type,
-                source="Whatsapp"
+            time=current_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            senderName="Assistant",
+            message=response_content,
+            number=from_number,
+            uid=uid,
+            direction="outbound",
+            mtype=message_type,
+            source="Whatsapp"
         )
         db.Insert(assistant_message)
 
-        # Enviar la respuesta a través de la API de Chat2Desk
-        chat2desk_api_url = "https://api.chat2desk.com.mx/v1/messages"
-        chat2desk_api_token = "5d211f3aeb829cc4149ebfc24d1a6f"
-        
-        chat2desk_payload = {
-            "client_id": client_id,
-            "type": "autoreply",
-            "channel_id": channel_id,
-            "transport": "wa_direct",
-            "text": assistant_message
-        }
+        client_id = payload.get('client', {}).get('id')
+        print("client_id",client_id) # Extrae el client_id del payload
+        channel_id = payload.get("channel_id") 
+        print("channel_id",channel_id) # Extrae el channel_id del payload
+        robot_answer = assistant_message.message
+        print("response_content",assistant_message.message) # Imprime la respuesta generada
+        if not client_id or not channel_id:
+            logger.error("Error: client_id o channel_id no están definidos.")
+            return JSONResponse(content={"error": "No se pudo obtener client_id o channel_id"}, status_code=400)
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                chat2desk_api_url,
-                json=chat2desk_payload,
-                headers={"Authorization": chat2desk_api_token}
-            )
+        chat2desk_response = await send_chat2desk_message(client_id, channel_id, robot_answer)
 
-        if response.status_code == 200:
-            logger.info("Mensaje enviado exitosamente a través de Chat2Desk")
-        else:
-            logger.error(f"Error al enviar mensaje a través de Chat2Desk: {response.text}")
+        if chat2desk_response.status_code != 200:
+            logger.error(f"Error al enviar mensaje a través de Chat2Desk: {chat2desk_response.text}")
+            return JSONResponse(content={"error": "Error al enviar mensaje"}, status_code=500)
 
-        return JSONResponse(content={"status": "success", "message": "Mensaje procesado y respondido correctamente"})
+        logger.info(f"Mensaje enviado exitosamente a {from_number}")
+        return JSONResponse(content={"message": "Mensaje procesado y enviado con éxito"}, status_code=200)
 
     except Exception as e:
-        logger.error(f"Error al procesar el mensaje de WhatsApp: {str(e)}")
-        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+        logger.error(f"Error al procesar el mensaje: {str(e)}")
+        return JSONResponse(content={"error": "Error interno del servidor"}, status_code=500)
 
-@router.post("/amd_detect")
-async def amd_detect(request: Request):
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+async def send_chat2desk_message(client_id, channel_id, response_content):
+    if not client_id:
+        logger.error("client_id es None o vacío")
+        return None
+    if not channel_id:
+        logger.error("channel_id es None o vacío")
+        return None
+    if not response_content:
+        logger.error("response_content es None o vacío")
+        return None
+    
+    url = "https://api.chat2desk.com.mx/v1/messages"
+    headers = {
+        "Authorization": os.getenv("CHAT2DESK_API_TOKEN"),  # Reemplaza 'your_api_token' con tu token real de la API
+        "Content-Type": "application/json"
+    }
 
-    body_bytes = await request.body()
-    body_str = body_bytes.decode()
-    parsed_body = parse_qs(body_str)
+    # Asumiendo que el "wa_direct" es el transporte correcto para WhatsApp
+    data = {
+        "client_id": client_id,
+        "channel_id": channel_id,
+        "transport": "wa_direct",  # Indicando que el transporte es WhatsApp directo
+        "text": response_content  # El mensaje de texto que se enviará
+    }
 
-    answered_by = parsed_body["AnsweredBy"][0]
-    if answered_by not in ["human", "unknown"]:
-        call_sid = parsed_body["CallSid"][0]
-        client = Client(account_sid, auth_token)
-        client.calls(call_sid).update(status="completed")
-
-        db = LocalStorage()
-        call = db.Search(Call(callUid = call_sid), True)
-        if call:
-            call.callStatus = "AMD"
-            db.Update(call)
-
-            hooks = Hooks()
-            config = { c.name : c.value for c in db.GetAll(Config) }
-            for hook in hooks.Get(True):
-                if hook["type"] == "POST_CALL":
-                    logger.debug("Hook found for call executing")
-                    hook["function"](call, config)
-
-        logger.warning(f"Machine - {answered_by} detected for: {call_sid}")
-
+    try:
+        response = await httpx.post(url, json=data, headers=headers)
+        return response
+    except Exception as e:
+        logger.error(f"Error al enviar mensaje a Chat2Desk: {str(e)}")
+        raise e
 
 @router.get("/health")
 async def health():
@@ -489,43 +503,6 @@ async def health():
     }
     
     return metrics
-
-
-@router.post("/make_call")
-async def make_call(request: Request):
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-    host = os.getenv("HOSTNAME")
-    number = os.getenv("NUMBER")
-
-    credentials = f"{account_sid}:{auth_token}"
-    token = base64.b64encode(credentials.encode()).decode()
-
-    payload_params = {
-        "MachineDetection": "Enable",
-        "AsyncAmd": "true",
-        "Url": f"{host}/",
-        "AsyncAmdStatusCallback": f"{host}/amd_detect",
-        "To": "+573134506576",
-        "From": number,
-    }
-
-    payload = urllib.parse.urlencode(payload_params)
-    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Calls.json"
-
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Basic {token}",
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, data=payload) as response:
-            try:
-                response.raise_for_status()
-                r = await response.text()
-                logger.info(r)
-            except Exception as e:
-                logger.warning(f"Call failed with error: {e}")
 
 
 # ---------------------

@@ -278,13 +278,13 @@ router = APIRouter()
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
     
-    # Configuración de base de datos y demás servicios
-    db = LocalStorage()
-    config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
-    function_manager = FunctionManager(registered_functions)
-    openai_service = OpenAIService(os.getenv("OPENAI_API_KEY"))
-
     try:
+        # Configuración de base de datos y demás servicios
+        db = LocalStorage()
+        config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
+        function_manager = FunctionManager(registered_functions)
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
         # Obtener el payload JSON
         payload = await request.json()
         logger.debug(f"Payload recibido: {payload}")
@@ -331,27 +331,64 @@ async def whatsapp(request: Request):
         )
         db.Insert(user_message)
 
-        # Agregar el mensaje del usuario al historial de conversación
-        conversation_history.add_user_message(text)
+        date_string = current_datetime.strftime("%Y-%m-%d")
+        hour = current_datetime.strftime("%I:%M:%S %p")
+        folio = await save_client_selection(message_id, "", "", "", "", "", "", "", "")
 
-        # Procesar el mensaje y generar una respuesta usando OpenAI
-        ai_response = await openai_service.generate_response(conversation_history)
-
-        # Agregar la respuesta de la IA al historial de conversación
-        conversation_history.add_ai_message(ai_response)
-
-        # Guardar la respuesta en la base de datos
-        ai_message = Message(
-            time=current_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-            senderName="AI",
-            message=ai_response,
-            number=phone,
-            uid=f"resp_{message_id}",
-            direction="outbound",
-            mtype="text",
-            source="Whatsapp"
+        # Crear el prompt con el historial de mensajes
+        system_prompt = system_message.format(
+            customer_name=sender_name,
+            call_sid=message_id,
+            date2=date_string,
+            now=hour,
+            folio=folio
         )
-        db.Insert(ai_message)
+
+        llm_service = OpenAIService(
+            config=config,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            system=system_prompt,
+            function_manager=function_manager
+        )
+
+        # Formatear el historial de mensajes para el modelo
+        formatted_history = [
+            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
+            else {"role": "system", "content": message.content} if isinstance(message, AIMessage)
+            else {"role": "assistant", "content": message.content}
+            for message in conversation_history.messages
+        ]
+        logger.debug(f"Historial formateado para el modelo: {formatted_history}")
+
+        # Convertir formatted_history en un solo string para user_input
+        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
+        logger.debug(f"Input concatenado para generate_response: {user_input}")
+
+        # Generar la respuesta del modelo usando el string completo de user_input
+        model_response = llm_service.generate_response(user_input=user_input)
+        response_content = ""
+        async for response in model_response:
+            response_content += str(response)
+        logger.debug(f"Respuesta parcial: {response_content}")
+
+        if isinstance(response_content, list):
+            response_content = " ".join([str(item) for item in response_content])
+        elif not isinstance(response_content, str):
+            response_content = str(response_content)
+
+        conversation_history.add_ai_message(response_content)
+            
+        assistant_message = Message(
+                time=current_datetime,
+                senderName="Assistant",
+                message=response_content,
+                number=phone,
+                uid=message_id,
+                direction="outbound",
+                mtype=message_type,
+                source="Whatsapp"
+        )
+        db.Insert(assistant_message)
 
         # Enviar la respuesta a través de la API de Chat2Desk
         chat2desk_api_url = "https://api.chat2desk.com.mx/v1/messages"
@@ -362,7 +399,7 @@ async def whatsapp(request: Request):
             "type": "autoreply",
             "channel_id": channel_id,
             "transport": "wa_direct",
-            "text": ai_response
+            "text": assistant_message
         }
 
         async with httpx.AsyncClient() as client:

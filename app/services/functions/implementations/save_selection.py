@@ -120,11 +120,11 @@ async def find_row_and_update_selection(phone_number, question_number, selection
 
     print("Phone number not found.")
 
-async def save_client_selection(call_sid: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str, selection8: str = None):
+async def save_client_selection(message_id: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str, selection8: str = None):
     """Guardar la información de las preguntas segun las respuestas del cliente.
 
     Args:
-        call_sid (string): Indicador unico de la llamada o mensaje. Proporcionado en mensaje del sistema.
+        message_id (string): Indicador unico de la llamada o mensaje. Proporcionado en mensaje del sistema.
         selection1 (string): Respuesta a la pregunta 1.
         selection2 (string): Respuesta a la pregunta 2.
         selection3 (string): Respuesta a la pregunta 3.
@@ -140,13 +140,13 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
 
     try:
         # Fetch the call or message
-        if call_sid.startswith("CA"):
-            call = client.calls(call_sid).fetch()
+        if message_id.startswith("CA"):
+            call = client.calls(message_id).fetch()
             caller_number = call.from_formatted
             print(f"Caller number from call: {caller_number}")
-        elif call_sid.startswith("SM"):
+        elif message_id.startswith("SM"):
             # Es un SID de mensaje
-            message = client.messages(call_sid).fetch()
+            message = client.messages(message_id).fetch()
             print("ESTE ES EL MENSAJE",message)
             caller_number = message.from_
             print(f"Sender number from message: {caller_number}")
@@ -194,7 +194,7 @@ async def save_client_selection(call_sid: str, selection1: str, selection2: str,
                 response = requests.get(selection8)
                 if response.status_code == 200:
                     # Guardar la imagen localmente
-                    image_path = f"temp_image_{call_sid}.jpg"
+                    image_path = f"temp_image_{message_id}.jpg"
                     with open(image_path, 'wb') as f:
                         f.write(response.content)
             else:

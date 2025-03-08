@@ -36,13 +36,9 @@ def calculate_wav_duration_from_base64(base64_audio: str) -> float:
 def gettime():
         return datetime.now(ZoneInfo("America/Mexico_City")).strftime("%Y-%m-%d %H:%M:%S")    
 async def actions_call_transfer(call_sid: str):
-    """Transferir al usuario si asi lo solicita.
-
+    """
     Args:
         call_sid (string): Indicador unico de la llamada. Proporcionado en mensaje del sistema.
-
-    Returns:
-        A confirmation message indicating the transfer.
     """
     logger.debug(f"ADENTRO DE LA FUNCION transfer_agent_function actions_call_transfer called with call_sid: {call_sid}")
 

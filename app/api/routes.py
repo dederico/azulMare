@@ -15,6 +15,20 @@ import requests
 from openai import OpenAI
 import asyncio
 from contextlib import asynccontextmanager
+import httpx
+import os
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+from app.util.database import LocalStorage
+from app.models.Config import Config
+from app.models.Message import Message
+from app.services.llm.openai_service import OpenAIService
+from app.services.functions.function_manager import FunctionManager
+from app.services.functions.function_registry import registered_functions
+from app.util.logger import logger
+from datetime import datetime
+import pytz
+from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
 
 
 load_dotenv()
@@ -58,6 +72,7 @@ VOICE_ID = os.environ.get("VOICE_ID")
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
+CHAT2DESK_API_TOKEN = "5d211f3aeb829cc4149ebfc24d1a6f"
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
@@ -257,220 +272,116 @@ async def lifespan(app: FastAPI):
     # Shutdown: se puede agregar lógica de limpieza si se requiere
 app = FastAPI(lifespan=lifespan)
 
+router = APIRouter()
+
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
+    
     # Configuración de base de datos y demás servicios
     db = LocalStorage()
-    args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    openai_service = OpenAIService(os.getenv("OPENAI_API_KEY"))
 
     try:
-        form_data = await request.form()
-        toN = form_data.get("To").split(":")[1]
-        sender_name = form_data.get("ProfileName")
-        body = form_data.get("Body")
-        from_number = form_data.get("From").split(":")[1]
-        wa_id = form_data.get("WaId")
-        message_type = form_data.get("MessageType")
-        uid = form_data.get("SmsMessageSid")
+        # Obtener el payload JSON
+        payload = await request.json()
+        logger.debug(f"Payload recibido: {payload}")
 
-        logger.debug(f"Datos recibidos: toN={toN}, sender_name={sender_name}, body={body}, "
-                     f"from_number={from_number}, wa_id={wa_id}, message_type={message_type}")
+        # Extraer información relevante del payload
+        message_id = payload.get("message_id")
+        text = payload.get("text")
+        client_id = payload.get("client_id")
+        client_info = payload.get("client", {})
+        phone = client_info.get("phone")
+        sender_name = client_info.get("name")
+        channel_id = payload.get("channel_id")
         
-        # Variables para ubicación e imagen
-        address = None
-        latitude, longitude = None, None
+        # Manejar diferentes tipos de contenido
+        message_type = "text"
+        if payload.get("coordinates"):
+            message_type = "location"
+            text = f"Ubicación: {payload['coordinates']}"
+        elif payload.get("audio"):
+            message_type = "audio"
+            text = "Audio recibido"
+        elif payload.get("photo"):
+            message_type = "image"
+            text = "Imagen recibida"
+
+        # Crear o actualizar la sesión del usuario
+        if phone not in user_sessions:
+            user_sessions[phone] = ChatMessageHistory()
+        conversation_history = user_sessions[phone]
+
+        # Guardar el mensaje en la base de datos
+        mexico_tz = pytz.timezone('America/Mexico_City')
+        current_datetime = datetime.now(mexico_tz)
         
-        if message_type == "location":
-            latitude = form_data.get("Latitude")
-            longitude = form_data.get("Longitude")
-            try:
-                # Convertir la latitud y longitud a dirección
-                address = await latlong_to_address(float(latitude), float(longitude))
-                body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
-            except Exception as e:
-                logger.error(f"Error al convertir coordenadas a dirección: {str(e)}")
-                body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
-            logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
-
-        elif message_type == "audio":
-            body = TranscribeOGG(form_data.get("MediaUrl0"), config["language"])
-            logger.debug(f"Audio transcrito: {body}")
-        elif message_type == "image":
-            media_url = form_data.get("MediaUrl0")
-            if media_url:
-                try:
-                    # Descargar la imagen 
-                    response = requests.get(media_url)
-                    image_content = BytesIO(response.content)
-                    # Analizar la imagen
-                    image_analysis = client.chat.completions.create(
-                        model="gpt-4o",  # Asegúrate de usar el modelo correcto
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "Describe esta imagen en detalle."},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
-                                        },
-                                    },
-                                ],
-                            }
-                        ],
-                        max_tokens=300,
-                    )
-                    # Obtener la descripción de la imagen
-                    image_description = image_analysis.choices[0].message.content
-                    body = f"Imagen recibida. Descripción: {image_description}"
-                    logger.debug(f"Descripción de la imagen: {image_description}")
-                except requests.RequestException as e:
-                    logger.error(f"Error al descargar la imagen: {str(e)}")
-                    body = "Se recibió una imagen, pero no se pudo descargar. Por favor, intenta enviarla de nuevo."
-                except Exception as e:
-                    logger.error(f"Error al analizar la imagen: {str(e)}")
-                    body = "Se recibió una imagen, pero hubo un problema al analizarla. El equipo técnico ha sido notificado."
-            else:
-                body = "Se recibió una notificación de imagen, pero no se encontró la URL de la imagen."
-                logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
-            
-    except KeyError as e:
-        logger.error(f"Falta el parámetro requerido: {e}")
-        return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
-
-    # Crear o actualizar la sesión del usuario
-    if from_number not in user_sessions:
-        logger.debug(f"Creando nueva sesión para el usuario: {from_number}")
-        user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
-    session = user_sessions[from_number]
-    session.update_activity()  # Actualiza la marca de actividad
-    conversation_history = session.history
-
-    # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
-    try:
-        logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
-        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
-        for msg in messages_db:
-            role = "assistant" if msg.direction == "outbound" else "user"
-            if role == "user":
-                conversation_history.add_user_message(msg.message)
-            else:
-                conversation_history.add_ai_message(msg.message)
-            logger.debug(f"Mensaje recuperado para historial: rol={role}, contenido={msg.message}")
-    except Exception as e:
-        logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
-
-    # Agregar mensaje de usuario al historial y guardar en la base de datos
-    conversation_history.add_user_message(body)
-    user_message = Message(
-        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        senderName=sender_name,
-        message=body,
-        number=from_number,
-        uid=uid,
-        direction="inbound",
-        mtype=message_type,
-        source="Whatsapp",
-        latitude=latitude,  # Guardar latitud si está disponible
-        longitude=longitude  # Guardar longitud si está disponible
-    )
-    db.Insert(user_message)
-    
-    mexico_tz = pytz.timezone('America/Mexico_City')
-    current_datetime = datetime.now(mexico_tz)
-    date_string = current_datetime.strftime("%Y-%m-%d")
-    hour = current_datetime.strftime("%I:%M:%S %p")
-    folio = await save_client_selection(wa_id, "", "", "", "", "", "", "", "")
-    
-    try:
-        # Crear el prompt con el historial de mensajes
-        system_prompt = system_message.format(
-            customer_name=sender_name,
-            call_sid=uid,
-            date2=date_string,
-            now=hour,
-            folio=folio,
-            address=address if 'address' in locals() else "No he recibido ubicación",
-            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
-        )
-
-        llm_service = OpenAIService(
-            config=config,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            system=system_prompt,
-            function_manager=function_manager
-        )
-        # Procesar la imagen si está disponible
-        if 'image_description' in locals() and image_description:
-            image_message = f"[Imagen recibida. Descripción: {image_description}]"
-            conversation_history.add_user_message(image_message)
-            conversation_history.add_ai_message("Por favor, analiza y comenta sobre la imagen en tu próxima respuesta.")
-
-        # Formatear el historial de mensajes para el modelo
-        formatted_history = [
-            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
-            else {"role": "system", "content": message.content} if isinstance(message, AIMessage)
-            else {"role": "assistant", "content": message.content}
-            for message in conversation_history.messages
-        ]
-        logger.debug(f"Historial formateado para el modelo: {formatted_history}")
-
-        # Convertir formatted_history en un solo string para user_input
-        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
-        logger.debug(f"Input concatenado para generate_response: {user_input}")
-
-        # Generar la respuesta del modelo usando el string completo de user_input
-        model_response = llm_service.generate_response(user_input=user_input)
-        response_content = ""
-        async for response in model_response:
-            response_content += str(response)
-        logger.debug(f"Respuesta parcial: {response_content}")
-
-        if isinstance(response_content, list):
-            response_content = " ".join([str(item) for item in response_content])
-        elif not isinstance(response_content, str):
-            response_content = str(response_content)
-
-        conversation_history.add_ai_message(response_content)
-        assistant_message = Message(
-            time=current_datetime,
-            senderName="Assistant",
-            message=response_content,
-            number=from_number,
-            uid=wa_id,
-            direction="outbound",
+        user_message = Message(
+            time=current_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            senderName=sender_name,
+            message=text,
+            number=phone,
+            uid=str(message_id),
+            direction="inbound",
             mtype=message_type,
             source="Whatsapp"
         )
-        db.Insert(assistant_message)
+        db.Insert(user_message)
 
-    except Exception as e:
-        logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
-        return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
+        # Agregar el mensaje del usuario al historial de conversación
+        conversation_history.add_user_message(text)
 
-    # Enviar la respuesta por WhatsApp usando Twilio
-    try:
-        twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-        twilio_client.messages.create(
-            body=response_content,
-            from_="whatsapp:" + toN,
-            to="whatsapp:" + from_number
+        # Procesar el mensaje y generar una respuesta usando OpenAI
+        ai_response = await openai_service.generate_response(conversation_history)
+
+        # Agregar la respuesta de la IA al historial de conversación
+        conversation_history.add_ai_message(ai_response)
+
+        # Guardar la respuesta en la base de datos
+        ai_message = Message(
+            time=current_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            senderName="AI",
+            message=ai_response,
+            number=phone,
+            uid=f"resp_{message_id}",
+            direction="outbound",
+            mtype="text",
+            source="Whatsapp"
         )
-        logger.debug(f"Mensaje enviado con éxito a WhatsApp: {response_content}")
-        content = {"status": True, "message": "Respuesta enviada por WhatsApp"}
-    except TwilioRestException as e:
-        logger.error(f"Error de Twilio: {e.code} - {e.msg}")
-        content = {"status": False, "error": f"Error de Twilio: {e.code} - {e.msg}"}
-    except Exception as e:
-        logger.error(f"Error inesperado al enviar mensaje con Twilio: {str(e)}")
-        content = {"status": False, "error": f"No se pudo responder al mensaje de WhatsApp: {str(e)}"}
+        db.Insert(ai_message)
 
-    return JSONResponse(content=content)
+        # Enviar la respuesta a través de la API de Chat2Desk
+        chat2desk_api_url = "https://api.chat2desk.com.mx/v1/messages"
+        chat2desk_api_token = "5d211f3aeb829cc4149ebfc24d1a6f"
+        
+        chat2desk_payload = {
+            "client_id": client_id,
+            "type": "autoreply",
+            "channel_id": channel_id,
+            "transport": "wa_direct",
+            "text": ai_response
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                chat2desk_api_url,
+                json=chat2desk_payload,
+                headers={"Authorization": chat2desk_api_token}
+            )
+
+        if response.status_code == 200:
+            logger.info("Mensaje enviado exitosamente a través de Chat2Desk")
+        else:
+            logger.error(f"Error al enviar mensaje a través de Chat2Desk: {response.text}")
+
+        return JSONResponse(content={"status": "success", "message": "Mensaje procesado y respondido correctamente"})
+
+    except Exception as e:
+        logger.error(f"Error al procesar el mensaje de WhatsApp: {str(e)}")
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 @router.post("/amd_detect")
 async def amd_detect(request: Request):

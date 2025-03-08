@@ -10,25 +10,25 @@ from app.models.File import File
 from app.models.Message import Message
 from dotenv import load_dotenv
 from app.models.Notification import Notification
-from pinecone import Pinecone
+# from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
-class VectorBase:
-    def __init__(self, db):
-        self.pc = Pinecone(environment=db)
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
-        if db != None:
-            self.db = db
-            self.index = self.pc.Index(db)
+# class VectorBase:
+#     def __init__(self, db):
+#         #self.pc = Pinecone(environment=db)
+#         self.model = SentenceTransformer("all-MiniLM-L6-v2")
+#         if db != None:
+#             self.db = db
+#             self.index = self.pc.Index(db)
 
-    def Query(self, q, top_k=2):
-        input_em = self.model.encode(q).tolist()
-        result = self.index.query(vector=input_em, top_k=top_k, includeMetadata=True)
-        if len(result['matches']) >= top_k:
-            return result['matches'][0]['metadata']['text']+"\n"+result['matches'][1]['metadata']['text']
-        return None
+#     def Query(self, q, top_k=2):
+#         input_em = self.model.encode(q).tolist()
+#         result = self.index.query(vector=input_em, top_k=top_k, includeMetadata=True)
+#         if len(result['matches']) >= top_k:
+#             return result['matches'][0]['metadata']['text']+"\n"+result['matches'][1]['metadata']['text']
+#         return None
 
 class LocalStorage:
     def __init__(self):

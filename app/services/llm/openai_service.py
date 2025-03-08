@@ -4,7 +4,7 @@ import openai
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
-from app.util.database import VectorBase
+# from app.util.database import VectorBase
 from app.services.functions.function_manager import FunctionManager
 
 
@@ -23,8 +23,8 @@ class OpenAIService(LLMService):
         self.function_manager = function_manager
         self.functions = {}
         self.current_function_name = None
-        if self.config.get("use_kb"):
-            self.vectorbase = VectorBase(config.get("agent_name", None))
+        # if self.config.get("use_kb"):
+        #     self.vectorbase = VectorBase(config.get("agent_name", None))
 
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         self.conversation_history.append({"role": role, "content": content, **kwargs})

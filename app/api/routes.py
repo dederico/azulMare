@@ -32,7 +32,7 @@ from langchain_community.chat_message_histories.in_memory import ChatMessageHist
 import traceback
 from app.services.llm.llm_service import LLMService
 
-load_dotenv()
+load_dotenv(override=True)
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, FastAPI
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from app.api.websocket_handler import WebSocketHandler
@@ -73,7 +73,7 @@ VOICE_ID = os.environ.get("VOICE_ID")
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
-CHAT2DESK_API_TOKEN = "5d211f3aeb829cc4149ebfc24d1a6f"
+CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
@@ -438,9 +438,14 @@ async def whatsapp(request: Request):
         return JSONResponse(content={"error": "Error interno del servidor"}, status_code=500)
 
 
+import os
+import httpx
+import logging
+
+logger = logging.getLogger(__name__)
+
 async def send_chat2desk_message(client_id, channel_id, response_content):
     logger.debug(f"Intentando enviar mensaje: client_id={client_id}, channel_id={channel_id}, response_content={response_content}")
-
 
     if not client_id:
         logger.error("client_id es None o vacío")
@@ -460,28 +465,44 @@ async def send_chat2desk_message(client_id, channel_id, response_content):
             logger.error(f"No se pudo convertir response_content a string: {e}")
             return None
 
+    api_token = os.getenv("CHAT2DESK_API_TOKEN")
+    if not api_token:
+        logger.error("El token de API de Chat2Desk no está configurado.")
+        return None
+
     url = "https://api.chat2desk.com.mx/v1/messages"
     headers = {
-        "Authorization": os.getenv("CHAT2DESK_API_TOKEN"),  # Reemplaza 'your_api_token' con tu token real de la API
+        "Authorization": api_token,
         "Content-Type": "application/json"
     }
 
-    # Asumiendo que el "wa_direct" es el transporte correcto para WhatsApp
     data = {
         "client_id": client_id,
         "channel_id": channel_id,
-        "transport": "wa_direct",  # Indicando que el transporte es WhatsApp directo
-        "text": response_content  # El mensaje de texto que se enviará
+        "transport": "wa_direct",
+        "text": response_content
     }
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=data, headers=headers)
+            response = await client.post(url, json=data, headers=headers, timeout=10)
+
+        if response is None:
+            logger.error("No se recibió respuesta de Chat2Desk.")
+            return None
+        if response.text is None:
+            logger.error("response.text es None, no se puede procesar.")
+            return None
+
         logger.info(f"Respuesta de Chat2Desk: {response.status_code} - {response.text}")
         return response
-    except Exception as e:
-        logger.error(f"Error al enviar mensaje a Chat2Desk: {str(e)}")
+    except httpx.RequestError as e:
+        logger.error(f"Error en la solicitud HTTP a Chat2Desk: {str(e)}")
         return None
+    except Exception as e:
+        logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
+        return None
+
 
 @router.get("/health")
 async def health():

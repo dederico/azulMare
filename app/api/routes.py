@@ -415,12 +415,16 @@ async def whatsapp(request: Request):
         channel_id = payload.get("channel_id") 
         print("channel_id",channel_id) # Extrae el channel_id del payload
         robot_answer = assistant_message.message
-        print("response_content",assistant_message.message) # Imprime la respuesta generada
+        logger.debug(f"Preparando para enviar: client_id={client_id}, channel_id={channel_id}, robot_answer={robot_answer}")
         if not client_id or not channel_id:
             logger.error("Error: client_id o channel_id no están definidos.")
             return JSONResponse(content={"error": "No se pudo obtener client_id o channel_id"}, status_code=400)
-
+        
         chat2desk_response = await send_chat2desk_message(client_id, channel_id, robot_answer)
+
+        if chat2desk_response is None:
+            logger.error("No se recibió respuesta de send_chat2desk_message")
+            return JSONResponse(content={"error": "Error al enviar mensaje"}, status_code=500)
 
         if chat2desk_response.status_code != 200:
             logger.error(f"Error al enviar mensaje a través de Chat2Desk: {chat2desk_response.text}")
@@ -433,7 +437,11 @@ async def whatsapp(request: Request):
         logger.error(f"Error al procesar el mensaje: {str(e)}")
         return JSONResponse(content={"error": "Error interno del servidor"}, status_code=500)
 
+
 async def send_chat2desk_message(client_id, channel_id, response_content):
+    logger.debug(f"Intentando enviar mensaje: client_id={client_id}, channel_id={channel_id}, response_content={response_content}")
+
+
     if not client_id:
         logger.error("client_id es None o vacío")
         return None
@@ -443,7 +451,15 @@ async def send_chat2desk_message(client_id, channel_id, response_content):
     if not response_content:
         logger.error("response_content es None o vacío")
         return None
-    
+
+    if not isinstance(response_content, str):
+        logger.warning(f"response_content no es una cadena: {type(response_content)}. Intentando convertir a string.")
+        try:
+            response_content = str(response_content)
+        except Exception as e:
+            logger.error(f"No se pudo convertir response_content a string: {e}")
+            return None
+
     url = "https://api.chat2desk.com.mx/v1/messages"
     headers = {
         "Authorization": os.getenv("CHAT2DESK_API_TOKEN"),  # Reemplaza 'your_api_token' con tu token real de la API
@@ -459,11 +475,13 @@ async def send_chat2desk_message(client_id, channel_id, response_content):
     }
 
     try:
-        response = await httpx.post(url, json=data, headers=headers)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=data, headers=headers)
+        logger.info(f"Respuesta de Chat2Desk: {response.status_code} - {response.text}")
         return response
     except Exception as e:
         logger.error(f"Error al enviar mensaje a Chat2Desk: {str(e)}")
-        raise e
+        return None
 
 @router.get("/health")
 async def health():

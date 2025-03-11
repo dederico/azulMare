@@ -61,7 +61,7 @@ from app.services.functions.implementations.save_selection import save_client_se
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
-from langchain.schema import HumanMessage, AIMessage
+from langchain.schema import HumanMessage, AIMessage, SystemMessage
 from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
 from twilio.base.exceptions import TwilioRestException
@@ -277,6 +277,9 @@ app = FastAPI(lifespan=lifespan)
 router = APIRouter()
 
 
+# Add this at the module level (outside of the function)
+processed_message_ids = set()
+
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
@@ -288,17 +291,40 @@ async def whatsapp(request: Request):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     try:
-        payload = await request.json()  # Ahora recibimos el payload como un JSON
+        payload = await request.json()  # Recibimos el payload como JSON
         print(f"Payload recibido: {payload}")
+        
+        # IMPORTANTE: Verificar si es un mensaje de un cliente o una respuesta del sistema
+        message_type = payload.get('type', '')
+        uid = payload.get('message_id')
+        
+        # Solo procesar mensajes que vienen del cliente (ignorar webhooks de mensajes enviados por el bot)
+        if message_type != 'from_client':
+            logger.debug(f"Ignorando mensaje con type={message_type} que no es from_client")
+            return JSONResponse(content={"status": True, "message": "Mensaje del sistema ignorado"})
+        
+        # Verificar si este mensaje ya ha sido procesado (deduplicación)
+        if uid in processed_message_ids:
+            logger.debug(f"Ignorando mensaje duplicado con id={uid}")
+            return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
+        
+        # Marcar este mensaje como procesado
+        processed_message_ids.add(uid)
+        
+        # Limitar el tamaño del conjunto para evitar crecimiento indefinido
+        if len(processed_message_ids) > 1000:
+            # Eliminar los elementos más antiguos (esto es simplificado, podría usar una cola)
+            processed_message_ids.clear()
+            processed_message_ids.add(uid)
+        
         # Extraer información del payload de Chat2Desk
         chat_id = payload.get('chat_id')
         from_number = payload.get('client', {}).get('phone')
         sender_name = payload.get('client', {}).get('name', 'Usuario')
         body = payload.get('text', '')
-        message_type = payload.get('type', '')  # El campo type no será siempre 'text'
-        uid = payload.get('message_id')
         channel_id = payload.get('channel_id')
         client_id = payload.get('client_id')
+        
         logger.debug(f"Datos recibidos: chat_id={chat_id}, sender_name={sender_name}, body={body}, "
                      f"from_number={from_number}, message_type={message_type}, uid={uid}")
 
@@ -308,22 +334,37 @@ async def whatsapp(request: Request):
         photo_url = None
         audio_url = None
 
-        # Verificación del tipo de mensaje recibido
-        if message_type == 'from_client':
-            # Este tipo indica que es un mensaje para el cliente
-            body = payload.get('text', '')
-        
-        elif payload.get("coordinates"):
+        # Verificación del tipo de contenido en el mensaje
+        # Verificación del tipo de contenido en el mensaje
+        if payload.get("coordinates"):
             # Procesamiento de ubicación
-            latitude, longitude = payload.get("coordinates").split(",")
-            try:
-                # Convertir la latitud y longitud a dirección
-                address = await latlong_to_address(float(latitude), float(longitude))
-                body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
-            except Exception as e:
-                logger.error(f"Error al convertir coordenadas a dirección: {str(e)}")
-                body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
-            logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
+            coords = payload.get("coordinates")
+            logger.debug(f"Formato de coordenadas recibidas: {coords}")
+            
+            # Manejar tanto formato con coma como con espacio
+            if isinstance(coords, str):
+                if "," in coords:
+                    latitude, longitude = coords.split(",")
+                elif " " in coords:
+                    longitude, latitude = coords.split(" ")  # Nota: en tu payload, primero viene la longitud
+                else:
+                    logger.error(f"Formato de coordenadas desconocido: {coords}")
+                    latitude, longitude = None, None
+                    
+                if latitude and longitude:
+                    try:
+                        # Asegurarse que las coordenadas son números flotantes
+                        latitude = float(latitude.strip())
+                        longitude = float(longitude.strip())
+                        
+                        # Convertir la latitud y longitud a dirección
+                        address = await latlong_to_address(latitude, longitude)
+                        body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
+                    except Exception as e:
+                        logger.error(f"Error al convertir coordenadas a dirección: {str(e)}")
+                        body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
+                    
+                    logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
 
         elif payload.get("audio"):
             # Procesamiento de audio
@@ -375,6 +416,14 @@ async def whatsapp(request: Request):
     except KeyError as e:
         logger.error(f"Falta el parámetro requerido: {e}")
         return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
+    except Exception as e:
+        logger.error(f"Error al procesar el payload: {str(e)}")
+        return JSONResponse(content={"error": f"Error al procesar el payload: {str(e)}"}, status_code=400)
+
+    # Validación básica para evitar procesar mensajes mal formados
+    if not from_number or not body:
+        logger.warning("Mensaje recibido sin número de teléfono o cuerpo del mensaje")
+        return JSONResponse(content={"status": False, "error": "Datos incompletos"}, status_code=400)
 
     # Crear o actualizar la sesión del usuario
     if from_number not in user_sessions:
@@ -388,42 +437,39 @@ async def whatsapp(request: Request):
     try:
         logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
         
-        # Obtener tanto mensajes inbound como outbound (de usuario y asistente)
-        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='desc', limit=50) or []
-
-        # Solo añadir al historial si no es un mensaje duplicado
+        # Obtener mensajes ordenados por tiempo (los más antiguos primero)
+        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        
+        # Limpiar el historial antes de agregar mensajes para evitar duplicados
+        conversation_history.messages.clear()
+        
+        # Añadir los mensajes al historial en el orden correcto
         for msg in messages_db:
-            role = "assistant" if msg.direction == "outbound" else "user"
-            
-            # Si el mensaje del usuario no está en el historial, añadirlo
-            if role == "user" and msg.message not in [m['content'] for m in conversation_history.messages]:
+            if msg.direction == "inbound":
                 conversation_history.add_user_message(msg.message)
-                logger.debug(f"Mensaje recuperado para historial (usuario): {msg.message}")
-            
-            # Si el mensaje del asistente no está en el historial, añadirlo
-            elif role == "assistant" and msg.message not in [m['content'] for m in conversation_history.messages]:
+                logger.debug(f"Mensaje histórico (usuario): {msg.message[:30]}...")
+            elif msg.direction == "outbound":
                 conversation_history.add_ai_message(msg.message)
-                logger.debug(f"Mensaje recuperado para historial (asistente): {msg.message}")
+                logger.debug(f"Mensaje histórico (asistente): {msg.message[:30]}...")
             
     except Exception as e:
-        logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
+        logger.error(f"Error al recuperar mensajes históricos: {str(e)}")
 
-
-    # Agregar mensaje de usuario al historial y guardar en la base de datos
+    # Agregar mensaje actual del usuario al historial y guardarlo en la base de datos
     conversation_history.add_user_message(body)
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        senderName="User",
+        senderName=sender_name,
         message=body,
         number=from_number,
         uid=uid,
-        direction="inbound",  # Aseguramos que sea un mensaje de usuario (inbound)
-        mtype="text",  # Aquí "text" es el tipo general de mensaje
-        source="Whatsapp",
-        latitude=latitude,  # Guardar latitud si está disponible
-        longitude=longitude  # Guardar longitud si está disponible
+        direction="inbound",
+        mtype="text",
+        source="whatsapp",
+        latitude=latitude,
+        longitude=longitude
     )
-    logger.debug(f"Ingresando mensaje del usuario: {user_message.message} con dirección {user_message.direction}")
+    logger.debug(f"Guardando mensaje del usuario en BD: {body[:30]}...")
     db.Insert(user_message)
     
     mexico_tz = pytz.timezone('America/Mexico_City')
@@ -454,34 +500,34 @@ async def whatsapp(request: Request):
         # Procesar la imagen si está disponible
         if 'image_description' in locals() and image_description:
             image_message = f"[Imagen recibida. Descripción: {image_description}]"
-            conversation_history.add_user_message(image_message)
-            conversation_history.add_ai_message("Porfavor, analiza y comenta sobre la imagen en tu proxima respuesta.")
+            # No es necesario añadirlo otra vez ya que el cuerpo del mensaje ya contiene esta info
+            # conversation_history.add_user_message(image_message)
 
         # Formatear el historial de mensajes para el modelo
         formatted_history = [
             {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
-            else {"role": "system", "content": message.content} if isinstance(message, AIMessage)
+            else {"role": "system", "content": message.content} if isinstance(message, SystemMessage)
             else {"role": "assistant", "content": message.content}
             for message in conversation_history.messages
         ]
-        logger.debug(f"Historial formateado para el modelo: {formatted_history}")
-
+        
         # Convertir formatted_history en un solo string para user_input
         user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
-        logger.debug(f"Input concatenado para generate_response: {user_input}")
+        logger.debug(f"Input preparado para el modelo (primeros 100 caracteres): {user_input[:100]}...")
 
-        # Generar la respuesta del modelo usando el string completo de user_input
+        # Generar la respuesta del modelo usando el historial completo
         model_response = llm_service.generate_response(user_input=user_input)
         response_content = ""
         async for response in model_response:
             response_content += str(response)
-        logger.debug(f"Respuesta parcial: {response_content}")
-
+            
+        # Asegurar que response_content sea un string
         if isinstance(response_content, list):
             response_content = " ".join([str(item) for item in response_content])
         elif not isinstance(response_content, str):
             response_content = str(response_content)
 
+        # Guardar la respuesta en el historial y en la base de datos
         conversation_history.add_ai_message(response_content)
         assistant_message = Message(
             time=current_datetime,
@@ -489,20 +535,21 @@ async def whatsapp(request: Request):
             message=response_content,
             number=from_number,
             uid=uid,
-            direction="outbound",  # Mensaje del asistente
-            mtype="text",  # Se mantiene como "text" en el tipo de mensaje
-            source="Whatsapp"
+            direction="outbound",
+            mtype="text",
+            source="whatsapp"
         )
+        logger.debug(f"Guardando respuesta del asistente en BD: {response_content[:30]}...")
         db.Insert(assistant_message)
 
     except Exception as e:
-        logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
-        return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
+        logger.error(f"Error al generar la respuesta: {str(e)}")
+        return JSONResponse(content={"error": f"Error al generar respuesta: {str(e)}"}, status_code=500)
     
-    api_token = os.getenv("CHAT2DESK_API_TOKEN")
-    # Enviar la respuesta por Chat2Desk
+    # Enviar la respuesta a través de Chat2Desk
     try:
-        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"  # URL de Chat2Desk
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
         
         headers = {
             "Authorization": api_token,
@@ -515,20 +562,22 @@ async def whatsapp(request: Request):
             "transport": "wa_direct",
             "text": response_content
         }
+        
         response = requests.post(chat2desk_url, json=data, headers=headers)
         
-        print("Esto estoy enviando a Chat2Desk: ",response)
-        
         if response.status_code == 200:
-            logger.debug(f"Mensaje enviado con éxito a Chat2Desk: {response_content}")
+            logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
             content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
         else:
-            logger.error(f"Error al enviar mensaje a Chat2Desk: {response.text}")
-            content = {"status": False, "error": "Error al enviar mensaje a Chat2Desk"}
+            logger.error(f"Error al enviar mensaje a Chat2Desk: {response.status_code} - {response.text}")
+            content = {"status": False, "error": f"Error al enviar mensaje: {response.status_code}"}
 
     except requests.RequestException as e:
-        logger.error(f"Error al enviar mensaje a Chat2Desk: {str(e)}")
-        content = {"status": False, "error": f"No se pudo enviar el mensaje a Chat2Desk: {str(e)}"}
+        logger.error(f"Error de conexión con Chat2Desk: {str(e)}")
+        content = {"status": False, "error": f"Error de conexión: {str(e)}"}
+    except Exception as e:
+        logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
+        content = {"status": False, "error": f"Error inesperado: {str(e)}"}
 
     return JSONResponse(content=content)
 

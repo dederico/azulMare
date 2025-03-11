@@ -142,11 +142,11 @@ import base64
 import os
 from app.util.logger import logger
 
-async def save_client_selection(phone_number: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str, selection8: str = None):
+async def save_client_selection(yoga_number: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str, selection8: str = None):
     """Guardar la información de las preguntas según las respuestas del cliente.
 
     Args:
-        phone_number (string): El payload completo recibido del webhook.
+        yoga_number (string): El número de teléfono del cliente.
         selection1 (string): Respuesta a la pregunta 1.
         selection2 (string): Respuesta a la pregunta 2.
         selection3 (string): Respuesta a la pregunta 3.
@@ -159,88 +159,69 @@ async def save_client_selection(phone_number: str, selection1: str, selection2: 
     Returns:
         string: Mensaje de confirmación con el número de folio.
     """
-    # Extraer el número de teléfono del payload
+    logger.debug("Iniciando la función save_client_selection")
     
-    if not phone_number:
+    if not yoga_number:
         logger.error("No se pudo obtener el número de teléfono del cliente.")
         return "Error: No se pudo obtener el número de teléfono"
 
-    logger.info(f"Número del cliente: {phone_number}")
+    logger.info(f"Número del cliente: {yoga_number}")
 
-    # Fetch the token
-    token = get_token()
-
-    # Save selections for each question if they are not empty
-    for i, selection in enumerate([selection1, selection2, selection3, selection4, selection5, selection6, selection7, selection8], start=1):
-        if selection:
-            await find_row_and_update_selection(phone_number, i, selection)
-
+    try: 
+        # Fetch the token
+        token = get_token()
+        logger.debug("Token obtenido correctamente")
+    except Exception as e:
+        logger.error(f"Error al obtener token: {e}")
+        return f"Error al obtener token: {str(e)}"
+    
+    # OMITIMOS TEMPORALMENTE LA PARTE DE GOOGLE SHEETS
+    logger.debug("SKIPPING Google Sheets update temporarily")
+    
     # Check if all required fields are filled
     required_fields = [selection1, selection2, selection3, selection4, selection5, selection6, selection7]
     if all(required_fields):
-        # Prepare the JSON payload
-        payload = {
-            "idAsunto": selection1,
-            "nombreCiudadano": f"{selection2} {selection3}",
-            "numWhastApp": phone_number,
-            "anonimo": False,
-            "detalleSolicitud": selection4,
-            "_lat": "0",
-            "_long": "0",
-            "_direccionReporte": {
-                "calle": selection5,
-                "noExt": selection6,
-                "colonia": selection7,
-                "entreCalles": "Aramberri",
-                "referencias": selection4
-            }
-        }
-
-        # Manejar la imagen (selection8) si está presente
-        if selection8:
-            image_path = None
-            if selection8.startswith('http'):
-                # Si es una URL, descargar la imagen
-                response = requests.get(selection8)
-                if response.status_code == 200:
-                    # Guardar la imagen localmente
-                    image_path = f"temp_image_{phone_number}.jpg"
-                    with open(image_path, 'wb') as f:
-                        f.write(response.content)
-            else:
-                # Si es una ruta local, usarla directamente
-                image_path = selection8
-
-            # Añadir la imagen al payload si existe
-            if image_path:
-                with open(image_path, "rb") as image_file:
-                    encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                    payload["imagen"] = encoded_string
-
-                # Limpiar el archivo temporal si se creó
-                if image_path.startswith('temp_image_'):
-                    os.remove(image_path)
-
-        logger.debug(f"Payload preparado: {payload}")
-
-        # Prepare the headers
-        headers = {
-            "accept": "text/plain",
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        
-        # Send the JSON payload via POST to the endpoint
         try:
+            logger.debug("Preparando payload para Neurocity")
+            # Prepare the JSON payload
+            payload = {
+                "idAsunto": selection1,
+                "nombreCiudadano": f"{selection2} {selection3}",
+                "numWhastApp": yoga_number,
+                "anonimo": False,
+                "detalleSolicitud": selection4,
+                "_lat": "0",
+                "_long": "0",
+                "_direccionReporte": {
+                    "calle": selection5,
+                    "noExt": selection6,
+                    "colonia": selection7,
+                    "entreCalles": "Aramberri",
+                    "referencias": selection4
+                }
+            }
+
+            # OMITIMOS TEMPORALMENTE EL MANEJO DE IMÁGENES
+            logger.debug(f"Payload preparado: {payload}")
+
+            # Prepare the headers
+            headers = {
+                "accept": "text/plain",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            
+            # Send the JSON payload via POST to the endpoint
+            logger.debug(f"Enviando payload a {POST_ENDPOINT}")
             response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
-            response.raise_for_status()  # Raise an HTTPError on bad status
+            response.raise_for_status()
             logger.info(f"POST to {POST_ENDPOINT} successful. Response: {response.status_code} {response.text}")
             folio = response.text.strip()
             return f"Selecciones guardadas correctamente. Número de folio: {folio}"
-        except requests.exceptions.RequestException as e:
-            logger.error(f"POST to {POST_ENDPOINT} failed: {e}")
-            return f"Error al guardar las selecciones: {str(e)}"
+        except Exception as e:
+            logger.error(f"Error al enviar a Neurocity: {e}", exc_info=True)
+            return f"Error al procesar la solicitud: {str(e)}"
     else:
-        # If not all required fields are filled, return a status message
         filled_fields = sum(1 for field in required_fields if field)
+        logger.warning(f"Información incompleta: {filled_fields} de 7 campos requeridos han sido llenados")
         return f"Información parcialmente guardada. {filled_fields} de 7 campos requeridos han sido llenados."

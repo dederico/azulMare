@@ -480,10 +480,8 @@ async def whatsapp(request: Request):
     
     try:
         # Crear el prompt con el historial de mensajes
-        system_prompt = system_message.format(
-            customer_name=sender_name,
-            call_sid=uid,
-            date2=date_string,
+        system_prompt = system_message.format(customer_name=sender_name,call_sid=uid,date2=date_string,
+            yoga_number=user_message.number,
             now=hour,
             folio=folio,
             address=address if 'address' in locals() else "No he recibido ubicación",

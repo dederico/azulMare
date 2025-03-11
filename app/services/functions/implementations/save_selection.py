@@ -1,13 +1,16 @@
 import asyncio
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from twilio.rest import Client
 import os
 import re
 import requests
 import json
 import base64
 import logging
-from app.util.logger import logger
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 def get_token():
     req_url = "https://api.neurocity.solutions/api/auth/authenticate"
@@ -35,43 +38,48 @@ def get_token():
     else:
         raise Exception(f"Error en la solicitud: {response.status_code}, {response.text}")
 
+# Ejemplo de cómo obtener el token
+try:
+    token = get_token()
+    print(f"Token obtenido: {token}")
+except Exception as e:
+    print(f"Error al obtener el token: {e}")
+
+
+# Twilio credentials
+account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+
+# Hardcoded POST endpoint
+#POST_ENDPOINT = "https://api-desktop.pau.zone/api-jex/caso/newCasoSin"
+#POST_ENDPOINT = "http://api_ac.evolutek.info/api/Reportes/Nuevo/ddf504aa-d6b1-4fa2-bb6d-4ad5d197eea5"
+POST_ENDPOINT="https://api.neurocity.solutions/api/solicitud/create"
+# Values for the payload
+TIPO = "Queja"
+CONSEJERIA_ID = "[\"fef66114-d97c-4f25-ad10-fd8af1ebef71\"]"
+ESTADO = 155
+HTML_CONTENT = """
+<div id="canvas_div_pdf" class="canvas_div_pdf" style="margin-top:0px;">
+  <img src="assets/media/bg/300a.jpg" width="400px" alt="ENCABEZADO"/>
+  <h2>MINUTA DE INICIO DE CASO</h2>
+  <p>Por medio de la presente se hace constar la apertura de caso del ciudadano <span class="kt-font-brand">Anónimo</span></p>
+  <p>Canal: <span class="kt-font-brand">Presencial</span></p>
+  <p>La descripción del caso general se detalla a continuación:</p>
+  <ul><li></li></ul>
+  <h3>Solución Propuesta</h3>
+  <p>Se indica.........</p>
+  <img src="assets/media/bg/300b.jpg" width="400px" alt="ENCABEZADO"/>
+</div>
+"""
+
+# Initialize the Twilio client
+client = Client(account_sid, auth_token)
+
 # Function to clean phone numbers
 def clean_phone_number(phone_number: str) -> str:
     return re.sub(r'\D', '', phone_number)
 
-async def get_selection_value(phone_number, question_number):
-    """Obtiene el valor actual de una selección para un número de teléfono específico"""
-    try:
-        # Lógica similar a find_row_and_update_selection pero solo para lectura
-        SERVICE_ACCOUNT_FILE = "credentials.json"
-        SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-        SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-        
-        credentials = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=SCOPES
-        )
-        service = build("sheets", "v4", credentials=credentials)
-        
-        sheet = service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range="Sheet1").execute()
-        values = result.get("values", [])
-        
-        cleaned_phone_number = clean_phone_number(phone_number)
-        
-        for i, row in enumerate(values):
-            if i == 0:
-                continue
-            if len(row) > 1 and clean_phone_number(row[1]) == cleaned_phone_number:
-                column_index = 3 + (question_number - 1)
-                if len(row) > column_index and row[column_index]:
-                    return row[column_index]
-                return ""
-        
-        return ""
-    except Exception as e:
-        logger.error(f"Error obteniendo selección {question_number} para {phone_number}: {str(e)}")
-        return ""
-    
 async def find_row_and_update_selection(phone_number, question_number, selection_text):
     logger.debug(f"Entering find_row_and_update_selection with phone_number: {phone_number}, question_number: {question_number}, selection_text: {selection_text}")
 
@@ -82,7 +90,7 @@ async def find_row_and_update_selection(phone_number, question_number, selection
     SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
     try:
-        # Authenticate and create the service
+    # Authenticate and create the service
         credentials = service_account.Credentials.from_service_account_file(
             SERVICE_ACCOUNT_FILE, scopes=SCOPES
         )
@@ -94,16 +102,14 @@ async def find_row_and_update_selection(phone_number, question_number, selection
 
     # Read the data from the sheet
     sheet = service.spreadsheets()
-    SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-    
     try:
+
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range="Sheet1").execute()
         values = result.get("values", [])
         logger.debug(f"Successfully read {len(values)} rows from the sheet")
     except Exception as e:
         logger.error(f"Error reading data from Google Sheet: {str(e)}")
         return
-        
     logger.debug(f"Searching for phone number: {phone_number} in the sheet.")
     
     # Clean the phone number
@@ -126,59 +132,48 @@ async def find_row_and_update_selection(phone_number, question_number, selection
                 valueInputOption="USER_ENTERED",
                 body=update_body,
             ).execute()
-            logger.info(f"Updated row {i + 1} with selection {selection_text} for question {question_number}")
+            print(f"Updated row {i + 1} with selection {selection_text} for question {question_number}")
             return
 
-    logger.warning(f"Phone number {phone_number} not found in the sheet.")
+    print("Phone number not found.")
 
-async def save_client_selection(phone_number: str, selection1: str = "", selection2: str = "", selection3: str = "", selection4: str = "", selection5: str = "", selection6: str = "", selection7: str = "", selection8: str = None):
+import requests
+import base64
+import os
+from app.util.logger import logger
+
+async def save_client_selection(phone_number: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str, selection8: str = None):
     """Guardar la información de las preguntas según las respuestas del cliente.
 
     Args:
-        phone_number (string): El número de teléfono del cliente.
-        selection1 (string, optional): Valor de tipo de reporte (1-12). Por defecto "".
-        selection2 (string, optional): Nombre del cliente. Por defecto "".
-        selection3 (string, optional): Apellido del cliente. Por defecto "".
-        selection4 (string, optional): Razón del reporte. Por defecto "".
-        selection5 (string, optional): Calle del reporte. Por defecto "".
-        selection6 (string, optional): Número del reporte. Por defecto "".
-        selection7 (string, optional): Colonia del reporte. Por defecto "".
-        selection8 (string, optional): URL o ruta de la imagen para la pregunta 8. Por defecto None.
+        phone_number (string): El payload completo recibido del webhook.
+        selection1 (string): Respuesta a la pregunta 1.
+        selection2 (string): Respuesta a la pregunta 2.
+        selection3 (string): Respuesta a la pregunta 3.
+        selection4 (string): Respuesta a la pregunta 4.
+        selection5 (string): Respuesta a la pregunta 5.
+        selection6 (string): Respuesta a la pregunta 6.
+        selection7 (string): Respuesta a la pregunta 7.
+        selection8 (string, optional): URL o ruta de la imagen para la pregunta 8.
 
     Returns:
         string: Mensaje de confirmación con el número de folio.
     """
+    # Extraer el número de teléfono del payload
+    
     if not phone_number:
         logger.error("No se pudo obtener el número de teléfono del cliente.")
         return "Error: No se pudo obtener el número de teléfono"
 
-    # Limpiamos el número de teléfono (removemos formato Chat2Desk si existe)
-    cleaned_phone_number = clean_phone_number(phone_number)
-    logger.info(f"Procesando selecciones para el cliente con número: {cleaned_phone_number}")
+    logger.info(f"Número del cliente: {phone_number}")
 
-    # Validar que todas las selecciones sean strings
-    selections = [selection1, selection2, selection3, selection4, selection5, selection6, selection7]
-    for i, selection in enumerate(selections):
-        if selection is None:
-            selections[i] = ""
-    
-    selection1, selection2, selection3, selection4, selection5, selection6, selection7 = selections
-    
     # Fetch the token
-    try:
-        token = get_token()
-        logger.debug("Token de autenticación obtenido correctamente")
-    except Exception as e:
-        logger.error(f"Error al obtener el token de autenticación: {e}")
-        return f"Error: {str(e)}"
+    token = get_token()
 
     # Save selections for each question if they are not empty
     for i, selection in enumerate([selection1, selection2, selection3, selection4, selection5, selection6, selection7, selection8], start=1):
         if selection:
-            await find_row_and_update_selection(cleaned_phone_number, i, selection)
-
-    # Log all values being sent to function
-    logger.debug(f"Valores enviados a save_client_selection: phone_number={phone_number}, selection1={selection1}, selection2={selection2}, selection3={selection3}, selection4={selection4}, selection5={selection5}, selection6={selection6}, selection7={selection7}, selection8={selection8}")
+            await find_row_and_update_selection(phone_number, i, selection)
 
     # Check if all required fields are filled
     required_fields = [selection1, selection2, selection3, selection4, selection5, selection6, selection7]
@@ -187,7 +182,7 @@ async def save_client_selection(phone_number: str, selection1: str = "", selecti
         payload = {
             "idAsunto": selection1,
             "nombreCiudadano": f"{selection2} {selection3}",
-            "numWhastApp": cleaned_phone_number,
+            "numWhastApp": phone_number,
             "anonimo": False,
             "detalleSolicitud": selection4,
             "_lat": "0",
@@ -206,37 +201,25 @@ async def save_client_selection(phone_number: str, selection1: str = "", selecti
             image_path = None
             if selection8.startswith('http'):
                 # Si es una URL, descargar la imagen
-                try:
-                    response = requests.get(selection8)
-                    if response.status_code == 200:
-                        # Guardar la imagen localmente
-                        image_path = f"temp_image_{cleaned_phone_number}.jpg"
-                        with open(image_path, 'wb') as f:
-                            f.write(response.content)
-                        logger.debug(f"Imagen descargada correctamente desde {selection8}")
-                    else:
-                        logger.error(f"Error al descargar imagen: HTTP {response.status_code}")
-                except Exception as e:
-                    logger.error(f"Error al descargar imagen: {str(e)}")
+                response = requests.get(selection8)
+                if response.status_code == 200:
+                    # Guardar la imagen localmente
+                    image_path = f"temp_image_{phone_number}.jpg"
+                    with open(image_path, 'wb') as f:
+                        f.write(response.content)
             else:
                 # Si es una ruta local, usarla directamente
                 image_path = selection8
-                logger.debug(f"Usando imagen local: {image_path}")
 
             # Añadir la imagen al payload si existe
             if image_path:
-                try:
-                    with open(image_path, "rb") as image_file:
-                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                        payload["imagen"] = encoded_string
-                        logger.debug("Imagen codificada y añadida al payload")
+                with open(image_path, "rb") as image_file:
+                    encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                    payload["imagen"] = encoded_string
 
-                    # Limpiar el archivo temporal si se creó
-                    if image_path.startswith('temp_image_'):
-                        os.remove(image_path)
-                        logger.debug(f"Archivo temporal {image_path} eliminado")
-                except Exception as e:
-                    logger.error(f"Error al procesar la imagen: {str(e)}")
+                # Limpiar el archivo temporal si se creó
+                if image_path.startswith('temp_image_'):
+                    os.remove(image_path)
 
         logger.debug(f"Payload preparado: {payload}")
 
@@ -248,7 +231,6 @@ async def save_client_selection(phone_number: str, selection1: str = "", selecti
         }
         
         # Send the JSON payload via POST to the endpoint
-        POST_ENDPOINT = "https://api.neurocity.solutions/api/solicitud/create"
         try:
             response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
             response.raise_for_status()  # Raise an HTTPError on bad status
@@ -261,5 +243,4 @@ async def save_client_selection(phone_number: str, selection1: str = "", selecti
     else:
         # If not all required fields are filled, return a status message
         filled_fields = sum(1 for field in required_fields if field)
-        logger.warning(f"Información incompleta: {filled_fields} de 7 campos requeridos han sido llenados")
         return f"Información parcialmente guardada. {filled_fields} de 7 campos requeridos han sido llenados."

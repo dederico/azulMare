@@ -57,7 +57,7 @@ from app.models.Message import Message
 from app.models.Config import Config
 from app.util.factory import Hooks
 from app.util.database import LocalStorage
-from app.services.functions.implementations.save_selection import save_client_selection, find_row_and_update_selection, get_selection_value
+from app.services.functions.implementations.save_selection import save_client_selection, find_row_and_update_selection
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
@@ -471,62 +471,23 @@ async def whatsapp(request: Request):
     )
     logger.debug(f"Guardando mensaje del usuario en BD: {body[:30]}...")
     db.Insert(user_message)
-    # NUEVO: Obtener selecciones existentes de la base de datos
-    try:
-        selection1 = await get_selection_value(from_number, 1) or ""
-        selection2 = await get_selection_value(from_number, 2) or ""
-        selection3 = await get_selection_value(from_number, 3) or ""
-        selection4 = await get_selection_value(from_number, 4) or ""
-        selection5 = await get_selection_value(from_number, 5) or ""
-        selection6 = await get_selection_value(from_number, 6) or ""
-        selection7 = await get_selection_value(from_number, 7) or ""
-        selection8 = await get_selection_value(from_number, 8) or None
-            
-        logger.debug(f"Valores de selecciones recuperados: {selection1}, {selection2}, {selection3}, {selection4}, {selection5}, {selection6}, {selection7}")
-            
-        # Solo intenta obtener el folio si hay al menos algunos datos
-        if any([selection1, selection2, selection3, selection4, selection5, selection6, selection7]):
-            folio_result = await save_client_selection(from_number, selection1, selection2, selection3, selection4, selection5, selection6, selection7, selection8)
-            folio = folio_result if "folio" in folio_result.lower() else "Pendiente de completar información"
-        else:
-            folio = "Pendiente de completar información"
-    except Exception as e:
-        logger.error(f"Error obteniendo selecciones existentes: {str(e)}")
-        folio = "Error al recuperar información"
-        selection1 = selection2 = selection3 = selection4 = selection5 = selection6 = selection7 = ""
-        selection8 = None
-
+    
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
     hour = current_datetime.strftime("%I:%M:%S %p")
     folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
     
-    # Preparar información para el prompt del sistema
-    selections_info = f"""
-Información actual del ticket:
-- Tipo de reporte: {selection1 or "No definido"}
-- Nombre: {selection2 or "No definido"}
-- Apellido: {selection3 or "No definido"}
-- Razón: {selection4 or "No definido"}
-- Calle: {selection5 or "No definido"}
-- Número: {selection6 or "No definido"}
-- Colonia: {selection7 or "No definido"}
-- Imagen: {"Proporcionada" if selection8 else "No proporcionada"}
-- Estado del folio: {folio}
-        """
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(
-            phone_number = from_number,
             customer_name=sender_name,
             call_sid=uid,
             date2=date_string,
             now=hour,
             folio=folio,
             address=address if 'address' in locals() else "No he recibido ubicación",
-            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
-            selections_info=selections_info
+            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
         )
 
         llm_service = OpenAIService(

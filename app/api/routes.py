@@ -276,6 +276,7 @@ app = FastAPI(lifespan=lifespan)
 
 router = APIRouter()
 
+
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
@@ -287,88 +288,149 @@ async def whatsapp(request: Request):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     try:
-        payload = await request.json()
-        logger.debug(f"Payload recibido: {payload}")
-        
+        payload = await request.json()  # Ahora recibimos el payload como un JSON
+        print(f"Payload recibido: {payload}")
         # Extraer información del payload de Chat2Desk
         chat_id = payload.get('chat_id')
         from_number = payload.get('client', {}).get('phone')
         sender_name = payload.get('client', {}).get('name', 'Usuario')
         body = payload.get('text', '')
-        message_type = payload.get('type', 'text')
+        message_type = payload.get('type', '')  # El campo type no será siempre 'text'
         uid = payload.get('message_id')
+        channel_id = payload.get('channel_id')
+        client_id = payload.get('client_id')
+        logger.debug(f"Datos recibidos: chat_id={chat_id}, sender_name={sender_name}, body={body}, "
+                     f"from_number={from_number}, message_type={message_type}, uid={uid}")
 
-        logger.debug(f"Datos extraídos: chat_id={chat_id}, sender_name={sender_name}, body={body}, "
-                     f"from_number={from_number}, message_type={message_type}")
-
-        mexico_tz = pytz.timezone('America/Mexico_City')
-        current_datetime = datetime.now(mexico_tz)
-        date_string = current_datetime.strftime("%Y-%m-%d")
-        hour = current_datetime.strftime("%I:%M:%S %p")
-        folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
-
-        llm_service = OpenAIService(
-            config=config,
-            api_key=OPENAI_API_KEY,
-            system=system_message.format(date2=date_string, now=hour, folio=folio),
-            function_manager=function_manager
-        )
-        
-        # Variables para ubicación e imagen
+        # Variables para ubicación, imagen y audio
         address = None
         latitude, longitude = None, None
+        photo_url = None
+        audio_url = None
+
+        # Verificación del tipo de mensaje recibido
+        if message_type == 'from_client':
+            # Este tipo indica que es un mensaje para el cliente
+            body = payload.get('text', '')
         
-        if message_type == "location":
-            # Procesar mensaje de ubicación si es necesario
-            pass
-        elif message_type == "audio":
-            # Procesar mensaje de audio si es necesario
-            pass
-        elif message_type == "image":
-            # Procesar mensaje de imagen si es necesario
-            pass
+        elif payload.get("coordinates"):
+            # Procesamiento de ubicación
+            latitude, longitude = payload.get("coordinates").split(",")
+            try:
+                # Convertir la latitud y longitud a dirección
+                address = await latlong_to_address(float(latitude), float(longitude))
+                body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
+            except Exception as e:
+                logger.error(f"Error al convertir coordenadas a dirección: {str(e)}")
+                body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
+            logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
+
+        elif payload.get("audio"):
+            # Procesamiento de audio
+            audio_url = payload.get("audio")
+            body = TranscribeOGG(audio_url, config["language"])
+            logger.debug(f"Audio transcrito: {body}")
+
+        elif payload.get("photo"):
+            # Procesamiento de imagen
+            photo_url = payload.get("photo")
+            if photo_url:
+                try:
+                    # Descargar la imagen 
+                    response = requests.get(photo_url)
+                    image_content = BytesIO(response.content)
+                    # Analizar la imagen
+                    image_analysis = client.chat.completions.create(
+                        model="gpt-4o",  # Asegúrate de usar el modelo correcto
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Describe esta imagen en detalle."},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
+                        max_tokens=300,
+                    )
+                    # Obtener la descripción de la imagen
+                    image_description = image_analysis.choices[0].message.content
+                    body = f"Imagen recibida. Descripción: {image_description}"
+                    logger.debug(f"Descripción de la imagen: {image_description}")
+                except requests.RequestException as e:
+                    logger.error(f"Error al descargar la imagen: {str(e)}")
+                    body = "Se recibió una imagen, pero no se pudo descargar. Por favor, intenta enviarla de nuevo."
+                except Exception as e:
+                    logger.error(f"Error al analizar la imagen: {str(e)}")
+                    body = "Se recibió una imagen, pero hubo un problema al analizarla. El equipo técnico ha sido notificado."
+            else:
+                body = "Se recibió una notificación de imagen, pero no se encontró la URL de la imagen."
+                logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
             
-    except Exception as e:
-        logger.error(f"Error al procesar el payload: {str(e)}")
-        return JSONResponse(content={"error": "Error al procesar el payload"}, status_code=400)
+    except KeyError as e:
+        logger.error(f"Falta el parámetro requerido: {e}")
+        return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
 
     # Crear o actualizar la sesión del usuario
     if from_number not in user_sessions:
         logger.debug(f"Creando nueva sesión para el usuario: {from_number}")
         user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
     session = user_sessions[from_number]
-    session.update_activity()
+    session.update_activity()  # Actualiza la marca de actividad
     conversation_history = session.history
 
     # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
     try:
         logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
-        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        
+        # Obtener tanto mensajes inbound como outbound (de usuario y asistente)
+        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='desc', limit=50) or []
+
+        # Solo añadir al historial si no es un mensaje duplicado
         for msg in messages_db:
             role = "assistant" if msg.direction == "outbound" else "user"
-            if role == "user":
+            
+            # Si el mensaje del usuario no está en el historial, añadirlo
+            if role == "user" and msg.message not in [m['content'] for m in conversation_history.messages]:
                 conversation_history.add_user_message(msg.message)
-            else:
+                logger.debug(f"Mensaje recuperado para historial (usuario): {msg.message}")
+            
+            # Si el mensaje del asistente no está en el historial, añadirlo
+            elif role == "assistant" and msg.message not in [m['content'] for m in conversation_history.messages]:
                 conversation_history.add_ai_message(msg.message)
-            logger.debug(f"Mensaje recuperado para historial: rol={role}, contenido={msg.message}")
+                logger.debug(f"Mensaje recuperado para historial (asistente): {msg.message}")
+            
     except Exception as e:
         logger.error(f"Error al recuperar mensajes históricos de la base de datos: {str(e)}")
+
 
     # Agregar mensaje de usuario al historial y guardar en la base de datos
     conversation_history.add_user_message(body)
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        senderName=sender_name,
+        senderName="User",
         message=body,
         number=from_number,
         uid=uid,
-        direction="inbound",
-        mtype=message_type,
+        direction="inbound",  # Aseguramos que sea un mensaje de usuario (inbound)
+        mtype="text",  # Aquí "text" es el tipo general de mensaje
         source="Whatsapp",
-        latitude=latitude,
-        longitude=longitude
+        latitude=latitude,  # Guardar latitud si está disponible
+        longitude=longitude  # Guardar longitud si está disponible
     )
+    logger.debug(f"Ingresando mensaje del usuario: {user_message.message} con dirección {user_message.direction}")
     db.Insert(user_message)
+    
+    mexico_tz = pytz.timezone('America/Mexico_City')
+    current_datetime = datetime.now(mexico_tz)
+    date_string = current_datetime.strftime("%Y-%m-%d")
+    hour = current_datetime.strftime("%I:%M:%S %p")
+    folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
     
     try:
         # Crear el prompt con el historial de mensajes
@@ -378,130 +440,170 @@ async def whatsapp(request: Request):
             date2=date_string,
             now=hour,
             folio=folio,
-            phone_number=from_number
+            address=address if 'address' in locals() else "No he recibido ubicación",
+            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
         )
-        
-        user_input = "\n".join([f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}" for msg in conversation_history.messages])
-        user_input += f"\nHuman: {body}"
 
-        logger.debug(f"Prompt generado: {user_input}")
+        llm_service = OpenAIService(
+            config=config,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            system=system_prompt,
+            function_manager=function_manager
+        )
 
-        # Generar la respuesta del modelo
+        # Procesar la imagen si está disponible
+        if 'image_description' in locals() and image_description:
+            image_message = f"[Imagen recibida. Descripción: {image_description}]"
+            conversation_history.add_user_message(image_message)
+            conversation_history.add_ai_message("Porfavor, analiza y comenta sobre la imagen en tu proxima respuesta.")
+
+        # Formatear el historial de mensajes para el modelo
+        formatted_history = [
+            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
+            else {"role": "system", "content": message.content} if isinstance(message, AIMessage)
+            else {"role": "assistant", "content": message.content}
+            for message in conversation_history.messages
+        ]
+        logger.debug(f"Historial formateado para el modelo: {formatted_history}")
+
+        # Convertir formatted_history en un solo string para user_input
+        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
+        logger.debug(f"Input concatenado para generate_response: {user_input}")
+
+        # Generar la respuesta del modelo usando el string completo de user_input
         model_response = llm_service.generate_response(user_input=user_input)
         response_content = ""
         async for response in model_response:
             response_content += str(response)
-        logger.debug(f"Respuesta del modelo: {response_content}")
+        logger.debug(f"Respuesta parcial: {response_content}")
 
-        if not response_content.strip():
-            logger.warning("La respuesta del modelo está vacía. Usando un mensaje predeterminado.")
-            response_content = "Lo siento, no pude generar una respuesta en este momento. Por favor, intenta de nuevo o contacta a un agente humano para asistencia."
+        if isinstance(response_content, list):
+            response_content = " ".join([str(item) for item in response_content])
+        elif not isinstance(response_content, str):
+            response_content = str(response_content)
 
         conversation_history.add_ai_message(response_content)
         assistant_message = Message(
-            time=current_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            time=current_datetime,
             senderName="Assistant",
             message=response_content,
             number=from_number,
             uid=uid,
-            direction="outbound",
-            mtype=message_type,
+            direction="outbound",  # Mensaje del asistente
+            mtype="text",  # Se mantiene como "text" en el tipo de mensaje
             source="Whatsapp"
         )
         db.Insert(assistant_message)
 
-        client_id = payload.get('client', {}).get('id')
-        print("client_id",client_id) # Extrae el client_id del payload
-        channel_id = payload.get("channel_id") 
-        print("channel_id",channel_id) # Extrae el channel_id del payload
-        robot_answer = assistant_message.message
-        logger.debug(f"Preparando para enviar: client_id={client_id}, channel_id={channel_id}, robot_answer={robot_answer}")
-        if not client_id or not channel_id:
-            logger.error("Error: client_id o channel_id no están definidos.")
-            return JSONResponse(content={"error": "No se pudo obtener client_id o channel_id"}, status_code=400)
-        
-        chat2desk_response = await send_chat2desk_message(client_id, channel_id, robot_answer)
-
-        if chat2desk_response is None:
-            logger.error("No se recibió respuesta de send_chat2desk_message")
-            return JSONResponse(content={"error": "Error al enviar mensaje"}, status_code=500)
-
-        if chat2desk_response.status_code != 200:
-            logger.error(f"Error al enviar mensaje a través de Chat2Desk: {chat2desk_response.text}")
-            return JSONResponse(content={"error": "Error al enviar mensaje"}, status_code=500)
-
-        logger.info(f"Mensaje enviado exitosamente a {from_number}")
-        return JSONResponse(content={"message": "Mensaje procesado y enviado con éxito"}, status_code=200)
-
     except Exception as e:
-        logger.error(f"Error al procesar el mensaje: {str(e)}")
-        return JSONResponse(content={"error": "Error interno del servidor"}, status_code=500)
-
-
-import os
-import httpx
-import logging
-
-logger = logging.getLogger(__name__)
-
-async def send_chat2desk_message(client_id, channel_id, response_content):
-    logger.debug(f"Intentando enviar mensaje: client_id={client_id}, channel_id={channel_id}, response_content={response_content}")
-
-    if not client_id:
-        logger.error("client_id es None o vacío")
-        return None
-    if not channel_id:
-        logger.error("channel_id es None o vacío")
-        return None
-    if not response_content:
-        logger.error("response_content es None o vacío")
-        return None
-
-    if not isinstance(response_content, str):
-        logger.warning(f"response_content no es una cadena: {type(response_content)}. Intentando convertir a string.")
-        try:
-            response_content = str(response_content)
-        except Exception as e:
-            logger.error(f"No se pudo convertir response_content a string: {e}")
-            return None
-
+        logger.error(f"Error al generar la respuesta del modelo: {str(e)}")
+        return JSONResponse(content={"error": "Error al generar respuesta"}, status_code=500)
+    
     api_token = os.getenv("CHAT2DESK_API_TOKEN")
-    if not api_token:
-        logger.error("El token de API de Chat2Desk no está configurado.")
-        return None
-
-    url = "https://api.chat2desk.com.mx/v1/messages"
-    headers = {
-        "Authorization": api_token,
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "client_id": client_id,
-        "channel_id": channel_id,
-        "transport": "wa_direct",
-        "text": response_content
-    }
-
+    # Enviar la respuesta por Chat2Desk
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=data, headers=headers, timeout=10)
+        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"  # URL de Chat2Desk
+        
+        headers = {
+            "Authorization": api_token,
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "client_id": client_id,
+            "channel_id": channel_id,
+            "transport": "wa_direct",
+            "text": response_content
+        }
+        response = requests.post(chat2desk_url, json=data, headers=headers)
+        
+        print("Esto estoy enviando a Chat2Desk: ",response)
+        
+        if response.status_code == 200:
+            logger.debug(f"Mensaje enviado con éxito a Chat2Desk: {response_content}")
+            content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
+        else:
+            logger.error(f"Error al enviar mensaje a Chat2Desk: {response.text}")
+            content = {"status": False, "error": "Error al enviar mensaje a Chat2Desk"}
 
-        if response is None:
-            logger.error("No se recibió respuesta de Chat2Desk.")
-            return None
-        if response.text is None:
-            logger.error("response.text es None, no se puede procesar.")
-            return None
+    except requests.RequestException as e:
+        logger.error(f"Error al enviar mensaje a Chat2Desk: {str(e)}")
+        content = {"status": False, "error": f"No se pudo enviar el mensaje a Chat2Desk: {str(e)}"}
 
-        logger.info(f"Respuesta de Chat2Desk: {response.status_code} - {response.text}")
-        return response
-    except httpx.RequestError as e:
-        logger.error(f"Error en la solicitud HTTP a Chat2Desk: {str(e)}")
-        return None
-    except Exception as e:
-        logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
-        return None
+    return JSONResponse(content=content)
+
+
+# def add_message_to_history(role: str, message_content: str, conversation_history):
+#     """Función para agregar mensajes al historial"""
+#     if role == "user":
+#         conversation_history.add_user_message(message_content)
+#     else:
+#         conversation_history.add_ai_message(message_content)
+
+# import os
+# import httpx
+# import logging
+
+# logger = logging.getLogger(__name__)
+
+# async def send_chat2desk_message(client_id, channel_id, response_content):
+#     logger.debug(f"Intentando enviar mensaje: client_id={client_id}, channel_id={channel_id}, response_content={response_content}")
+
+#     if not client_id:
+#         logger.error("client_id es None o vacío")
+#         return None
+#     if not channel_id:
+#         logger.error("channel_id es None o vacío")
+#         return None
+#     if not response_content:
+#         logger.error("response_content es None o vacío")
+#         return None
+
+#     if not isinstance(response_content, str):
+#         logger.warning(f"response_content no es una cadena: {type(response_content)}. Intentando convertir a string.")
+#         try:
+#             response_content = str(response_content)
+#         except Exception as e:
+#             logger.error(f"No se pudo convertir response_content a string: {e}")
+#             return None
+
+#     api_token = os.getenv("CHAT2DESK_API_TOKEN")
+#     if not api_token:
+#         logger.error("El token de API de Chat2Desk no está configurado.")
+#         return None
+
+#     url = "https://api.chat2desk.com.mx/v1/messages"
+#     headers = {
+#         "Authorization": api_token,
+#         "Content-Type": "application/json"
+#     }
+
+#     data = {
+#         "client_id": client_id,
+#         "channel_id": channel_id,
+#         "transport": "wa_direct",
+#         "text": response_content
+#     }
+
+#     try:
+#         async with httpx.AsyncClient() as client:
+#             response = await client.post(url, json=data, headers=headers, timeout=10)
+
+#         if response is None:
+#             logger.error("No se recibió respuesta de Chat2Desk.")
+#             return None
+#         if response.text is None:
+#             logger.error("response.text es None, no se puede procesar.")
+#             return None
+
+#         logger.info(f"Respuesta de Chat2Desk: {response.status_code} - {response.text}")
+#         return response
+#     except httpx.RequestError as e:
+#         logger.error(f"Error en la solicitud HTTP a Chat2Desk: {str(e)}")
+#         return None
+#     except Exception as e:
+#         logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
+#         return None
 
 
 @router.get("/health")

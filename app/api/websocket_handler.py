@@ -607,7 +607,7 @@ class WebSocketHandler:
                 # Llamar al modelo para obtener la respuesta
                 logger.warning(f"Send to bot for checkpoints - {self.gettime()} - call_sid {self.call_sid}")
                 respuesta = await llm.chat.completions.create(
-                    model="gpt-3.5-turbo-1106",
+                    model="gpt-4o",
                     temperature=0.1,
                     messages=messages,
                     response_format={"type": "json_object"},

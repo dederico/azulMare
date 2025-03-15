@@ -60,17 +60,7 @@ TIPO = "Queja"
 CONSEJERIA_ID = "[\"fef66114-d97c-4f25-ad10-fd8af1ebef71\"]"
 ESTADO = 155
 HTML_CONTENT = """
-<div id="canvas_div_pdf" class="canvas_div_pdf" style="margin-top:0px;">
-  <img src="assets/media/bg/300a.jpg" width="400px" alt="ENCABEZADO"/>
-  <h2>MINUTA DE INICIO DE CASO</h2>
-  <p>Por medio de la presente se hace constar la apertura de caso del ciudadano <span class="kt-font-brand">Anónimo</span></p>
-  <p>Canal: <span class="kt-font-brand">Presencial</span></p>
-  <p>La descripción del caso general se detalla a continuación:</p>
-  <ul><li></li></ul>
-  <h3>Solución Propuesta</h3>
-  <p>Se indica.........</p>
-  <img src="assets/media/bg/300b.jpg" width="400px" alt="ENCABEZADO"/>
-</div>
+
 """
 
 # Initialize the Twilio client
@@ -159,69 +149,95 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
     Returns:
         string: Mensaje de confirmación con el número de folio.
     """
-    logger.debug("Iniciando la función save_client_selection")
-    
     if not yoga_number:
         logger.error("No se pudo obtener el número de teléfono del cliente.")
         return "Error: No se pudo obtener el número de teléfono"
 
     logger.info(f"Número del cliente: {yoga_number}")
+    
+    # Verificar si es una llamada inicial (todos los campos vacíos)
+    todos_vacios = all(not field or field.strip() == "" for field in [selection1, selection2, selection3, selection4, selection5, selection6, selection7])
+    if todos_vacios:
+        logger.debug("Llamada inicial con todos los campos vacíos. No se creará reporte.")
+        return "Formulario pendiente de completar"
 
-    try: 
+    try:
         # Fetch the token
         token = get_token()
         logger.debug("Token obtenido correctamente")
     except Exception as e:
         logger.error(f"Error al obtener token: {e}")
         return f"Error al obtener token: {str(e)}"
-    
+
     # OMITIMOS TEMPORALMENTE LA PARTE DE GOOGLE SHEETS
     logger.debug("SKIPPING Google Sheets update temporarily")
-    
+
     # Check if all required fields are filled
     required_fields = [selection1, selection2, selection3, selection4, selection5, selection6, selection7]
-    if all(required_fields):
+    campos_con_valor = [field for field in required_fields if field and field.strip()]
+    campos_llenos = len(campos_con_valor)
+    
+    # Si hay muy pocos campos llenos y no son todos vacíos, no generar reporte
+    if campos_llenos < 4 and not todos_vacios:
+        logger.warning(f"Información insuficiente: {campos_llenos} de 7 campos han sido llenados")
+        return f"Información parcialmente guardada. {campos_llenos} de 7 campos requeridos han sido llenados."
+    
+    # Si tenemos suficientes campos o son todos los necesarios, crear el reporte
+    try:
+        logger.debug("Preparando payload para Neurocity")
+        # Prepare the JSON payload
+        payload = {
+            "idAsunto": selection1 or "1",  # Valor por defecto
+            "nombreCiudadano": f"{selection2 or ''} {selection3 or ''}".strip() or "Anónimo",
+            "numWhastApp": yoga_number,
+            "anonimo": False,
+            "detalleSolicitud": selection4 or "Sin descripción",
+            "_lat": "0",
+            "_long": "0",
+            "_direccionReporte": {
+                "calle": selection5 or "No proporcionada",
+                "noExt": selection6 or "S/N",
+                "colonia": selection7 or "No proporcionada",
+                "entreCalles": "Aramberri",
+                "referencias": selection4 or "No proporcionadas"
+            }
+        }
+
+        # Manejar la imagen (selection8) si está presente
+        if selection8 and selection8.strip():
+            # Código para manejar imágenes si es necesario
+            pass
+
+        logger.debug(f"Payload preparado: {payload}")
+
+        # Prepare the headers
+        headers = {
+            "accept": "text/plain",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Send the JSON payload via POST to the endpoint
+        logger.debug(f"Enviando payload a {POST_ENDPOINT}")
+        response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
+        response.raise_for_status()
+        logger.info(f"POST to {POST_ENDPOINT} successful. Response: {response.status_code} {response.text}")
+        
+        # Extraer el folio de la respuesta
         try:
-            logger.debug("Preparando payload para Neurocity")
-            # Prepare the JSON payload
-            payload = {
-                "idAsunto": selection1,
-                "nombreCiudadano": f"{selection2} {selection3}",
-                "numWhastApp": yoga_number,
-                "anonimo": False,
-                "detalleSolicitud": selection4,
-                "_lat": "0",
-                "_long": "0",
-                "_direccionReporte": {
-                    "calle": selection5,
-                    "noExt": selection6,
-                    "colonia": selection7,
-                    "entreCalles": "Aramberri",
-                    "referencias": selection4
-                }
-            }
-
-            # OMITIMOS TEMPORALMENTE EL MANEJO DE IMÁGENES
-            logger.debug(f"Payload preparado: {payload}")
-
-            # Prepare the headers
-            headers = {
-                "accept": "text/plain",
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
-            
-            # Send the JSON payload via POST to the endpoint
-            logger.debug(f"Enviando payload a {POST_ENDPOINT}")
-            response = requests.post(POST_ENDPOINT, json=payload, headers=headers)
-            response.raise_for_status()
-            logger.info(f"POST to {POST_ENDPOINT} successful. Response: {response.status_code} {response.text}")
+            response_data = response.json()
+            folio = response_data.get("data", {}).get("solicitud", {}).get("folio", "")
+            if not folio:
+                folio = response.text.strip()
+        except:
             folio = response.text.strip()
+        
+        if campos_llenos < 7:
+            return f"Reporte creado con información parcial. Número de folio: {folio}"
+        else:
             return f"Selecciones guardadas correctamente. Número de folio: {folio}"
-        except Exception as e:
-            logger.error(f"Error al enviar a Neurocity: {e}", exc_info=True)
-            return f"Error al procesar la solicitud: {str(e)}"
-    else:
-        filled_fields = sum(1 for field in required_fields if field)
-        logger.warning(f"Información incompleta: {filled_fields} de 7 campos requeridos han sido llenados")
-        return f"Información parcialmente guardada. {filled_fields} de 7 campos requeridos han sido llenados."
+    except Exception as e:
+        logger.error(f"Error al enviar a Neurocity: {e}", exc_info=True)
+        return f"Error al procesar la solicitud: {str(e)}"
+    
+

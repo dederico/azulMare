@@ -476,14 +476,14 @@ async def whatsapp(request: Request):
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
     hour = current_datetime.strftime("%I:%M:%S %p")
-    folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
+    #folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
     
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(customer_name=sender_name,call_sid=uid,date2=date_string,
             yoga_number=user_message.number,
             now=hour,
-            folio=folio,
+            folio="Pendiente de generar",
             address=address if 'address' in locals() else "No he recibido ubicación",
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
         )
@@ -769,7 +769,7 @@ async def report_status_update(request: Request):
                 
             create_response = response.json()
             
-            
+
             if create_response.get("status") != "success":
                 logger.error(f"Error en la respuesta al crear cliente: {create_response}")
                 return JSONResponse(

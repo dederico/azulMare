@@ -10,6 +10,7 @@ from .implementations.get_denuncia_maltrato_animal import get_denuncia_maltrato_
 from .implementations.get_empleo import get_empleo
 from .implementations.get_parquimetros import get_parquimetros
 from .implementations.get_gimnasios import get_gimnasios
+from .implementations.transfer_message_event import transfer_to_group
 
 registered_functions = [
     hangup,
@@ -23,6 +24,7 @@ registered_functions = [
     get_denuncia_maltrato_animal,
     get_empleo,
     get_parquimetros,
-    get_gimnasios]
+    get_gimnasios,
+    transfer_to_group]
 
 

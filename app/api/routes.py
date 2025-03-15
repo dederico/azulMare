@@ -652,7 +652,217 @@ async def whatsapp(request: Request):
 #         logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
 #         return None
 
+def format_phone_number(phone):
+    """
+    Formatea un número de teléfono para usarlo con Chat2Desk.
+    
+    Args:
+        phone (str): Número de teléfono en cualquier formato
+        
+    Returns:
+        str: Número formateado (sin '+' y con prefijo 521 si es de México)
+    """
+    # Eliminar cualquier caracter no numérico
+    phone = ''.join(filter(str.isdigit, phone))
+    
+    # Asegurarse que tenga el prefijo de México para WhatsApp (521)
+    if phone.startswith('52') and len(phone) >= 12:
+        # Ya tiene el formato correcto (52 + 1 + 10 dígitos)
+        return phone
+    elif phone.startswith('52') and len(phone) == 10:
+        # Falta el '1' después del código de país
+        return f"521{phone[2:]}"
+    elif len(phone) == 10:
+        # Solo tiene los 10 dígitos, agregar prefijo 521
+        return f"521{phone}"
+    elif len(phone) == 12 and phone.startswith('52'):
+        # Ya tiene formato internacional (52 + 10 dígitos)
+        return phone
+    
+    # Si no coincide con ningún patrón conocido, devolver como está
+    return phone
 
+@router.post("/report-status")
+async def report_status_update(request: Request):
+    """
+    Endpoint para recibir actualizaciones de estados de reportes y enviar notificaciones
+    por WhatsApp a los clientes correspondientes. Solo se envían notificaciones
+    para estados "en progreso" y "concluido".
+    """
+    try:
+        # Obtener los datos del cuerpo de la solicitud
+        payload = await request.json()
+        logger.debug(f"Payload de actualización de reporte recibido: {payload}")
+        
+        # Validar campos requeridos
+        required_fields = ["reportId", "reportStatus", "phoneNumber"]
+        for field in required_fields:
+            if field not in payload:
+                return JSONResponse(
+                    content={"error": f"Campo requerido ausente: {field}"}, 
+                    status_code=400
+                )
+        
+        # Extraer datos
+        report_id = payload["reportId"]
+        report_status = payload["reportStatus"].lower()  # Convertir a minúsculas para comparación
+        phone_number = payload["phoneNumber"]
+        
+        # Solo procesar estados específicos
+        if report_status != "en progreso" and report_status != "concluido":
+            logger.debug(f"Estado '{report_status}' no requiere notificación. Solo se notifican 'en progreso' y 'concluido'")
+            return JSONResponse(content={
+                "status": True,
+                "message": f"No se requiere notificación para el estado: {report_status}"
+            })
+        
+        # Formatear el número de teléfono para Chat2Desk
+        original_phone = phone_number
+        phone_number = format_phone_number(phone_number)
+        logger.debug(f"Número de teléfono formateado: {original_phone} -> {phone_number}")
+            
+        # Buscar cliente en Chat2Desk
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        chat2desk_base_url = "https://api.chat2desk.com.mx/v1"
+        
+        headers = {
+            "Authorization": api_token,
+            "Content-Type": "application/json"
+        }
+        
+        # Buscar cliente por número de teléfono
+        search_url = f"{chat2desk_base_url}/clients"
+        params = {"phone": phone_number}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(search_url, params=params, headers=headers)
+            
+        if response.status_code != 200:
+            logger.error(f"Error al buscar cliente en Chat2Desk: {response.status_code} - {response.text}")
+            return JSONResponse(
+                content={"error": f"Error al buscar cliente: {response.status_code}"}, 
+                status_code=500
+            )
+            
+        response_data = response.json()
+        logger.debug(f"Respuesta de búsqueda de cliente: {response_data}")
+        
+        # Verificar si se encontró el cliente basado en la estructura de respuesta de Chat2Desk
+        if response_data.get("status") != "success" or not response_data.get("data") or len(response_data.get("data", [])) == 0:
+            # Cliente no encontrado, lo creamos
+            logger.debug(f"Cliente no encontrado, creando nuevo cliente con número: {phone_number}")
+            create_url = f"{chat2desk_base_url}/clients"
+            client_data = {
+                "phone": phone_number,
+                "transport": "wa_direct"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(create_url, json=client_data, headers=headers)
+                
+            if response.status_code != 200:
+                logger.error(f"Error al crear cliente en Chat2Desk: {response.status_code} - {response.text}")
+                return JSONResponse(
+                    content={"error": f"Error al crear cliente: {response.status_code}"}, 
+                    status_code=500
+                )
+                
+            create_response = response.json()
+            
+            
+            if create_response.get("status") != "success":
+                logger.error(f"Error en la respuesta al crear cliente: {create_response}")
+                return JSONResponse(
+                    content={"error": "Error al crear cliente en Chat2Desk"}, 
+                    status_code=500
+                )
+                
+            client_id = create_response.get("data", {}).get("id")
+        else:
+            # Cliente encontrado
+            client_id = response_data.get("data")[0].get("id")
+            
+        # Obtener información del canal (channel_id)
+        if not client_id:
+            return JSONResponse(
+                content={"error": "No se pudo obtener el ID del cliente"}, 
+                status_code=500
+            )
+            
+        # En lugar de consultar los canales, usar un valor fijo
+        channel_id = 43347  # Valor fijo conocido para el canal de WhatsApp
+        logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
+        
+        # Preparar y enviar el mensaje al cliente
+        message_url = f"{chat2desk_base_url}/messages"
+        
+        # Construir mensaje según el estado específico del reporte
+        if report_status == "en progreso":
+            message_text = f"Su reporte #{report_id} ya se encuentra en proceso de atención. Un técnico está trabajando para resolver su solicitud lo antes posible."
+        elif report_status == "concluido":
+            message_text = f"¡Buenas noticias! Su reporte #{report_id} ha sido concluido satisfactoriamente. Gracias por su paciencia."
+        
+        # Si hay información adicional en el payload, incluirla en el mensaje
+        if "additionalInfo" in payload and payload["additionalInfo"]:
+            message_text += f"\n\nInformación adicional: {payload['additionalInfo']}"
+            
+        message_data = {
+            "client_id": client_id,
+            "channel_id": channel_id,
+            "transport": "wa_direct",
+            "text": message_text
+        }
+        
+        # Enviar el mensaje
+        async with httpx.AsyncClient() as client:
+            response = await client.post(message_url, json=message_data, headers=headers)
+            
+        if response.status_code != 200:
+            logger.error(f"Error al enviar mensaje: {response.status_code} - {response.text}")
+            return JSONResponse(
+                content={"error": f"Error al enviar mensaje: {response.status_code}"}, 
+                status_code=500
+            )
+            
+        send_response = response.json()
+        if send_response.get("status") != "success":
+            logger.error(f"Error en la respuesta al enviar mensaje: {send_response}")
+            return JSONResponse(
+                content={"error": "Error al enviar mensaje en Chat2Desk"}, 
+                status_code=500
+            )
+            
+        # Almacenar el mensaje en la base de datos local
+        db = LocalStorage()
+        message = Message(
+            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            senderName="Sistema",
+            message=message_text,
+            number=phone_number,
+            uid=f"report-{report_id}-{datetime.now().timestamp()}",
+            direction="outbound",
+            mtype="text",
+            source="whatsapp"
+        )
+        db.Insert(message)
+        
+        logger.debug(f"Mensaje de actualización enviado exitosamente para el reporte #{report_id} - Estado: {report_status}")
+        
+        return JSONResponse(content={
+            "status": True, 
+            "message": "Notificación de actualización de reporte enviada",
+            "reportId": report_id,
+            "clientId": client_id,
+            "reportStatus": report_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Error al procesar la actualización del reporte: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(
+            content={"error": f"Error al procesar la solicitud: {str(e)}"}, 
+            status_code=500
+        )
 @router.get("/health")
 async def health():
     import psutil, ping3

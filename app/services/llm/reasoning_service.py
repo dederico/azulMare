@@ -22,6 +22,23 @@ class ReasoningService(LLMService):
         self.current_function_name = None
         self.reasoning_effort = config.get("reasoning_effort", "medium")
 
+    def clear_conversation_history(self) -> None:
+        """
+        Limpia el historial de conversación.
+        """
+        # Guardar el mensaje del sistema si existe
+        system_message = None
+        for msg in self.conversation_history:
+            if msg["role"] == "system":
+                system_message = msg["content"]
+                break
+                
+        # Limpiar el historial
+        self.conversation_history = []
+        
+        # Restaurar el mensaje del sistema si existía
+        if system_message:
+            self.conversation_history.append({"role": "system", "content": system_message})
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         self.conversation_history.append({"role": role, "content": content, **kwargs})
 

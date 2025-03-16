@@ -39,6 +39,8 @@ from app.api.websocket_handler import WebSocketHandler
 from app.core.orchestrator import Orchestrator
 from app.services.stt.deepgram_service import DeepgramService
 from app.services.stt.amazon_service import AmazonTranscribeService
+from app.services.llm.reasoning_service import ReasoningService
+from app.services.llm.llm_factory import LLMFactory
 from app.services.llm.openai_service import OpenAIService
 from app.services.tts.eleven_service import ElevenTTSService
 from app.services.tts.polly_service import AmazonTTSService
@@ -126,6 +128,7 @@ async def websocket_endpoint(ws: WebSocket):
         callDirection = "Outbound"
         call.callStatus = "IN_PROGRESS"
         db.Update(call)
+        
     else:
         call = Call(
             callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -160,12 +163,35 @@ async def websocket_endpoint(ws: WebSocket):
 
     #folio = await save_client_selection(call_sid, selection1, selection2, selection3, selection4, selection5, selection6, selection7)
 
-    logger.debug("Initializing LLM service for the new call")
-    llm_service = OpenAIService(
-        config=config,
-        api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio=folio),
-        function_manager=function_manager
+    # logger.debug("Initializing LLM service for the new call")
+    # llm_service = OpenAIService(
+    #     config=config,
+    #     api_key=OPENAI_API_KEY,
+    #     system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio=folio),
+    #     function_manager=function_manager
+    # )
+
+    # THIS IS A TEST WITH REASONONING API
+    llm_service_type = config.get("llm_service_type", "reasoning")  # Valor por defecto: reasoning
+
+    # Configurar parámetros específicos según el tipo de servicio
+    if llm_service_type.lower() == "reasoning":
+        service_config = config.copy()
+        service_config.update({
+            "reasoning_model": service_config.get("reasoning_model", "o3-mini"),
+            "reasoning_effort": service_config.get("reasoning_effort", "medium")
+        })
+    else:
+        service_config = config
+
+    # Crear el servicio LLM usando la fábrica
+    llm_service_type = "reasoning"
+    llm_service = LLMFactory.create_llm_service(
+        llm_service_type,
+        service_config,
+        os.getenv("OPENAI_API_KEY"),  # o OPENAI_API_KEY en el caso del endpoint websocket
+        function_manager,
+        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour)  # o el mensaje de sistema formateado según corresponda
     )
 
     # tts_service = ElevenTTSService(
@@ -333,8 +359,8 @@ async def whatsapp(request: Request):
         latitude, longitude = None, None
         photo_url = None
         audio_url = None
+        image_description = None
 
-        # Verificación del tipo de contenido en el mensaje
         # Verificación del tipo de contenido en el mensaje
         if payload.get("coordinates"):
             # Procesamiento de ubicación
@@ -476,23 +502,49 @@ async def whatsapp(request: Request):
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
     hour = current_datetime.strftime("%I:%M:%S %p")
-    #folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
+    
+    # Crear el prompt con el historial de mensajes
+    system_prompt = system_message.format(
+        customer_name=sender_name,
+        call_sid=uid,
+        date2=date_string,
+        yoga_number=user_message.number,
+        now=hour,
+        folio="Pendiente de generar",
+        address=address if 'address' in locals() else "No he recibido ubicación",
+        image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
+    )
     
     try:
-        # Crear el prompt con el historial de mensajes
-        system_prompt = system_message.format(customer_name=sender_name,call_sid=uid,date2=date_string,
-            yoga_number=user_message.number,
-            now=hour,
-            folio="Pendiente de generar",
-            address=address if 'address' in locals() else "No he recibido ubicación",
-            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
-        )
+        # Determinar el tipo de servicio LLM basado en la configuración
+        llm_service_type = config.get("llm_service_type", "reasoning")  # Valor por defecto: reasoning
 
-        llm_service = OpenAIService(
-            config=config,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            system=system_prompt,
-            function_manager=function_manager
+        # Configurar parámetros específicos según el tipo de servicio
+        if llm_service_type.lower() == "reasoning":
+            service_config = config.copy()
+            service_config.update({
+                "reasoning_model": service_config.get("reasoning_model", "o3-mini"),
+                "reasoning_effort": service_config.get("reasoning_effort", "medium")
+            })
+        else:
+            service_config = config
+
+        # Crear el servicio LLM usando la fábrica
+        llm_service = LLMFactory.create_llm_service(
+            llm_service_type,
+            service_config,
+            os.getenv("OPENAI_API_KEY"),
+            function_manager,
+            system=system_message.format(
+        customer_name=sender_name,
+        call_sid=uid,
+        date2=date_string,
+        yoga_number=user_message.number,
+        now=hour,
+        folio="Pendiente de generar",
+        address=address if 'address' in locals() else "No he recibido ubicación",
+        image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
+    )
         )
 
         # Procesar la imagen si está disponible

@@ -45,7 +45,7 @@ Respuesta: En caso de robo/extravío de pasaporte, deberá levantarse denuncia p
 
 """
 
-def get_pasaportes():
+async def get_pasaportes():
     """Obtener información sobre el trámite de pasaportes, costos, requisitos e información general en caso de ser necesario.
 
     Returns:

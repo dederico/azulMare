@@ -44,7 +44,7 @@ Opciones de participación:
 Por 1 día: $3,000
 Por 1 mes: $6,000
 """
-def get_activaciones_san_pedro_de_pinta():
+async def get_activaciones_san_pedro_de_pinta():
     """Obtener información de costos y medidas de espacios para negocios, marcas o emprendedores que desean participar en San Pedro de Pinta en caso de ser necesario.
 
     Returns:

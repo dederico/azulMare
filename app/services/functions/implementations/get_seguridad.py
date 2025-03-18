@@ -37,7 +37,7 @@ Teléfono:
 Link del trámite: https://tramites.sanpedro.gob.mx/gobierno_de_san_pedro_garza_garcia_be055859/solicitud_de_permiso_de_circulacion_de_vehiculos_de_carga_pesada_2efcdace-b94b-4b52-8a7c-7bd7b99ac2fa
 """
 
-def get_seguridad():
+async def get_seguridad():
     """Obtener informacion de los servicios de la secreatria de seguridad caso de ser necesario.
 
     Returns:

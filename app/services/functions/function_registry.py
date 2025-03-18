@@ -30,6 +30,12 @@ from .implementations.get_basura_vegetal import get_basura_vegetal
 from .implementations.get_activaciones_san_pedro_de_pinta import get_activaciones_san_pedro_de_pinta
 from .implementations.get_bienestar import get_bienestar
 from .implementations.get_pasaportes import get_pasaportes
+from .implementations.get_registro_civil import get_registro_civil
+from .implementations.get_miercoles_ciudadano import get_miercoles_ciudadano
+from .implementations.get_mercado_fregoneria import get_mercado_fregoneria
+from .implementations.get_licencias_temporales import get_licencia_provisional
+from .implementations.get_licencia_chofer import get_licencia_chofer
+
 
 
 
@@ -64,6 +70,11 @@ registered_functions = [
     get_activaciones_san_pedro_de_pinta,
     get_bienestar,
     get_pasaportes,
+    get_registro_civil,
+    get_miercoles_ciudadano,
+    get_mercado_fregoneria,
+    get_licencia_provisional,
+    get_licencia_chofer,
     transfer_to_group]
 
 

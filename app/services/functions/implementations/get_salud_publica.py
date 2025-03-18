@@ -21,7 +21,7 @@ Restricciones: No aplica para traslados inmediatos ni urgencias.
 Tiempo de compromiso: 7 días.
 """
 
-def get_salud_publica():
+async def get_salud_publica():
     """Obtener Información de los servicios que ofrece la dirección de Salud Pública en caso de ser necesario.
 
     Returns:

@@ -14,7 +14,7 @@ Pregunta: ¿Cuál es la ubicación de San Pedro de Pinta?
 Respuesta: Calzada del Valle y Calzada San Pedro
 """
 
-def get_san_pedro_de_pinta():
+async def get_san_pedro_de_pinta():
     """Obtener información de San Pedro de Pinta en caso de ser necesario.
 
     Returns:

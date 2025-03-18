@@ -184,7 +184,7 @@ We Love Burgers
 Zatziki
 """
 
-def get_restaurant_week():
+async def get_restaurant_week():
     """Obtener Información de Restaurant Week en caso de ser necesario.
 
     Returns:

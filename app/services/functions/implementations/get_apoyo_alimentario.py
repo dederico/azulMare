@@ -19,7 +19,7 @@ Acta de nacimiento.
 Deberá acudir el beneficiario activo.
 """
 
-def get_apoyo_alimentario():
+async def get_apoyo_alimentario():
     """Obtener Información de los requisistos para tramitar el apoyo alimentario en caso de ser necesario.
 
     Returns:

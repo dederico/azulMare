@@ -19,7 +19,7 @@ Pregunta: Cuál es el módulo de la Secretaría del Bienestar en San Pedro?
 Respuesta: Dirección: Cobalto SN Col. San Pedro 400 entre Uranio y Platino
 """
 
-def get_bienestar():
+async def get_bienestar():
     """Obtener información sobre la Tarjeta de la Secretaría del Bienestar, trámite correspondiente al gobierno federal.
 
     Returns:

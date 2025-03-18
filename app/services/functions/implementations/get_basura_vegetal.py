@@ -186,7 +186,7 @@ Valle del Seminario
 Luis echeverria
 """
 
-def get_basura_vegetal():
+async def get_basura_vegetal():
     """Obtener Información de la basura vegetal, las rutas, y los días en caso de ser necesario.
 
     Returns:

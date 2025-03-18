@@ -29,7 +29,7 @@ Ningún participante podrá instalarse en el evento sin la firma del presente do
 Observaciones: Durante el evento la Secretaría de Cultura del municipio de San Pedro Garza García, es la autoridad encargada de coordinar los sucesos que en ella se presenten.
 """
 
-def get_san_pedro_de_pinta_patrocinadores():
+async def get_san_pedro_de_pinta_patrocinadores():
     """Obtener Información de Este documento contiene el reglamento aplicable a los participantes como socios, patrocinadores o colaboradores en San Pedro de Pinta en caso de ser necesario.
 
     Returns:

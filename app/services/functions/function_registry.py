@@ -11,6 +11,27 @@ from .implementations.get_empleo import get_empleo
 from .implementations.get_parquimetros import get_parquimetros
 from .implementations.get_gimnasios import get_gimnasios
 from .implementations.transfer_message_event import transfer_to_group
+from .implementations.get_voluntarios import get_voluntarios
+from .implementations.get_urls import get_urls
+from .implementations.get_ubicaciones import get_ubicaciones
+from .implementations.get_parques_emblematicos import get_parques_emblematicos
+from .implementations.get_dif import get_dif
+from .implementations.get_desarrollo_urbano import get_desarrollo_urbano
+from .implementations.get_seguridad import get_seguridad
+from .implementations.get_inapam import get_inapam
+from .implementations.get_apoyo_alimentario import get_apoyo_alimentario
+from .implementations.get_salud_publica import get_salud_publica
+from .implementations.get_restaurant_week import get_restaurant_week
+from .implementations.get_san_pedro_de_pinta import get_san_pedro_de_pinta
+from .implementations.get_basura_vegetal import get_basura_vegetal
+from .implementations.get_ks import get_ks
+from .implementations.get_san_pedro_de_pinta_patrocinadores import get_san_pedro_de_pinta_patrocinadores
+from .implementations.get_basura_vegetal import get_basura_vegetal
+from .implementations.get_activaciones_san_pedro_de_pinta import get_activaciones_san_pedro_de_pinta
+from .implementations.get_bienestar import get_bienestar
+from .implementations.get_pasaportes import get_pasaportes
+
+
 
 registered_functions = [
     hangup,
@@ -25,6 +46,24 @@ registered_functions = [
     get_empleo,
     get_parquimetros,
     get_gimnasios,
+    get_voluntarios,
+    get_urls,
+    get_ubicaciones,
+    get_parques_emblematicos,
+    get_dif,
+    get_desarrollo_urbano,
+    get_seguridad,
+    get_inapam,
+    get_apoyo_alimentario,
+    get_salud_publica,
+    get_restaurant_week,
+    get_san_pedro_de_pinta,
+    get_basura_vegetal,
+    get_ks,
+    get_san_pedro_de_pinta_patrocinadores,
+    get_activaciones_san_pedro_de_pinta,
+    get_bienestar,
+    get_pasaportes,
     transfer_to_group]
 
 

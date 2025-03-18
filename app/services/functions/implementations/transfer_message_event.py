@@ -209,7 +209,7 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
         
         notification_data = {
             "client_id": client_id,
-            "channel_id": 42964,  # Valor fijo para channel_id
+            "channel_id": 43347,  # Valor fijo para channel_id
             "transport": "wa_direct",
             "text": transfer_message
         }

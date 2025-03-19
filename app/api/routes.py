@@ -31,6 +31,8 @@ import pytz
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
 import traceback
 from app.services.llm.llm_service import LLMService
+import psycopg2
+
 
 load_dotenv(override=True)
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, FastAPI
@@ -74,6 +76,40 @@ AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
+
+async def manage_message_history(db, number, max_messages=20):
+    """
+    Mantiene solo los últimos max_messages mensajes para un número dado
+    """
+    try:
+        # Contar cuántos mensajes tiene este número
+        conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
+        cursor = conn.cursor()
+        
+        # Contar mensajes
+        cursor.execute("SELECT COUNT(*) FROM messages WHERE number = %s", [number])
+        count = cursor.fetchone()[0]
+        
+        # Si hay más mensajes que el máximo permitido, eliminar los más antiguos
+        if count > max_messages:
+            # Obtener los IDs de los mensajes más antiguos que exceden el límite
+            cursor.execute("""
+                DELETE FROM messages 
+                WHERE id IN (
+                    SELECT id FROM messages 
+                    WHERE number = %s 
+                    ORDER BY time ASC 
+                    LIMIT %s
+                )
+            """, [number, count - max_messages])
+            
+            deleted_count = cursor.rowcount
+            logger.debug(f"Se eliminaron {deleted_count} mensajes antiguos para mantener el límite de {max_messages} para {number}")
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error al gestionar historial de mensajes: {str(e)}")
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
@@ -227,7 +263,7 @@ async def websocket_endpoint(ws: WebSocket):
 user_sessions = {}  # key: from_number, value: WhatsAppSession
 
 # Tiempo de inactividad (en segundos) antes de desconectar la sesión (5 minutos)
-INACTIVITY_THRESHOLD = 5 * 60
+INACTIVITY_THRESHOLD = 2 * 60
 
 class WhatsAppSession:
     def __init__(self, history):
@@ -241,27 +277,69 @@ async def check_inactivity():
     """
     Tarea en background que revisa cada minuto las sesiones activas.
     Si alguna sesión ha estado inactiva más de 5 minutos, se envía un mensaje
-    de alerta por Twilio y se elimina la sesión.
+    de alerta por Chat2Desk, elimina los mensajes de la base de datos y elimina la sesión.
     """
     while True:
         await asyncio.sleep(60)  # Revisar cada minuto
         now = datetime.now(pytz.timezone('America/Mexico_City'))
+        db = LocalStorage()
+        
         for number, session in list(user_sessions.items()):
             elapsed = (now - session.last_active).total_seconds()
             if elapsed > INACTIVITY_THRESHOLD:
                 try:
-                    twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-                    disconnection_message = "Se ha desconectado la sesión por inactividad."
-                    # Asegúrate de tener configurado el número de WhatsApp de Twilio en TWILIO_WHATSAPP_NUMBER
-                    twilio_client.messages.create(
-                        body=disconnection_message,
-                        from_="whatsapp:" + os.getenv("TWILIO_WHATSAPP_NUMBER"),
-                        to="whatsapp:" + number
-                    )
+                    # Notificar al usuario usando Chat2Desk
+                    api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                    chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                    
+                    # Buscar cliente en Chat2Desk para obtener client_id
+                    search_url = "https://api.chat2desk.com.mx/v1/clients"
+                    params = {"phone": number}
+                    
+                    headers = {
+                        "Authorization": api_token,
+                        "Content-Type": "application/json"
+                    }
+                    
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(search_url, params=params, headers=headers)
+                    
+                    if response.status_code == 200:
+                        client_data = response.json()
+                        if client_data.get("status") == "success" and client_data.get("data"):
+                            client_id = client_data["data"][0]["id"]
+                            channel_id = 43347  # Canal fijo para WhatsApp
+                            
+                            # Enviar mensaje de desconexión
+                            message_data = {
+                                "client_id": client_id,
+                                "channel_id": channel_id,
+                                "transport": "wa_direct",
+                                "text": "Se ha desconectado la sesión por inactividad. Para iniciar una nueva conversación, envía un mensaje."
+                            }
+                            
+                            async with httpx.AsyncClient() as client:
+                                await client.post(chat2desk_url, json=message_data, headers=headers)
+                    
+                    # Eliminar todos los mensajes de este número de la base de datos
+                    messages_to_delete = db.Search(Message(number=number))
+                    count = 0
+                    if messages_to_delete:
+                        for msg in messages_to_delete:
+                            if db.delete_messages_by_number(msg):
+                                count += 1
+                        logger.debug(f"Se eliminaron {count} mensajes para el número {number} por inactividad.")
+                    else:
+                        logger.debug(f"No se encontraron mensajes para eliminar para el número {number}")
+                    
+                    # Eliminar la sesión
+                    del user_sessions[number]
                     logger.debug(f"Sesión de {number} desconectada por inactividad.")
                 except Exception as e:
                     logger.error(f"Error enviando mensaje de desconexión para {number}: {str(e)}")
-                del user_sessions[number]
+                    # Aún intentamos eliminar la sesión incluso si falló el envío del mensaje
+                    if number in user_sessions:
+                        del user_sessions[number]
 
 # ------------------------------
 # Función de ciclo de vida (lifespan)
@@ -471,6 +549,7 @@ async def whatsapp(request: Request):
     )
     logger.debug(f"Guardando mensaje del usuario en BD: {body[:30]}...")
     db.Insert(user_message)
+    await manage_message_history(db, from_number)
     
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
@@ -539,6 +618,7 @@ async def whatsapp(request: Request):
         )
         logger.debug(f"Guardando respuesta del asistente en BD: {response_content[:30]}...")
         db.Insert(assistant_message)
+        await manage_message_history(db, from_number)
 
     except Exception as e:
         logger.error(f"Error al generar la respuesta: {str(e)}")
@@ -577,8 +657,46 @@ async def whatsapp(request: Request):
         logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
         content = {"status": False, "error": f"Error inesperado: {str(e)}"}
 
-    return JSONResponse(content=content)
+    # Después de enviar la respuesta a través de Chat2Desk y justo antes de return JSONResponse
+    # Verificar si el mensaje del usuario indica despedida y la respuesta del bot también
+    farewell_keywords = ["gracias", "adiós", "adios", "hasta luego", "chao", "bye", "es todo", "terminar"]
+    bot_farewell_indicators = ["que tengas", "hasta luego", "adiós", "adios", "buen día", "hasta pronto"]
 
+    # Función de limpieza definida fuera del bloque if para evitar problemas de acceso
+    async def delayed_cleanup_msgs(phone_number):
+        try:
+            await asyncio.sleep(5)  # Esperar 5 segundos para asegurar que el mensaje se entregó
+            db = LocalStorage()
+            
+            # Usar el método para eliminar mensajes por número
+            # Implementa este método en la clase LocalStorage
+            conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
+            cursor = conn.cursor()
+            
+            # SQL directo para eliminar mensajes por número
+            cursor.execute("DELETE FROM messages WHERE number = %s", [phone_number])
+            count = cursor.rowcount
+            
+            conn.commit()
+            conn.close()
+            
+            logger.debug(f"Se eliminaron {count} mensajes para el número {phone_number} por despedida.")
+            
+            # Eliminar la sesión también
+            if phone_number in user_sessions:
+                del user_sessions[phone_number]
+                logger.debug(f"Sesión de {phone_number} finalizada por despedida.")
+                
+        except Exception as e:
+            logger.error(f"Error al eliminar mensajes: {str(e)}")
+
+    if (any(keyword in body.lower() for keyword in farewell_keywords) and 
+        any(indicator in response_content.lower() for indicator in bot_farewell_indicators)):
+        
+        # Crear tarea sin esperar a que termine
+        asyncio.create_task(delayed_cleanup_msgs(from_number))
+
+    return JSONResponse(content=content)
 
 # def add_message_to_history(role: str, message_content: str, conversation_history):
 #     """Función para agregar mensajes al historial"""
@@ -845,6 +963,7 @@ async def report_status_update(request: Request):
             source="whatsapp"
         )
         db.Insert(message)
+        await manage_message_history(db, phone_number)
         
         logger.debug(f"Mensaje de actualización enviado exitosamente para el reporte #{report_id} - Estado: {report_status}")
         

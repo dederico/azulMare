@@ -102,6 +102,29 @@ class LocalStorage:
             logger.error(e)
             return False
 
+    # Añadir este método a la clase LocalStorage
+    def delete_messages_by_number(self, number):
+        try:
+            conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
+            cursor = conn.cursor()
+            
+            # Asegurarse que number sea un string o un valor que psycopg2 pueda adaptar
+            if isinstance(number, str):
+                # SQL directo para eliminar mensajes por número
+                cursor.execute("DELETE FROM messages WHERE number = %s", [number])
+            else:
+                # Si no es string, convertirlo
+                cursor.execute("DELETE FROM messages WHERE number = %s", [str(number)])
+                
+            count = cursor.rowcount
+            
+            conn.commit()
+            conn.close()
+            
+            return count
+        except Exception as e:
+            logger.error(f"Error eliminando mensajes por número: {str(e)}")
+            return 0
 
     @staticmethod
     def get_pg_data_type(python_type):

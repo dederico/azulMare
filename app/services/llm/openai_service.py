@@ -27,7 +27,20 @@ class OpenAIService(LLMService):
         #     self.vectorbase = VectorBase(config.get("agent_name", None))
 
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
+        """Añadir mensaje al historial con optimización de contexto"""
         self.conversation_history.append({"role": role, "content": content, **kwargs})
+        
+        # Verificar si el historial ha crecido demasiado
+        max_messages = self.config.get("max_context_messages", 20)  # Configurable
+        if len(self.conversation_history) > max_messages + 1:  # +1 para el mensaje del sistema
+            # Extraer los mensajes del sistema
+            system_messages = [msg for msg in self.conversation_history if msg["role"] == "system"]
+            
+            # Mantener solo los mensajes más recientes
+            recent_messages = self.conversation_history[-(max_messages - len(system_messages)):]
+            
+            # Reorganizar el historial: primero mensajes del sistema, luego los recientes
+            self.conversation_history = system_messages + recent_messages
 
     async def generate_response(self, user_input: str) -> AsyncGenerator[str, None]:
         if self.config.get("use_kb"):
@@ -35,6 +48,11 @@ class OpenAIService(LLMService):
             user_input = f"Context:\n{kb_context}\n\nQuery:\n{user_input}"
         
         self.add_to_conversation("user", user_input)
+        
+        # Verifica si es necesario resumir el contexto
+        if self.config.get("use_context_summarization", False) and len(self.conversation_history) > self.config.get("summarize_threshold", 15):
+            await self.summarize_conversation_history()
+            
         generator = await self.llm_generator()
 
         full_message = ""
@@ -55,15 +73,79 @@ class OpenAIService(LLMService):
         if full_message:
             self.add_to_conversation("assistant", full_message)
 
+    async def summarize_conversation_history(self):
+        """Resumir el historial de conversación cuando se vuelve demasiado largo"""
+        # Extraer el mensaje del sistema original
+        system_message = next((msg for msg in self.conversation_history if msg["role"] == "system"), None)
+        
+        # Preparar el contenido para ser resumido
+        conversation_text = "\n".join([f"{msg['role']}: {msg['content']}" 
+                                      for msg in self.conversation_history 
+                                      if msg['role'] != "system"])
+        
+        summary_prompt = f"""Resume la siguiente conversación de manera concisa, preservando la información clave:
+
+{conversation_text}
+
+
+
+Proporciona un resumen breve pero completo que capture los puntos principales de la conversación.
+"""
+        
+        try:
+            # Crear una solicitud separada para resumir el contexto
+            summary_response = await self.client.chat.completions.create(
+                model=self.config.get("model") or "gpt-3.5-turbo-1106",
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.1,
+            )
+            
+            summary = summary_response.choices[0].message.content
+            
+            # Reiniciar el historial con el sistema original y el resumen
+            self.conversation_history = []
+            
+            # Restaurar el mensaje del sistema si existía
+            if system_message:
+                self.conversation_history.append(system_message)
+                
+            # Añadir el resumen como contexto
+            self.conversation_history.append(
+                {"role": "system", "content": f"Resumen de la conversación anterior: {summary}"}
+            )
+            
+            logger.debug(f"Historial de conversación resumido. Nuevo tamaño: {len(self.conversation_history)}")
+            
+        except Exception as e:
+            logger.error(f"Error al resumir el historial de conversación: {str(e)}")
+            # Si falla el resumen, aplicar la estrategia de ventana deslizante
+            self.add_to_conversation("system", "Nota: Parte del historial de conversación anterior ha sido eliminado para optimizar el rendimiento.")
+
     async def llm_generator(self):
-        generator = await self.client.chat.completions.create(
-            model=self.config.get("model") or "gpt-3.5-turbo-1106",
-            messages=self.conversation_history,
-            stream=True,
-            tool_choice="auto",
-            temperature=0.1,
-            tools=self.function_manager.get_function_definition(),
-        )
+        # Usar o3-mini si está configurado
+        model = self.config.get("model") or "gpt-3.5-turbo-1106"
+        
+        # Comprobar si estamos usando un modelo de razonamiento (o3-mini)
+        if model == "o3-mini":
+            # Si es un modelo de razonamiento, incluir el parámetro reasoning_effort
+            generator = await self.client.chat.completions.create(
+                model=model,
+                messages=self.conversation_history,
+                stream=True,
+                reasoning_effort=self.config.get("reasoning_effort", "medium"),
+                tool_choice="auto",
+                tools=self.function_manager.get_function_definition(),
+            )
+        else:
+            # Para modelos regulares, incluir temperature
+            generator = await self.client.chat.completions.create(
+                model=model,
+                messages=self.conversation_history,
+                stream=True,
+                tool_choice="auto",
+                temperature=0.1,
+                tools=self.function_manager.get_function_definition(),
+            )
         return generator
 
     async def handle_tool_call(self, tool_call_chunk):
@@ -120,4 +202,12 @@ class OpenAIService(LLMService):
         self.current_function_name = None
 
     def clear_conversation_history(self) -> None:
+        """Limpia el historial de conversación pero conserva los mensajes del sistema"""
+        # Extraer los mensajes del sistema
+        system_messages = [msg for msg in self.conversation_history if msg["role"] == "system"]
+        
+        # Limpiar el historial
         self.conversation_history = []
+        
+        # Restaurar los mensajes del sistema
+        self.conversation_history.extend(system_messages)

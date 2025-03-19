@@ -93,3 +93,4 @@ SpeechRecognition
 pydub
 geopy
 pytz
+openai-agents

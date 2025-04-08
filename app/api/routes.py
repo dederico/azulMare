@@ -1,24 +1,25 @@
-import base64
-import aiohttp
-import logging
-import urllib.parse
 import os
 import json
-from io import StringIO
-from dotenv import load_dotenv
-from fastapi.responses import JSONResponse
+import logging
+import asyncio
+import threading
+import traceback
+import base64
+import requests
+import httpx
+import pytz
+import psycopg2
+from io import BytesIO
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import pytz
-from io import BytesIO
-import requests
-from openai import OpenAI
-import asyncio
-from contextlib import asynccontextmanager
-import httpx
-import os
-from fastapi import APIRouter, Request
+from fastapi import FastAPI, Request, Response, HTTPException, APIRouter
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
+from twilio.twiml.voice_response import VoiceResponse, Connect
+from typing import Dict, List, Optional, Any, Union, TypeVar, Generic
+from pydantic import BaseModel, Field
+
+# Import your existing modules
 from app.util.database import LocalStorage
 from app.models.Config import Config
 from app.models.Message import Message
@@ -26,56 +27,348 @@ from app.services.llm.openai_service import OpenAIService
 from app.services.functions.function_manager import FunctionManager
 from app.services.functions.function_registry import registered_functions
 from app.util.logger import logger
-from datetime import datetime
-import pytz
-from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
-import traceback
-from app.services.llm.llm_service import LLMService
-import psycopg2
-
-
-load_dotenv(override=True)
-from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, FastAPI
-from twilio.twiml.voice_response import VoiceResponse, Connect
-from app.api.websocket_handler import WebSocketHandler
-from app.core.orchestrator import Orchestrator
-from app.services.stt.deepgram_service import DeepgramService
-from app.services.stt.amazon_service import AmazonTranscribeService
-from app.services.llm.openai_service import OpenAIService
-from app.services.tts.eleven_service import ElevenTTSService
-from app.services.tts.polly_service import AmazonTTSService
-from app.services.functions.function_registry import registered_functions
-from app.services.llm.config.system import system_message
-from app.services.functions.function_manager import FunctionManager
 from app.services.functions.implementations.geocoding import latlong_to_address
-
-from twilio.rest import Client
-from urllib.parse import parse_qs
-from datetime import datetime
-from copy import deepcopy
-from app.util.logger import logger, get_thread_log_handler, cleanup_call_logger
-from app.models.Call import Call
-from app.models.Message import Message
-from app.models.Config import Config
-from app.util.factory import Hooks
-from app.util.database import LocalStorage
-from app.services.functions.implementations.save_selection import save_client_selection, find_row_and_update_selection
-from app.services.functions.implementations.identify import get_customer_identity
-from app.services.functions.implementations.date import get_current_date
+from app.services.functions.implementations.transfer_message_event import transfer_to_group
+from app.services.stt.media_transcriber import TranscribeOGG
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
-from app.services.stt.stt_service import STTService
-from app.services.stt.media_transcriber import TranscribeOGG
-from twilio.base.exceptions import TwilioRestException
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-VOICE_ID = os.environ.get("VOICE_ID")
-AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.environ.get("AWS_REGION")
-CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
+# Import the multi-agent framework
+from agents import (
+    Agent, HandoffOutputItem, ItemHelpers, MessageOutputItem, RunContextWrapper,
+    Runner, ToolCallItem, ToolCallOutputItem, TResponseInputItem, function_tool,
+    handoff, trace,
+)
+from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+
+# Constants (from your existing code)
+INACTIVITY_THRESHOLD = 2 * 60  # 2 minutes
+transfer_timeout = 15 * 60  # 15 minutes
+
+# =======================================
+# Agent Context Models
+# =======================================
+
+class WhatsAppBaseContext(BaseModel):
+    """Base context model shared by all WhatsApp agents"""
+    phone_number: str
+    customer_name: str = "Usuario"
+    chat_id: Optional[str] = None
+    client_id: Optional[str] = None
+    channel_id: Optional[int] = None
+    last_active: datetime = Field(default_factory=lambda: datetime.now(pytz.timezone('America/Mexico_City')))
+    
+    def update_activity(self):
+        self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
+
+class ReportContext(WhatsAppBaseContext):
+    """Context for report creation agent"""
+    images: List[str] = Field(default_factory=list)
+    image_descriptions: List[str] = Field(default_factory=list)
+    location: Optional[str] = None
+    report_in_progress: bool = False
+    last_image_timestamp: Optional[datetime] = None
+
+class CustomerSupportContext(WhatsAppBaseContext):
+    """Context for customer support agent"""
+    issue_category: Optional[str] = None
+    ticket_id: Optional[str] = None
+    
+class SwitchboardContext(WhatsAppBaseContext):
+    """Context for the triage/switchboard agent"""
+    current_agent_name: str = "switchboard"
+
+# Type variable for context
+TContext = TypeVar('TContext', bound=WhatsAppBaseContext)
+
+# =======================================
+# Global State 
+# =======================================
+
+# In-memory store for active conversation contexts
+conversation_contexts = {}  # key: phone_number, value: appropriate context object
+processed_message_ids = set()  # For deduplication
+finalized_report_numbers = set()  # To prevent duplicate report submission
+reports_lock = threading.Lock()  # For thread safety
+transferred_numbers = {}  # Numbers transferred to human agents
+
+# =======================================
+# Function Tools
+# =======================================
+
+@function_tool(name_override="analyze_image", description_override="Analyze an image and return a description")
+async def analyze_image(context: RunContextWrapper[ReportContext], image_url: str) -> str:
+    """
+    Analyzes an image using GPT-4 Vision and returns a description.
+    Also updates the context with image information.
+    """
+    try:
+        # Download the image
+        response = requests.get(image_url)
+        image_content = BytesIO(response.content)
+        
+        # Get API key from environment
+        api_key = os.getenv("OPENAI_API_KEY")
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        # Analyze the image
+        image_analysis = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe esta imagen en detalle."},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
+                            },
+                        },
+                    ],
+                }
+            ],
+            max_tokens=300,
+        )
+        
+        # Get description
+        description = image_analysis.choices[0].message.content
+        
+        # Update context
+        context.context.images.append(image_url)
+        context.context.image_descriptions.append(description)
+        context.context.last_image_timestamp = datetime.now(pytz.timezone('America/Mexico_City'))
+        
+        return description
+    except Exception as e:
+        logger.error(f"Error analyzing image: {str(e)}")
+        return f"Error al analizar la imagen: {str(e)}"
+
+@function_tool(name_override="process_location", description_override="Process location information from coordinates or text")
+async def process_location(context: RunContextWrapper[ReportContext], location_text: str = None, latitude: float = None, longitude: float = None) -> str:
+    """
+    Processes location information from either coordinates or text description.
+    Updates the context with the location information.
+    """
+    try:
+        # If we have coordinates, convert to address
+        if latitude is not None and longitude is not None:
+            address = await latlong_to_address(latitude, longitude)
+            context.context.location = address
+            return f"Ubicación registrada: {address}"
+        
+        # Otherwise use the text description
+        elif location_text:
+            context.context.location = location_text
+            return f"Ubicación registrada: {location_text}"
+            
+        return "No se pudo procesar la ubicación"
+    except Exception as e:
+        logger.error(f"Error processing location: {str(e)}")
+        return f"Error al procesar la ubicación: {str(e)}"
+
+@function_tool(name_override="finalize_report", description_override="Finalize a report with collected images and location")
+async def finalize_report(context: RunContextWrapper[ReportContext]) -> str:
+    """
+    Finalizes a report with the collected images and location.
+    Calls the existing save_client_selection function.
+    """
+    from app.services.functions.implementations.save_selection import save_client_selection
+    
+    phone_number = context.context.phone_number
+    images = context.context.images
+    descriptions = context.context.image_descriptions
+    location = context.context.location or "Ubicación no especificada"
+    
+    # VALIDATION: Check if we have images
+    if not images or len(images) == 0:
+        return "No hay imágenes para este reporte. Por favor, envíe al menos una imagen."
+    
+    # VALIDATION: Check if this number has recently finalized a report
+    if phone_number in finalized_report_numbers:
+        logger.warning(f"Reporte ya finalizado recientemente para {phone_number}, ignorando solicitud duplicada")
+        return "Ya has enviado un reporte recientemente. Por favor, espera antes de enviar otro."
+    
+    # VALIDATION: Check if a report is already in progress
+    with reports_lock:
+        if context.context.report_in_progress:
+            logger.warning(f"Ya hay un reporte en proceso para {phone_number}, ignorando solicitud adicional")
+            return "Tu reporte ya está siendo procesado. Por favor, espera unos momentos."
+        
+        # Mark as in progress
+        context.context.report_in_progress = True
+    
+    try:
+        # Create the report
+        folio = await save_client_selection(
+            phone_number, 
+            location,
+            "", "", "", "", "", "",
+            None,
+            images,
+            descriptions
+        )
+        
+        # Add to finalized set and schedule removal after 5 minutes
+        finalized_report_numbers.add(phone_number)
+        asyncio.create_task(remove_from_finalized(phone_number, 300))
+        
+        # Clear the context for future reports
+        context.context.images = []
+        context.context.image_descriptions = []
+        context.context.location = None
+        context.context.report_in_progress = False
+        
+        return f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}."
+    except Exception as e:
+        logger.error(f"Error al procesar reporte para {phone_number}: {str(e)}")
+        # Reset in_progress flag
+        context.context.report_in_progress = False
+        return f"Error al finalizar el reporte: {str(e)}. Por favor, intenta nuevamente."
+
+@function_tool(name_override="transfer_to_human", description_override="Transfer the conversation to a human agent")
+async def transfer_to_human(context: RunContextWrapper[WhatsAppBaseContext], reason: str = None, group_id: int = None) -> str:
+    """
+    Transfers the conversation to a human agent.
+    """
+    phone_number = context.context.phone_number
+    
+    try:
+        # Add to transferred numbers with expiration timestamp
+        expiration_time = datetime.now().timestamp() + transfer_timeout
+        transferred_numbers[phone_number] = expiration_time
+        
+        # Execute the actual transfer
+        result = await transfer_to_group(phone_number, group_id)
+        
+        # Schedule removal from transferred set after the timeout period
+        asyncio.create_task(remove_from_transferred(phone_number, transfer_timeout))
+        
+        return f"Conversación transferida a un agente humano. Un agente te atenderá en breve."
+    except Exception as e:
+        logger.error(f"Error executing transfer: {str(e)}")
+        # If transfer fails, remove from transferred numbers
+        if phone_number in transferred_numbers:
+            del transferred_numbers[phone_number]
+        return f"Error al transferir: {str(e)}. Por favor, intenta más tarde."
+
+async def remove_from_finalized(number, delay_seconds):
+    """Helper function to remove a number from the finalized set after a delay"""
+    await asyncio.sleep(delay_seconds)
+    if number in finalized_report_numbers:
+        finalized_report_numbers.remove(number)
+        logger.debug(f"Número {number} removido de la lista de reportes finalizados después de {delay_seconds} segundos")
+
+async def remove_from_transferred(number, delay_seconds):
+    """Helper function to remove a number from the transferred set after a delay"""
+    await asyncio.sleep(delay_seconds)
+    if number in transferred_numbers:
+        del transferred_numbers[number]
+        logger.debug(f"Bot re-enabled for {number} after {delay_seconds} seconds")
+
+@function_tool(name_override="search_faqs", description_override="Search for answers in the FAQ database")
+async def search_faqs(query: str) -> str:
+    """
+    Simulated FAQ search tool - in production, connect to your knowledge base.
+    """
+    # Simulated knowledge base
+    knowledge_base = {
+        "reportes": "Para crear un reporte, envía imágenes del problema y describe la ubicación. Te guiaré en el proceso.",
+        "ubicación": "Puedes compartir tu ubicación usando el botón de WhatsApp o describiendo la dirección en texto.",
+        "contacto": "Puedes contactar a nuestro equipo de soporte en el teléfono 800-123-4567 o por correo a soporte@ejemplo.com.",
+        "horario": "Nuestro horario de atención es de lunes a viernes de 9am a 6pm.",
+        "estatus": "Para consultar el estatus de tu reporte, proporciona el número de folio que recibiste."
+    }
+    
+    # Simple keyword-based search
+    for keyword, answer in knowledge_base.items():
+        if keyword.lower() in query.lower():
+            return answer
+    
+    return "No encontré información específica sobre eso. Para reportes, envía imágenes y ubicación. Para otras consultas, puedo transferirte a un agente."
+
+# =======================================
+# Define Agents
+# =======================================
+
+# Report creation agent
+report_agent = Agent[ReportContext](
+    name="Report Agent",
+    handoff_description="Especialista en creación de reportes con imágenes y ubicación",
+    instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
+    Eres un asistente especializado en la creación de reportes.
+    
+    Tu objetivo es guiar al usuario a través del proceso de crear un reporte:
+    1. Recibir y analizar imágenes relacionadas con el problema (using analyze_image)
+    2. Obtener la ubicación del problema (using process_location)
+    3. Finalizar el reporte cuando el usuario indique que ha terminado (using finalize_report)
+    
+    Sé paciente y claro en tus instrucciones. Si el usuario no proporciona suficiente información, 
+    pídele claramente lo que necesitas. Si el usuario solicita ayuda con algo que no está relacionado 
+    con reportes, considera hacer una transferencia al agente apropiado.
+    
+    Si el usuario indica que ha terminado (con frases como "listo", "ya terminé", "finalizar reporte"), 
+    verifica que tengas al menos una imagen y, si es posible, información de ubicación, antes de finalizar.
+    """,
+    tools=[analyze_image, process_location, finalize_report]
+)
+
+# Customer support agent
+support_agent = Agent[CustomerSupportContext](
+    name="Customer Support Agent",
+    handoff_description="Agente de soporte al cliente para consultas y asistencia general",
+    instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
+    Eres un agente de atención al cliente profesional y amable.
+    
+    Tu objetivo es:
+    1. Responder consultas generales de los usuarios
+    2. Proporcionar información sobre servicios
+    3. Ayudar a resolver problemas sencillos
+    4. Transferir conversaciones a agentes humanos cuando sea necesario
+    
+    Usa la herramienta search_faqs para encontrar respuestas a preguntas comunes.
+    
+    Si el usuario necesita crear un reporte con imágenes, transfiérelo al Report Agent.
+    Si el usuario tiene una consulta muy específica o compleja que requiere asistencia humana,
+    usa transfer_to_human.
+    """,
+    tools=[search_faqs, transfer_to_human]
+)
+
+# Switchboard/triage agent
+switchboard_agent = Agent[SwitchboardContext](
+    name="Switchboard Agent",
+    handoff_description="Agente de clasificación inicial que dirige al usuario al especialista adecuado",
+    instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
+    Eres un agente de clasificación inicial. Tu trabajo es entender rápidamente la necesidad del usuario
+    y dirigirlo al especialista más adecuado:
+    
+    1. Si el usuario menciona enviar fotos, imágenes, o reportar un problema → Report Agent
+    2. Para consultas generales, información, o asistencia → Customer Support Agent
+    
+    Mantén tus respuestas breves y eficientes. No intentes resolver el problema tú mismo,
+    simplemente identifica qué agente especializado debe atender al usuario.
+    
+    Si no estás seguro, haz una pregunta de clarificación antes de transferir.
+    """,
+    handoffs=[
+        report_agent,
+        support_agent,
+    ]
+)
+
+# Add handoff paths back to switchboard
+report_agent.handoffs.append(switchboard_agent)
+support_agent.handoffs.append(switchboard_agent)
+
+# Add handoffs between specialized agents
+report_agent.handoffs.append(support_agent)
+support_agent.handoffs.append(report_agent)
+
+# =======================================
+# Message Processing Functions
+# =======================================
 
 async def manage_message_history(db, number, max_messages=20):
     """
@@ -111,172 +404,10 @@ async def manage_message_history(db, number, max_messages=20):
     except Exception as e:
         logger.error(f"Error al gestionar historial de mensajes: {str(e)}")
 
-router = APIRouter()
-# Historial en memoria para una conversación dinámica
-user_histories = {}
-
-@router.post("/")
-async def post(request: Request):
-    response = VoiceResponse()
-    host = request.headers.get("host")
-    connect = Connect()
-    connect.stream(url=f"wss://{host}/stream")
-    response.append(connect)
-    text = response.to_xml()
-    logger.debug(text)
-    return Response(content=text, media_type="text/xml")
-
-
-@router.websocket("/stream")
-async def websocket_endpoint(ws: WebSocket):
-    db = LocalStorage()
-    config = { conf.name: conf.getval() for conf in db.GetAll(Config) }
-
-    logHandler = get_thread_log_handler(config.get("rawLogs", 10))
-
-    logger.info("Got new INCOMING_CALL")
-
-    websocket_handler = WebSocketHandler(ws)
-    await websocket_handler.connect()
-
-    # Set up Deepgram as the Speech-to-Text (STT) Model
-    #stt_service = DeepgramService(DEEPGRAM_API_KEY)
-
-
-    # Set up Amazon Transcribe as the Speech-to-Text (STT) Model.
-    logger.debug("Setting up transcription service")
-    stt_service = AmazonTranscribeService(
-        region="us-east-1",
-        sample_rate=8000,
-        enhanced=False,
-        language=config["language"]
-    )
-
-    function_manager = FunctionManager(registered_functions)
-
-    # Get the current date and time
-    now = datetime.now()
-    callDirection = "Inbound"
-    call = db.Search(Call(callUid = websocket_handler.call_sid), True)
-    if call:
-        callDirection = "Outbound"
-        call.callStatus = "IN_PROGRESS"
-        db.Update(call)
-    else:
-        call = Call(
-            callTime = now.strftime("%Y-%m-%d %H:%M:%S"),
-            callSource = "Twillio",
-            callType = "IP",
-            callDirection = "IN_COMING",
-            callStatus = "IN_PROGRESS",
-            callNumber = "Not Available",
-            callUid = websocket_handler.call_sid
-        )
-        call = db.Insert(call)
-
-    mexico_tz = pytz.timezone('America/Mexico_City')
-    current_datetime = datetime.now(mexico_tz)
-    print(f"Hora original (MX): {current_datetime.strftime('%Y-%m-%d %I:%M:%S %p')}")
-    date_string = current_datetime.strftime("%Y-%m-%d")
-    hour = current_datetime.strftime("%I:%M:%S %p")
-    print(f"\nRESULTADO FINAL -> Fecha: {date_string}, Hora: {hour}")
-
-    # Get call SID and customer identity
-    call_sid = websocket_handler.call_sid
-    customer_identity = await get_customer_identity(call_sid)
-    call.callerName = customer_identity
-
-    selection1 = await find_row_and_update_selection(call.callNumber, 1)
-    selection2 = await find_row_and_update_selection(call.callNumber, 2)
-    selection3 = await find_row_and_update_selection(call.callNumber, 3)
-    selection4 = await find_row_and_update_selection(call.callNumber, 4)
-    selection5 = await find_row_and_update_selection(call.callNumber, 5)
-    selection6 = await find_row_and_update_selection(call.callNumber, 6)
-    selection7 = await find_row_and_update_selection(call.callNumber, 7)
-
-    #folio = await save_client_selection(call_sid, selection1, selection2, selection3, selection4, selection5, selection6, selection7)
-
-    logger.debug("Initializing LLM service for the new call")
-    llm_service = OpenAIService(
-        config=config,
-        api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio=folio),
-        function_manager=function_manager
-    )
-
-    # tts_service = ElevenTTSService(
-    #     api_key=ELEVENLABS_API_KEY,
-    #     voice_id=VOICE_ID,
-    #     similarity_boost=0.6,
-    #     stability=0.7,
-    #     stream_results=True,
-    # )
-
-    logger.debug("Initializing TTS engine for call")
-    tts_service = AmazonTTSService(
-        access_key=AWS_ACCESS_KEY_ID,
-        secret_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
-        stream_results=False,
-        language=config["language"]
-    )
-
-    logger.debug("Initializing orchestrator for the call")
-    orchestrator = Orchestrator(
-        config=config,
-        websocket_handler=websocket_handler,
-        stt_service=stt_service,
-        llm_service=llm_service,
-        tts_service=tts_service,
-    )
-
-    logger.debug("Starting a conversation with caller")
-    stats = await orchestrator.process_audio_stream()
-
-    # Sync the call record in case of AMD detection event was triggered
-    call = db.Search(Call(callUid = websocket_handler.call_sid), True)
-    call.callLogs = logHandler.stream.getvalue()
-
-    if config.get(f"saveScript{callDirection}", False):
-        call.callScript = json.dumps(stats['Script'])
-    
-    if config.get(f"recordCalls{callDirection}", False):
-        call.callPlayback = json.dumps(websocket_handler.audio_sequence)
-    
-    if call.callStatus != "AMD":
-        # (VERY IMPORTANT) only update status if AMD is not detected
-        call.callStatus = stats['Status']
-
-    call.callDuration = (datetime.now() - now).seconds
-    db.Update(call)
-    
-    hooks = Hooks()
-    for hook in hooks.Get(True):
-        if hook["type"] == "POST_CALL":
-            logger.debug("Hook found for call executing function " + hook["name"])
-            hook["function"](call, config)
-
-    cleanup_call_logger()
-
-# Diccionario global para almacenar las sesiones de WhatsApp.
-# En vez de user_histories, usamos user_sessions para incluir la marca de última actividad.
-user_sessions = {}  # key: from_number, value: WhatsAppSession
-
-# Tiempo de inactividad (en segundos) antes de desconectar la sesión (5 minutos)
-INACTIVITY_THRESHOLD = 2 * 60
-
-class WhatsAppSession:
-    def __init__(self, history):
-        self.history = history
-        self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
-    
-    def update_activity(self):
-        self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
-
 async def check_inactivity():
     """
     Tarea en background que revisa cada minuto las sesiones activas.
-    Si alguna sesión ha estado inactiva más de 5 minutos, se envía un mensaje
+    Si alguna sesión ha estado inactiva más de INACTIVITY_THRESHOLD, se envía un mensaje
     de alerta por Chat2Desk, elimina los mensajes de la base de datos y elimina la sesión.
     """
     while True:
@@ -284,8 +415,8 @@ async def check_inactivity():
         now = datetime.now(pytz.timezone('America/Mexico_City'))
         db = LocalStorage()
         
-        for number, session in list(user_sessions.items()):
-            elapsed = (now - session.last_active).total_seconds()
+        for number, context in list(conversation_contexts.items()):
+            elapsed = (now - context.last_active).total_seconds()
             if elapsed > INACTIVITY_THRESHOLD:
                 try:
                     # Notificar al usuario usando Chat2Desk
@@ -322,80 +453,125 @@ async def check_inactivity():
                                 await client.post(chat2desk_url, json=message_data, headers=headers)
                     
                     # Eliminar todos los mensajes de este número de la base de datos
-                    messages_to_delete = db.Search(Message(number=number))
-                    count = 0
-                    if messages_to_delete:
-                        for msg in messages_to_delete:
-                            if db.delete_messages_by_number(msg):
-                                count += 1
-                        logger.debug(f"Se eliminaron {count} mensajes para el número {number} por inactividad.")
-                    else:
-                        logger.debug(f"No se encontraron mensajes para eliminar para el número {number}")
+                    conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
+                    cursor = conn.cursor()
+                    
+                    # SQL directo para eliminar mensajes por número
+                    cursor.execute("DELETE FROM messages WHERE number = %s", [number])
+                    count = cursor.rowcount
+                    
+                    conn.commit()
+                    conn.close()
+                    
+                    logger.debug(f"Se eliminaron {count} mensajes para el número {number} por inactividad.")
                     
                     # Eliminar la sesión
-                    del user_sessions[number]
+                    del conversation_contexts[number]
                     logger.debug(f"Sesión de {number} desconectada por inactividad.")
                 except Exception as e:
                     logger.error(f"Error enviando mensaje de desconexión para {number}: {str(e)}")
                     # Aún intentamos eliminar la sesión incluso si falló el envío del mensaje
-                    if number in user_sessions:
-                        del user_sessions[number]
+                    if number in conversation_contexts:
+                        del conversation_contexts[number]
 
-# ------------------------------
-# Función de ciclo de vida (lifespan)
-# ------------------------------
+async def send_whatsapp_message(client_id, channel_id, message_text):
+    """
+    Sends a WhatsApp message using Chat2Desk API
+    """
+    api_token = os.getenv("CHAT2DESK_API_TOKEN")
+    chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+    
+    headers = {
+        "Authorization": api_token,
+        "Content-Type": "application/json"
+    }
+    
+    # Check if the message contains function call patterns to sanitize
+    function_call_patterns = [
+        "transfer_to_group", 
+        "call_sid =",
+        "functions.hangup",
+        "await save_client_selection",
+        "save_client_selection"
+    ]
+    
+    # Check if the response looks like a function call or system instruction
+    is_function_call = any(pattern in message_text for pattern in function_call_patterns)
+
+    # If this looks like a function call instruction or system message, replace it
+    if is_function_call:
+        logger.warning(f"Detected function call in response: {message_text}")
+        message_text = "Estoy procesando tu solicitud. Dame un momento por favor."
+
+    data = {
+        "client_id": client_id,
+        "channel_id": channel_id,
+        "transport": "wa_direct",
+        "text": message_text
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(chat2desk_url, json=data, headers=headers)
+    
+    if response.status_code != 200:
+        logger.error(f"Error al enviar mensaje a Chat2Desk: {response.status_code} - {response.text}")
+        return False
+    
+    return True
+
+# =======================================
+# FastAPI Application & Endpoints
+# =======================================
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: se lanza la tarea de verificación de inactividad
+    # Startup: launch background tasks
     asyncio.create_task(check_inactivity())
     yield
-    # Shutdown: se puede agregar lógica de limpieza si se requiere
+    # Shutdown: cleanup if needed
+
 app = FastAPI(lifespan=lifespan)
-
 router = APIRouter()
-
-
-# Add this at the module level (outside of the function)
-processed_message_ids = set()
 
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
-    logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
-    # Configuración de base de datos y demás servicios
+    """
+    Endpoint for WhatsApp integration using the multi-agent architecture
+    """
+    logger.debug("Processing WhatsApp message")
+    
+    # Database and configuration setup
     db = LocalStorage()
-    args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
-    function_manager = FunctionManager(registered_functions)
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+    
     try:
-        payload = await request.json()  # Recibimos el payload como JSON
-        print(f"Payload recibido: {payload}")
+        # Parse JSON payload
+        payload = await request.json()
+        logger.debug(f"Received payload: {payload}")
         
-        # IMPORTANTE: Verificar si es un mensaje de un cliente o una respuesta del sistema
+        # IMPORTANT: Verify if this is a client message or system response
         message_type = payload.get('type', '')
         uid = payload.get('message_id')
         
-        # Solo procesar mensajes que vienen del cliente (ignorar webhooks de mensajes enviados por el bot)
+        # Only process messages from clients (ignore webhooks from bot messages)
         if message_type != 'from_client':
-            logger.debug(f"Ignorando mensaje con type={message_type} que no es from_client")
-            return JSONResponse(content={"status": True, "message": "Mensaje del sistema ignorado"})
+            logger.debug(f"Ignoring message with type={message_type} (not from_client)")
+            return JSONResponse(content={"status": True, "message": "System message ignored"})
         
-        # Verificar si este mensaje ya ha sido procesado (deduplicación)
+        # Message deduplication
         if uid in processed_message_ids:
-            logger.debug(f"Ignorando mensaje duplicado con id={uid}")
-            return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
+            logger.debug(f"Ignoring duplicate message with id={uid}")
+            return JSONResponse(content={"status": True, "message": "Duplicate message ignored"})
         
-        # Marcar este mensaje como procesado
+        # Mark message as processed
         processed_message_ids.add(uid)
         
-        # Limitar el tamaño del conjunto para evitar crecimiento indefinido
+        # Limit the size of the set to prevent unlimited growth
         if len(processed_message_ids) > 1000:
-            # Eliminar los elementos más antiguos (esto es simplificado, podría usar una cola)
             processed_message_ids.clear()
             processed_message_ids.add(uid)
         
-        # Extraer información del payload de Chat2Desk
+        # Extract information from Chat2Desk payload
         chat_id = payload.get('chat_id')
         from_number = payload.get('client', {}).get('phone')
         sender_name = payload.get('client', {}).get('name', 'Usuario')
@@ -403,443 +579,278 @@ async def whatsapp(request: Request):
         channel_id = payload.get('channel_id')
         client_id = payload.get('client_id')
         
-        logger.debug(f"Datos recibidos: chat_id={chat_id}, sender_name={sender_name}, body={body}, "
-                     f"from_number={from_number}, message_type={message_type}, uid={uid}")
-
-        # Variables para ubicación, imagen y audio
+        # Check if the number is currently being handled by a human agent
+        current_time = datetime.now().timestamp()
+        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
+            # This number has been transferred to a human agent and the transfer hasn't expired
+            logger.info(f"Ignoring message from {from_number} as it's being handled by a human agent (expires in {int(transferred_numbers[from_number] - current_time)} seconds)")
+            return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
+        elif from_number in transferred_numbers:
+            # Transfer has expired, remove it from the dictionary
+            logger.info(f"Transfer for {from_number} has expired, bot is now responding again")
+            del transferred_numbers[from_number]
+        
+        logger.debug(f"Message data: chat_id={chat_id}, sender={sender_name}, message={body}, number={from_number}")
+        
+        # Process special content types (location, audio, image)
         address = None
         latitude, longitude = None, None
         photo_url = None
         audio_url = None
-
-        # Verificación del tipo de contenido en el mensaje
-        # Verificación del tipo de contenido en el mensaje
+        image_description = None
+        
+        # Handle location data
         if payload.get("coordinates"):
-            # Procesamiento de ubicación
             coords = payload.get("coordinates")
-            logger.debug(f"Formato de coordenadas recibidas: {coords}")
+            logger.debug(f"Coordinates format: {coords}")
             
-            # Manejar tanto formato con coma como con espacio
+            # Handle comma or space separated coordinates
             if isinstance(coords, str):
                 if "," in coords:
                     latitude, longitude = coords.split(",")
                 elif " " in coords:
-                    longitude, latitude = coords.split(" ")  # Nota: en tu payload, primero viene la longitud
+                    longitude, latitude = coords.split(" ")  # In your payload, longitude comes first
                 else:
-                    logger.error(f"Formato de coordenadas desconocido: {coords}")
+                    logger.error(f"Unknown coordinate format: {coords}")
                     latitude, longitude = None, None
                     
                 if latitude and longitude:
                     try:
-                        # Asegurarse que las coordenadas son números flotantes
+                        # Ensure coordinates are floats
                         latitude = float(latitude.strip())
                         longitude = float(longitude.strip())
                         
-                        # Convertir la latitud y longitud a dirección
+                        # Convert lat/long to address
                         address = await latlong_to_address(latitude, longitude)
                         body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
                     except Exception as e:
-                        logger.error(f"Error al convertir coordenadas a dirección: {str(e)}")
+                        logger.error(f"Error converting coordinates to address: {str(e)}")
                         body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
                     
-                    logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
-
+                    logger.debug(f"Location message: lat={latitude}, long={longitude}, address={address if 'address' in locals() else 'Not available'}")
+        
+        # Handle audio data
         elif payload.get("audio"):
-            # Procesamiento de audio
             audio_url = payload.get("audio")
             body = TranscribeOGG(audio_url, config["language"])
-            logger.debug(f"Audio transcrito: {body}")
-
+            logger.debug(f"Transcribed audio: {body}")
+        
+        # Handle image data
         elif payload.get("photo"):
-            # Procesamiento de imagen
             photo_url = payload.get("photo")
             if photo_url:
-                try:
-                    # Descargar la imagen 
-                    response = requests.get(photo_url)
-                    image_content = BytesIO(response.content)
-                    # Analizar la imagen
-                    image_analysis = client.chat.completions.create(
-                        model="gpt-4o",  # Asegúrate de usar el modelo correcto
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "Describe esta imagen en detalle."},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
-                                        },
-                                    },
-                                ],
-                            }
-                        ],
-                        max_tokens=300,
-                    )
-                    # Obtener la descripción de la imagen
-                    image_description = image_analysis.choices[0].message.content
-                    body = f"Imagen recibida. Descripción: {image_description}"
-                    logger.debug(f"Descripción de la imagen: {image_description}")
-                except requests.RequestException as e:
-                    logger.error(f"Error al descargar la imagen: {str(e)}")
-                    body = "Se recibió una imagen, pero no se pudo descargar. Por favor, intenta enviarla de nuevo."
-                except Exception as e:
-                    logger.error(f"Error al analizar la imagen: {str(e)}")
-                    body = "Se recibió una imagen, pero hubo un problema al analizarla. El equipo técnico ha sido notificado."
-            else:
-                body = "Se recibió una notificación de imagen, pero no se encontró la URL de la imagen."
-                logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
-            
-    except KeyError as e:
-        logger.error(f"Falta el parámetro requerido: {e}")
-        return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
-    except Exception as e:
-        logger.error(f"Error al procesar el payload: {str(e)}")
-        return JSONResponse(content={"error": f"Error al procesar el payload: {str(e)}"}, status_code=400)
-
-    # Validación básica para evitar procesar mensajes mal formados
-    if not from_number or not body:
-        logger.warning("Mensaje recibido sin número de teléfono o cuerpo del mensaje")
-        return JSONResponse(content={"status": False, "error": "Datos incompletos"}, status_code=400)
-
-    # Crear o actualizar la sesión del usuario
-    if from_number not in user_sessions:
-        logger.debug(f"Creando nueva sesión para el usuario: {from_number}")
-        user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
-    session = user_sessions[from_number]
-    session.update_activity()  # Actualiza la marca de actividad
-    conversation_history = session.history
-
-    # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
-    try:
-        logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
+                body = "PHOTO_URL_RECEIVED"  # We'll process this using the analyze_image tool
         
-        # Obtener mensajes ordenados por tiempo (los más antiguos primero)
-        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        # Create or get the user context
+        if from_number not in conversation_contexts:
+            # New conversation - start with the switchboard context
+            conversation_contexts[from_number] = SwitchboardContext(
+                phone_number=from_number,
+                customer_name=sender_name,
+                chat_id=chat_id,
+                client_id=client_id,
+                channel_id=channel_id
+            )
+        else:
+            # Update the last active timestamp
+            conversation_contexts[from_number].update_activity()
         
-        # Limpiar el historial antes de agregar mensajes para evitar duplicados
-        conversation_history.messages.clear()
+        # Get the current context
+        current_context = conversation_contexts[from_number]
         
-        # Añadir los mensajes al historial en el orden correcto
+        # Save user message to database
+        user_message = Message(
+            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            senderName=sender_name,
+            message=body,
+            number=from_number,
+            uid=uid,
+            direction="inbound",
+            mtype="text",
+            source="whatsapp",
+            latitude=latitude,
+            longitude=longitude
+        )
+        db.Insert(user_message)
+        await manage_message_history(db, from_number)
+        
+        # Load conversation history
+        conversation_history = ChatMessageHistory()
+        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=20) or []
+        
         for msg in messages_db:
             if msg.direction == "inbound":
                 conversation_history.add_user_message(msg.message)
-                logger.debug(f"Mensaje histórico (usuario): {msg.message[:30]}...")
             elif msg.direction == "outbound":
                 conversation_history.add_ai_message(msg.message)
-                logger.debug(f"Mensaje histórico (asistente): {msg.message[:30]}...")
-            
-    except Exception as e:
-        logger.error(f"Error al recuperar mensajes históricos: {str(e)}")
-
-    # Agregar mensaje actual del usuario al historial y guardarlo en la base de datos
-    conversation_history.add_user_message(body)
-    user_message = Message(
-        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        senderName=sender_name,
-        message=body,
-        number=from_number,
-        uid=uid,
-        direction="inbound",
-        mtype="text",
-        source="whatsapp",
-        latitude=latitude,
-        longitude=longitude
-    )
-    logger.debug(f"Guardando mensaje del usuario en BD: {body[:30]}...")
-    db.Insert(user_message)
-    await manage_message_history(db, from_number)
-    
-    mexico_tz = pytz.timezone('America/Mexico_City')
-    current_datetime = datetime.now(mexico_tz)
-    date_string = current_datetime.strftime("%Y-%m-%d")
-    hour = current_datetime.strftime("%I:%M:%S %p")
-    #folio = await save_client_selection(from_number, "", "", "", "", "", "", "", "")
-    
-    try:
-        # Crear el prompt con el historial de mensajes
-        system_prompt = system_message.format(customer_name=sender_name,call_sid=uid,date2=date_string,
-            yoga_number=user_message.number,
-            now=hour,
-            folio="Pendiente de generar",
-            address=address if 'address' in locals() else "No he recibido ubicación",
-            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
-        )
-
-        llm_service = OpenAIService(
-            config=config,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            system=system_prompt,
-            function_manager=function_manager
-        )
-
-        # Procesar la imagen si está disponible
-        if 'image_description' in locals() and image_description:
-            image_message = f"[Imagen recibida. Descripción: {image_description}]"
-            # No es necesario añadirlo otra vez ya que el cuerpo del mensaje ya contiene esta info
-            # conversation_history.add_user_message(image_message)
-
-        # Formatear el historial de mensajes para el modelo
-        formatted_history = [
-            {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
-            else {"role": "system", "content": message.content} if isinstance(message, SystemMessage)
-            else {"role": "assistant", "content": message.content}
-            for message in conversation_history.messages
-        ]
         
-        # Convertir formatted_history en un solo string para user_input
-        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
-        logger.debug(f"Input preparado para el modelo (primeros 100 caracteres): {user_input[:100]}...")
-
-        # Generar la respuesta del modelo usando el historial completo
-        model_response = llm_service.generate_response(user_input=user_input)
-        response_content = ""
-        async for response in model_response:
-            response_content += str(response)
-            
-        # Asegurar que response_content sea un string
-        if isinstance(response_content, list):
-            response_content = " ".join([str(item) for item in response_content])
-        elif not isinstance(response_content, str):
-            response_content = str(response_content)
-
-        # Guardar la respuesta en el historial y en la base de datos
-        conversation_history.add_ai_message(response_content)
-        assistant_message = Message(
-            time=current_datetime,
-            senderName="Assistant",
-            message=response_content,
-            number=from_number,
-            uid=uid,
-            direction="outbound",
-            mtype="text",
-            source="whatsapp"
-        )
-        logger.debug(f"Guardando respuesta del asistente en BD: {response_content[:30]}...")
-        db.Insert(assistant_message)
-        await manage_message_history(db, from_number)
-
-    except Exception as e:
-        logger.error(f"Error al generar la respuesta: {str(e)}")
-        return JSONResponse(content={"error": f"Error al generar respuesta: {str(e)}"}, status_code=500)
-    
-    # Enviar la respuesta a través de Chat2Desk
-    try:
-        api_token = os.getenv("CHAT2DESK_API_TOKEN")
-        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+        # Determine current agent based on context type
+        if isinstance(current_context, ReportContext):
+            current_agent = report_agent
+        elif isinstance(current_context, CustomerSupportContext):
+            current_agent = support_agent
+        else:  # SwitchboardContext
+            current_agent = switchboard_agent
         
-        headers = {
-            "Authorization": api_token,
-            "Content-Type": "application/json"
-        }
+        # Prepare input for the agent
+        input_items = []
+        for message in conversation_history.messages:
+            if isinstance(message, HumanMessage):
+                input_items.append({"content": message.content, "role": "user"})
+            elif isinstance(message, AIMessage):
+                input_items.append({"content": message.content, "role": "assistant"})
         
-        data = {
-            "client_id": client_id,
-            "channel_id": channel_id,
-            "transport": "wa_direct",
-            "text": response_content
-        }
-        
-        response = requests.post(chat2desk_url, json=data, headers=headers)
-        
-        if response.status_code == 200:
-            logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
-            content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
+        # Add the current message
+        if photo_url:
+            # Special handling for images - we'll use the image URL directly
+            if isinstance(current_context, ReportContext):
+                # For the report agent, mention the photo URL so it can use analyze_image
+                input_items.append({"content": f"[He enviado una imagen. URL: {photo_url}]", "role": "user"})
+            else:
+                # For other agents, add a generic message about sending an image
+                input_items.append({"content": "He enviado una imagen", "role": "user"})
         else:
-            logger.error(f"Error al enviar mensaje a Chat2Desk: {response.status_code} - {response.text}")
-            content = {"status": False, "error": f"Error al enviar mensaje: {response.status_code}"}
-
-    except requests.RequestException as e:
-        logger.error(f"Error de conexión con Chat2Desk: {str(e)}")
-        content = {"status": False, "error": f"Error de conexión: {str(e)}"}
-    except Exception as e:
-        logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
-        content = {"status": False, "error": f"Error inesperado: {str(e)}"}
-
-    # Después de enviar la respuesta a través de Chat2Desk y justo antes de return JSONResponse
-    # Verificar si el mensaje del usuario indica despedida y la respuesta del bot también
-    farewell_keywords = ["gracias", "adiós", "adios", "hasta luego", "chao", "bye", "es todo", "terminar"]
-    bot_farewell_indicators = ["que tengas", "hasta luego", "adiós", "adios", "buen día", "hasta pronto"]
-
-    # Función de limpieza definida fuera del bloque if para evitar problemas de acceso
-    async def delayed_cleanup_msgs(phone_number):
+            # Normal text message
+            input_items.append({"content": body, "role": "user"})
+        
+        # Process the message through the agent system
         try:
-            await asyncio.sleep(5)  # Esperar 5 segundos para asegurar que el mensaje se entregó
-            db = LocalStorage()
-            
-            # Usar el método para eliminar mensajes por número
-            # Implementa este método en la clase LocalStorage
-            conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
-            cursor = conn.cursor()
-            
-            # SQL directo para eliminar mensajes por número
-            cursor.execute("DELETE FROM messages WHERE number = %s", [phone_number])
-            count = cursor.rowcount
-            
-            conn.commit()
-            conn.close()
-            
-            logger.debug(f"Se eliminaron {count} mensajes para el número {phone_number} por despedida.")
-            
-            # Eliminar la sesión también
-            if phone_number in user_sessions:
-                del user_sessions[phone_number]
-                logger.debug(f"Sesión de {phone_number} finalizada por despedida.")
+            with trace(f"WhatsApp conversation", group_id=f"wa-{from_number}"):
+                # Run the agent with the appropriate context
+                result = await Runner.run(current_agent, input_items, context=current_context)
                 
+                # Process agent response
+                response_text = ""
+                new_agent = None
+                
+                for new_item in result.new_items:
+                    if isinstance(new_item, MessageOutputItem):
+                        agent_name = new_item.agent.name
+                        message_text = ItemHelpers.text_message_output(new_item)
+                        response_text += message_text
+                        logger.info(f"[{agent_name}] Response: {message_text}")
+                    
+                    elif isinstance(new_item, HandoffOutputItem):
+                        source_agent = new_item.source_agent.name
+                        target_agent = new_item.target_agent.name
+                        logger.info(f"Handoff from {source_agent} to {target_agent}")
+                        
+                        # Determine the new context type based on target agent
+                        if target_agent == "Report Agent" and not isinstance(current_context, ReportContext):
+                            # Create new ReportContext, preserving basic information
+                            new_context = ReportContext(
+                                phone_number=current_context.phone_number,
+                                customer_name=current_context.customer_name,
+                                chat_id=current_context.chat_id,
+                                client_id=current_context.client_id,
+                                channel_id=current_context.channel_id
+                            )
+                            conversation_contexts[from_number] = new_context
+                        
+                        elif target_agent == "Customer Support Agent" and not isinstance(current_context, CustomerSupportContext):
+                            # Create new CustomerSupportContext
+                            new_context = CustomerSupportContext(
+                                phone_number=current_context.phone_number,
+                                customer_name=current_context.customer_name,
+                                chat_id=current_context.chat_id,
+                                client_id=current_context.client_id,
+                                channel_id=current_context.channel_id
+                            )
+                            conversation_contexts[from_number] = new_context
+                        
+                        elif target_agent == "Switchboard Agent" and not isinstance(current_context, SwitchboardContext):
+                            # Create new SwitchboardContext
+                            new_context = SwitchboardContext(
+                                phone_number=current_context.phone_number,
+                                customer_name=current_context.customer_name,
+                                chat_id=current_context.chat_id,
+                                client_id=current_context.client_id,
+                                channel_id=current_context.channel_id
+                            )
+                            conversation_contexts[from_number] = new_context
+                
+                # Update the current agent for the next message
+                conversation_contexts[from_number].current_agent_name = result.last_agent.name
+                
+                # Save assistant response to database
+                if response_text:
+                    assistant_message = Message(
+                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        senderName="Assistant",
+                        message=response_text,
+                        number=from_number,
+                        uid=f"resp-{uid}",
+                        direction="outbound",
+                        mtype="text",
+                        source="whatsapp"
+                    )
+                    db.Insert(assistant_message)
+                    await manage_message_history(db, from_number)
+                    
+                    # Send response via Chat2Desk
+                    success = await send_whatsapp_message(
+                        client_id=current_context.client_id,
+                        channel_id=current_context.channel_id,
+                        message_text=response_text
+                    )
+                    
+                    if not success:
+                        logger.error(f"Failed to send WhatsApp message to {from_number}")
+                
+                return JSONResponse(content={"status": True, "message": "Response processed and sent"})
+        
         except Exception as e:
-            logger.error(f"Error al eliminar mensajes: {str(e)}")
-
-    if (any(keyword in body.lower() for keyword in farewell_keywords) and 
-        any(indicator in response_content.lower() for indicator in bot_farewell_indicators)):
-        
-        # Crear tarea sin esperar a que termine
-        asyncio.create_task(delayed_cleanup_msgs(from_number))
-
-    return JSONResponse(content=content)
-
-# def add_message_to_history(role: str, message_content: str, conversation_history):
-#     """Función para agregar mensajes al historial"""
-#     if role == "user":
-#         conversation_history.add_user_message(message_content)
-#     else:
-#         conversation_history.add_ai_message(message_content)
-
-# import os
-# import httpx
-# import logging
-
-# logger = logging.getLogger(__name__)
-
-# async def send_chat2desk_message(client_id, channel_id, response_content):
-#     logger.debug(f"Intentando enviar mensaje: client_id={client_id}, channel_id={channel_id}, response_content={response_content}")
-
-#     if not client_id:
-#         logger.error("client_id es None o vacío")
-#         return None
-#     if not channel_id:
-#         logger.error("channel_id es None o vacío")
-#         return None
-#     if not response_content:
-#         logger.error("response_content es None o vacío")
-#         return None
-
-#     if not isinstance(response_content, str):
-#         logger.warning(f"response_content no es una cadena: {type(response_content)}. Intentando convertir a string.")
-#         try:
-#             response_content = str(response_content)
-#         except Exception as e:
-#             logger.error(f"No se pudo convertir response_content a string: {e}")
-#             return None
-
-#     api_token = os.getenv("CHAT2DESK_API_TOKEN")
-#     if not api_token:
-#         logger.error("El token de API de Chat2Desk no está configurado.")
-#         return None
-
-#     url = "https://api.chat2desk.com.mx/v1/messages"
-#     headers = {
-#         "Authorization": api_token,
-#         "Content-Type": "application/json"
-#     }
-
-#     data = {
-#         "client_id": client_id,
-#         "channel_id": channel_id,
-#         "transport": "wa_direct",
-#         "text": response_content
-#     }
-
-#     try:
-#         async with httpx.AsyncClient() as client:
-#             response = await client.post(url, json=data, headers=headers, timeout=10)
-
-#         if response is None:
-#             logger.error("No se recibió respuesta de Chat2Desk.")
-#             return None
-#         if response.text is None:
-#             logger.error("response.text es None, no se puede procesar.")
-#             return None
-
-#         logger.info(f"Respuesta de Chat2Desk: {response.status_code} - {response.text}")
-#         return response
-#     except httpx.RequestError as e:
-#         logger.error(f"Error en la solicitud HTTP a Chat2Desk: {str(e)}")
-#         return None
-#     except Exception as e:
-#         logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
-#         return None
-
-def format_phone_number(phone):
-    """
-    Formatea un número de teléfono para usarlo con Chat2Desk.
+            logger.error(f"Error processing message with agent: {str(e)}")
+            traceback.print_exc()
+            return JSONResponse(content={"error": f"Error processing message: {str(e)}"}, status_code=500)
     
-    Args:
-        phone (str): Número de teléfono en cualquier formato
-        
-    Returns:
-        str: Número formateado (sin '+' y con prefijo 521 si es de México)
-    """
-    # Eliminar cualquier caracter no numérico
-    phone = ''.join(filter(str.isdigit, phone))
-    
-    # Asegurarse que tenga el prefijo de México para WhatsApp (521)
-    if phone.startswith('52') and len(phone) >= 12:
-        # Ya tiene el formato correcto (52 + 1 + 10 dígitos)
-        return phone
-    elif phone.startswith('52') and len(phone) == 10:
-        # Falta el '1' después del código de país
-        return f"521{phone[2:]}"
-    elif len(phone) == 10:
-        # Solo tiene los 10 dígitos, agregar prefijo 521
-        return f"521{phone}"
-    elif len(phone) == 12 and phone.startswith('52'):
-        # Ya tiene formato internacional (52 + 10 dígitos)
-        return phone
-    
-    # Si no coincide con ningún patrón conocido, devolver como está
-    return phone
+    except KeyError as e:
+        logger.error(f"Missing required parameter: {e}")
+        return JSONResponse(content={"error": f"Missing parameter {str(e)}"}, status_code=400)
+    except Exception as e:
+        logger.error(f"Error processing payload: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(content={"error": f"Error processing payload: {str(e)}"}, status_code=400)
+
 
 @router.post("/report-status")
 async def report_status_update(request: Request):
     """
-    Endpoint para recibir actualizaciones de estados de reportes y enviar notificaciones
-    por WhatsApp a los clientes correspondientes. Solo se envían notificaciones
-    para estados "en progreso" y "concluido".
+    Endpoint to receive report status updates and send WhatsApp notifications
+    to corresponding customers. Only sends notifications for "en progreso" and "concluido" states.
     """
     try:
-        # Obtener los datos del cuerpo de la solicitud
+        # Get data from request body
         payload = await request.json()
-        logger.debug(f"Payload de actualización de reporte recibido: {payload}")
+        logger.debug(f"Report status update payload received: {payload}")
         
-        # Validar campos requeridos
+        # Validate required fields
         required_fields = ["reportId", "reportStatus", "phoneNumber"]
         for field in required_fields:
             if field not in payload:
                 return JSONResponse(
-                    content={"error": f"Campo requerido ausente: {field}"}, 
+                    content={"error": f"Missing required field: {field}"}, 
                     status_code=400
                 )
         
-        # Extraer datos
+        # Extract data
         report_id = payload["reportId"]
-        report_status = payload["reportStatus"].lower()  # Convertir a minúsculas para comparación
+        report_status = payload["reportStatus"].lower()  # Convert to lowercase for comparison
         phone_number = payload["phoneNumber"]
         
-        # Solo procesar estados específicos
+        # Only process specific states
         if report_status != "en progreso" and report_status != "concluido":
-            logger.debug(f"Estado '{report_status}' no requiere notificación. Solo se notifican 'en progreso' y 'concluido'")
+            logger.debug(f"State '{report_status}' does not require notification. Only 'en progreso' and 'concluido' are notified")
             return JSONResponse(content={
                 "status": True,
-                "message": f"No se requiere notificación para el estado: {report_status}"
+                "message": f"No notification required for state: {report_status}"
             })
         
-        # Formatear el número de teléfono para Chat2Desk
-        original_phone = phone_number
-        phone_number = format_phone_number(phone_number)
-        logger.debug(f"Número de teléfono formateado: {original_phone} -> {phone_number}")
-            
-        # Buscar cliente en Chat2Desk
+        # Format phone number for Chat2Desk
+        formatted_phone = phone_number
+        # Add phone formatting logic if needed
+        
+        # Look up client in Chat2Desk
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         chat2desk_base_url = "https://api.chat2desk.com.mx/v1"
         
@@ -848,30 +859,29 @@ async def report_status_update(request: Request):
             "Content-Type": "application/json"
         }
         
-        # Buscar cliente por número de teléfono
+        # Search for client by phone number
         search_url = f"{chat2desk_base_url}/clients"
-        params = {"phone": phone_number}
+        params = {"phone": formatted_phone}
         
         async with httpx.AsyncClient() as client:
             response = await client.get(search_url, params=params, headers=headers)
             
         if response.status_code != 200:
-            logger.error(f"Error al buscar cliente en Chat2Desk: {response.status_code} - {response.text}")
+            logger.error(f"Error searching for client in Chat2Desk: {response.status_code} - {response.text}")
             return JSONResponse(
-                content={"error": f"Error al buscar cliente: {response.status_code}"}, 
+                content={"error": f"Error searching for client: {response.status_code}"}, 
                 status_code=500
             )
             
         response_data = response.json()
-        logger.debug(f"Respuesta de búsqueda de cliente: {response_data}")
         
-        # Verificar si se encontró el cliente basado en la estructura de respuesta de Chat2Desk
+        # Check if client was found based on Chat2Desk response structure
         if response_data.get("status") != "success" or not response_data.get("data") or len(response_data.get("data", [])) == 0:
-            # Cliente no encontrado, lo creamos
-            logger.debug(f"Cliente no encontrado, creando nuevo cliente con número: {phone_number}")
+            # Client not found, create new one
+            logger.debug(f"Client not found, creating new client with number: {formatted_phone}")
             create_url = f"{chat2desk_base_url}/clients"
             client_data = {
-                "phone": phone_number,
+                "phone": formatted_phone,
                 "transport": "wa_direct"
             }
             
@@ -879,48 +889,46 @@ async def report_status_update(request: Request):
                 response = await client.post(create_url, json=client_data, headers=headers)
                 
             if response.status_code != 200:
-                logger.error(f"Error al crear cliente en Chat2Desk: {response.status_code} - {response.text}")
+                logger.error(f"Error creating client in Chat2Desk: {response.status_code} - {response.text}")
                 return JSONResponse(
-                    content={"error": f"Error al crear cliente: {response.status_code}"}, 
+                    content={"error": f"Error creating client: {response.status_code}"}, 
                     status_code=500
                 )
                 
             create_response = response.json()
             
-
             if create_response.get("status") != "success":
-                logger.error(f"Error en la respuesta al crear cliente: {create_response}")
+                logger.error(f"Error in response when creating client: {create_response}")
                 return JSONResponse(
-                    content={"error": "Error al crear cliente en Chat2Desk"}, 
+                    content={"error": "Error creating client in Chat2Desk"}, 
                     status_code=500
                 )
                 
             client_id = create_response.get("data", {}).get("id")
         else:
-            # Cliente encontrado
+            # Client found
             client_id = response_data.get("data")[0].get("id")
             
-        # Obtener información del canal (channel_id)
+        # Get channel information
         if not client_id:
             return JSONResponse(
-                content={"error": "No se pudo obtener el ID del cliente"}, 
+                content={"error": "Could not obtain client ID"}, 
                 status_code=500
             )
             
-        # En lugar de consultar los canales, usar un valor fijo
-        channel_id = 43347  # Valor fijo conocido para el canal de WhatsApp
-        logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
+        # Use fixed channel value instead of querying channels
+        channel_id = 43347  # Fixed known value for WhatsApp channel
         
-        # Preparar y enviar el mensaje al cliente
+        # Prepare and send message to client
         message_url = f"{chat2desk_base_url}/messages"
         
-        # Construir mensaje según el estado específico del reporte
+        # Build message based on report status
         if report_status == "en progreso":
             message_text = f"Su reporte #{report_id} ya se encuentra en proceso de atención. Un técnico está trabajando para resolver su solicitud lo antes posible."
         elif report_status == "concluido":
             message_text = f"¡Buenas noticias! Su reporte #{report_id} ha sido concluido satisfactoriamente. Gracias por su paciencia."
         
-        # Si hay información adicional en el payload, incluirla en el mensaje
+        # Include additional information if available
         if "additionalInfo" in payload and payload["additionalInfo"]:
             message_text += f"\n\nInformación adicional: {payload['additionalInfo']}"
             
@@ -931,99 +939,91 @@ async def report_status_update(request: Request):
             "text": message_text
         }
         
-        # Enviar el mensaje
+        # Send message
         async with httpx.AsyncClient() as client:
             response = await client.post(message_url, json=message_data, headers=headers)
             
         if response.status_code != 200:
-            logger.error(f"Error al enviar mensaje: {response.status_code} - {response.text}")
+            logger.error(f"Error sending message: {response.status_code} - {response.text}")
             return JSONResponse(
-                content={"error": f"Error al enviar mensaje: {response.status_code}"}, 
+                content={"error": f"Error sending message: {response.status_code}"}, 
                 status_code=500
             )
             
         send_response = response.json()
         if send_response.get("status") != "success":
-            logger.error(f"Error en la respuesta al enviar mensaje: {send_response}")
+            logger.error(f"Error in response when sending message: {send_response}")
             return JSONResponse(
-                content={"error": "Error al enviar mensaje en Chat2Desk"}, 
+                content={"error": "Error sending message in Chat2Desk"}, 
                 status_code=500
             )
             
-        # Almacenar el mensaje en la base de datos local
+        # Store message in local database
         db = LocalStorage()
         message = Message(
             time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             senderName="Sistema",
             message=message_text,
-            number=phone_number,
+            number=formatted_phone,
             uid=f"report-{report_id}-{datetime.now().timestamp()}",
             direction="outbound",
             mtype="text",
             source="whatsapp"
         )
         db.Insert(message)
-        await manage_message_history(db, phone_number)
+        await manage_message_history(db, formatted_phone)
         
-        logger.debug(f"Mensaje de actualización enviado exitosamente para el reporte #{report_id} - Estado: {report_status}")
+        logger.debug(f"Update message sent successfully for report #{report_id} - Status: {report_status}")
         
         return JSONResponse(content={
             "status": True, 
-            "message": "Notificación de actualización de reporte enviada",
+            "message": "Report update notification sent",
             "reportId": report_id,
             "clientId": client_id,
             "reportStatus": report_status
         })
         
     except Exception as e:
-        logger.error(f"Error al procesar la actualización del reporte: {str(e)}")
+        logger.error(f"Error processing report update: {str(e)}")
         traceback.print_exc()
         return JSONResponse(
-            content={"error": f"Error al procesar la solicitud: {str(e)}"}, 
+            content={"error": f"Error processing request: {str(e)}"}, 
             status_code=500
         )
+
 @router.get("/health")
 async def health():
-    import psutil, ping3
-    ls = LocalStorage()
-    configs = ls.GetAll(Config)
-    configs = { c.name: c.value for c in configs }
-
-    domains = json.loads(configs.get("PingDomains")) if 'PingDomains' in configs else []
-    domains.extend([
-        { "name": "AWS", "domain": 'ec2.amazonaws.com'},
-        { "name": "Google", "domain": 'google.com'},
-        { "name": "Twilio", "domain": "chunderw-gll.twilio.com"}
-    ])
-
+    """Health check endpoint"""
+    import psutil
+    
     try:
-        temperatures = psutil.sensors_temperatures()
-        if temperatures:
-            temperature = temperatures['coretemp'][0].current
-        else:
-            temperature = False
-    except (AttributeError, KeyError):
-        temperature = False
-    
-    pings = []
-    for domain in domains:
-        ping = ping3.ping(domain["domain"])
-        ping = int(ping * 1000) if ping is not None else False
-        pings.append({ "domain": domain["domain"], "ping": ping, "name": domain["name"] })
+        # Get CPU, memory and disk usage
+        metrics = {
+            'processor': psutil.cpu_percent(interval=1),
+            'memory': psutil.virtual_memory().percent,
+            'storage': psutil.disk_usage('/').percent,
+            'agents': {
+                'report_agent': {
+                    'status': 'active',
+                    'conversations': sum(1 for ctx in conversation_contexts.values() if isinstance(ctx, ReportContext))
+                },
+                'support_agent': {
+                    'status': 'active',
+                    'conversations': sum(1 for ctx in conversation_contexts.values() if isinstance(ctx, CustomerSupportContext))
+                },
+                'switchboard_agent': {
+                    'status': 'active',
+                    'conversations': sum(1 for ctx in conversation_contexts.values() if isinstance(ctx, SwitchboardContext))
+                }
+            },
+            'active_conversations': len(conversation_contexts),
+            'transferred_conversations': len(transferred_numbers)
+        }
+        
+        return metrics
+    except Exception as e:
+        logger.error(f"Error in health check: {str(e)}")
+        return {"status": "error", "message": str(e)}
 
-    metrics = {
-        'processor': psutil.cpu_percent(interval=1),
-        'memory': psutil.virtual_memory().percent,
-        'storage': psutil.disk_usage('/').percent,
-        'temperature': temperature,
-        'ping': pings
-    }
-    
-    return metrics
-
-
-# ---------------------
-# Definición de la aplicación FastAPI
-# ---------------------
-app = FastAPI(lifespan=lifespan)
+# Register router with app
 app.include_router(router)

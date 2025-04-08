@@ -132,7 +132,9 @@ import base64
 import os
 from app.util.logger import logger
 
-async def save_client_selection(yoga_number: str, selection1: str, selection2: str, selection3: str, selection4: str, selection5: str, selection6: str, selection7: str, selection8: str = None):
+async def save_client_selection(yoga_number: str, selection1: str, selection2: str, selection3: str, 
+                               selection4: str, selection5: str, selection6: str, selection7: str, 
+                               selection8: str = None, images_list: list = None, descriptions_list: list = None):
     """Guardar la información de las preguntas según las respuestas del cliente.
 
     Args:
@@ -144,7 +146,9 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
         selection5 (string): Respuesta a la pregunta 5.
         selection6 (string): Respuesta a la pregunta 6.
         selection7 (string): Respuesta a la pregunta 7.
-        selection8 (string, optional): URL o ruta de la imagen para la pregunta 8.
+        selection8 (string, optional): URL o ruta de la imagen para la pregunta 8 (compatibilidad).
+        images_list (list, optional): Lista de URLs de imágenes.
+        descriptions_list (list, optional): Lista de descripciones correspondientes a las imágenes.
 
     Returns:
         string: Mensaje de confirmación con el número de folio.
@@ -157,6 +161,11 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
     
     # Verificar si es una llamada inicial (todos los campos vacíos)
     todos_vacios = all(not field or field.strip() == "" for field in [selection1, selection2, selection3, selection4, selection5, selection6, selection7])
+    
+    # Si hay imágenes, no consideramos que sea una llamada inicial vacía
+    if images_list and len(images_list) > 0:
+        todos_vacios = False
+    
     if todos_vacios:
         logger.debug("Llamada inicial con todos los campos vacíos. No se creará reporte.")
         return "Formulario pendiente de completar"
@@ -177,8 +186,8 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
     campos_con_valor = [field for field in required_fields if field and field.strip()]
     campos_llenos = len(campos_con_valor)
     
-    # Si hay muy pocos campos llenos y no son todos vacíos, no generar reporte
-    if campos_llenos < 4 and not todos_vacios:
+    # Si hay muy pocos campos llenos y no hay imágenes, no generar reporte
+    if campos_llenos < 4 and not (images_list and len(images_list) > 0):
         logger.warning(f"Información insuficiente: {campos_llenos} de 7 campos han sido llenados")
         return f"Información parcialmente guardada. {campos_llenos} de 7 campos requeridos han sido llenados."
     
@@ -203,10 +212,50 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
             }
         }
 
-        # Manejar la imagen (selection8) si está presente
-        if selection8 and selection8.strip():
-            # Código para manejar imágenes si es necesario
-            pass
+        # Agregar información de imágenes múltiples
+        if images_list and len(images_list) > 0:
+            # Lista para almacenar los objetos de imagen
+            imagenes = []
+            
+            # Procesar cada imagen individualmente 
+            for i, img_url in enumerate(images_list):
+                desc = descriptions_list[i] if descriptions_list and i < len(descriptions_list) else "Sin descripción"
+                # Asegurarnos de que cada URL es un string independiente
+                if isinstance(img_url, str):
+                    imagenes.append({
+                        "url": img_url.strip(),  # Eliminar espacios extra
+                        "descripcion": desc
+                    })
+            
+            # Añadir al payload (ajusta según la API)
+            payload["imagenes"] = imagenes
+            
+            # Para compatibilidad con el código existente
+            if not selection4 or selection4.strip() == "":
+                # Si no hay descripción, usar la primera descripción de imagen
+                if descriptions_list and len(descriptions_list) > 0:
+                    payload["detalleSolicitud"] = descriptions_list[0]
+                    payload["_direccionReporte"]["referencias"] = descriptions_list[0]
+
+        # Manejar también selection8 para compatibilidad
+        elif selection8 and selection8.strip():
+            # Si selection8 contiene varias URLs separadas por espacios
+            if " " in selection8:
+                urls = selection8.split()
+                imagenes = []
+                for url in urls:
+                    if url.strip():  # Asegurarse de que no sea vacío
+                        imagenes.append({
+                            "url": url.strip(),
+                            "descripcion": "Imagen de reporte"
+                        })
+                payload["imagenes"] = imagenes
+            else:
+                # Una sola imagen en selection8
+                payload["imagenes"] = [{
+                    "url": selection8.strip(),
+                    "descripcion": "Imagen de reporte"
+                }]
 
         logger.debug(f"Payload preparado: {payload}")
 
@@ -232,7 +281,10 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
         except:
             folio = response.text.strip()
         
-        if campos_llenos < 7:
+        # Mensaje personalizado para reportes con imágenes
+        if images_list and len(images_list) > 0:
+            return f"Reporte con {len(images_list)} imágenes creado correctamente. Número de folio: {folio}"
+        elif campos_llenos < 7:
             return f"Reporte creado con información parcial. Número de folio: {folio}"
         else:
             return f"Selecciones guardadas correctamente. Número de folio: {folio}"

@@ -1,4 +1,4 @@
-from .implementations.hangup import hangup
+#from .implementations.hangup import hangup
 from .implementations.save_selection import save_client_selection
 from .implementations.get_directorio import get_funcionarios
 from .implementations.get_centros_comunitarios import get_centros_comunitarios
@@ -40,7 +40,7 @@ from .implementations.get_licencia_chofer import get_licencia_chofer
 
 
 registered_functions = [
-    hangup,
+    #hangup,
     save_client_selection, 
     get_funcionarios, 
     get_centros_comunitarios, 

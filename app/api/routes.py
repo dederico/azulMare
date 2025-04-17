@@ -648,7 +648,7 @@ async def whatsapp(request: Request):
                 phone_number=from_number,
                 customer_name=sender_name,
                 chat_id=chat_id,
-                client_id=client_id,
+                client_id=str(client_id),
                 channel_id=channel_id
             )
         else:

@@ -689,6 +689,7 @@ async def whatsapp(request: Request):
                     
                     # Obtener la descripción de la imagen
                     image_description = image_analysis.choices[0].message.content
+                    body = f"Imagen recibida. Descripción: {image_description}"
                     
                     # Almacenar en la sesión de reporte
                     if from_number not in report_sessions:
@@ -696,8 +697,7 @@ async def whatsapp(request: Request):
                             "images": [],
                             "image_descriptions": [],
                             "location": None,
-                            "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
-                            "report_pending": True
+                            "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
                         }
                     
                     # Añadir esta imagen al reporte en progreso
@@ -872,8 +872,8 @@ async def whatsapp(request: Request):
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
         )
         # Añadir instrucción para evitar generación automática de reportes
-        if from_number in report_sessions and report_sessions[from_number]["images"]:
-            system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."
+        # if from_number in report_sessions and report_sessions[from_number]["images"]:
+        #     system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."
 
         llm_service = OpenAIService(
             config=config,
@@ -912,14 +912,14 @@ async def whatsapp(request: Request):
         elif not isinstance(response_content, str):
             response_content = str(response_content)
         
-        report_creation_patterns = ["he creado tu reporte", "he generado tu reporte", "tu reporte ha sido", 
-                            "el número de folio", "el folio de tu reporte", "se ha generado tu reporte"]
+        # report_creation_patterns = ["he creado tu reporte", "he generado tu reporte", "tu reporte ha sido", 
+        #                     "el número de folio", "el folio de tu reporte", "se ha generado tu reporte"]
         
-        if from_number in report_sessions and report_sessions[from_number]["images"]:
-            if any(pattern in response_content.lower() for pattern in report_creation_patterns):
-                logger.warning(f"Detectado intento de creación automática de reporte: '{response_content[:50]}...'")
+        # if from_number in report_sessions and report_sessions[from_number]["images"]:
+        #     if any(pattern in response_content.lower() for pattern in report_creation_patterns):
+        #         logger.warning(f"Detectado intento de creación automática de reporte: '{response_content[:50]}...'")
         # Sustituir con mensaje seguro
-            response_content = "He guardado toda la información y las imágenes que has enviado. Si deseas finalizar y generar tu reporte ahora, por favor dímelo explícitamente usando las palabras 'Crear reporte'."
+            # response_content = "He guardado toda la información y las imágenes que has enviado. Si deseas finalizar y generar tu reporte ahora, por favor dímelo explícitamente usando las palabras 'Crear reporte'."
         # Guardar la respuesta en el historial y en la base de datos
         conversation_history.add_ai_message(response_content)
         assistant_message = Message(

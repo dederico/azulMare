@@ -695,7 +695,8 @@ async def whatsapp(request: Request):
                             "images": [],
                             "image_descriptions": [],
                             "location": None,
-                            "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
+                            "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
+                            "report_pending": True
                         }
                     
                     # Añadir esta imagen al reporte en progreso
@@ -704,12 +705,11 @@ async def whatsapp(request: Request):
                     report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
                     
                     num_images = len(report_sessions[from_number]["images"])
-                    num_images = len(report_sessions[from_number]["images"])
 
                     if num_images == 1:
-                        body = f"Imagen recibida y guardada para tu reporte. Descripción: {image_description}\n\nPuedes enviar más imágenes o indicarme la ubicación del problema. Cuando quieras finalizar tu reporte, solo indícamelo."
+                        body = f"Imagen recibida y guardada para tu reporte. Descripción: {image_description}\n\nPuedes enviar más imágenes o indicarme la ubicación del problema. NO ESTOY CREANDO NINGÚN REPORTE TODAVÍA. Cuando quieras finalizar tu reporte, dime claramente 'Crear reporte'."
                     else:
-                        body = f"Imagen adicional recibida ({num_images} en total). Descripción: {image_description}\n\nPuedes seguir enviando imágenes o indicarme cuando desees finalizar tu reporte."
+                        body = f"Imagen adicional recibida ({num_images} en total). Descripción: {image_description}\n\nPuedes seguir enviando imágenes. NO ESTOY CREANDO NINGÚN REPORTE TODAVÍA. Cuando estés listo, dime claramente 'Crear reporte'."
                     
                     logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
                     
@@ -870,6 +870,9 @@ async def whatsapp(request: Request):
             address=address if 'address' in locals() else "No he recibido ubicación",
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
         )
+        # Añadir instrucción para evitar generación automática de reportes
+        if from_number in report_sessions and report_sessions[from_number]["images"]:
+            system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."
 
         llm_service = OpenAIService(
             config=config,
@@ -907,7 +910,15 @@ async def whatsapp(request: Request):
             response_content = " ".join([str(item) for item in response_content])
         elif not isinstance(response_content, str):
             response_content = str(response_content)
-
+        
+        report_creation_patterns = ["he creado tu reporte", "he generado tu reporte", "tu reporte ha sido", 
+                            "el número de folio", "el folio de tu reporte", "se ha generado tu reporte"]
+        
+        if from_number in report_sessions and report_sessions[from_number]["images"]:
+            if any(pattern in response_content.lower() for pattern in report_creation_patterns):
+                logger.warning(f"Detectado intento de creación automática de reporte: '{response_content[:50]}...'")
+        # Sustituir con mensaje seguro
+            response_content = "He guardado toda la información y las imágenes que has enviado. Si deseas finalizar y generar tu reporte ahora, por favor dímelo explícitamente usando las palabras 'Crear reporte'."
         # Guardar la respuesta en el historial y en la base de datos
         conversation_history.add_ai_message(response_content)
         assistant_message = Message(

@@ -4,10 +4,11 @@ from urllib.parse import quote
 from app.util.database import LocalStorage
 # from app.util.database import VectorBase
 from fastapi.staticfiles import StaticFiles
-from app.api.routes import router as api_router
+from app.api.original_routes import router as api_router
 from app.frontend.auth import router as auth_router
 from app.frontend.routes import router as view_router
 import uvicorn
+
 
 LocalStorage().migrate()
 # VectorBase(None)

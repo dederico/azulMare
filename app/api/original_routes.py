@@ -707,9 +707,9 @@ async def whatsapp(request: Request):
                     num_images = len(report_sessions[from_number]["images"])
 
                     if num_images == 1:
-                        body = f"Imagen recibida y guardada para tu reporte. Descripción: {image_description}\n\nPuedes enviar más imágenes o indicarme la ubicación del problema. Cuando hayas terminado, dime 'Listo' o 'Ya terminé'."
+                        body = f"Imagen recibida y guardada para tu reporte. Descripción: {image_description}\n\nPuedes enviar más imágenes o indicarme la ubicación del problema. Cuando quieras finalizar tu reporte, solo indícamelo."
                     else:
-                        body = f"Imagen adicional recibida ({num_images} en total). Descripción: {image_description}\n\nPuedes seguir enviando imágenes. Avísame cuando hayas terminado."
+                        body = f"Imagen adicional recibida ({num_images} en total). Descripción: {image_description}\n\nPuedes seguir enviando imágenes o indicarme cuando desees finalizar tu reporte."
                     
                     logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
                     
@@ -937,8 +937,14 @@ async def whatsapp(request: Request):
             "Authorization": api_token,
             "Content-Type": "application/json"
         }
-            # Check if the response contains phrases that could trigger finalization
-        blocked_phrases = ["ya terminé", "listo", "finalizar reporte"]
+        # Check if the response contains phrases that could trigger finalization
+        blocked_phrases = [
+                "ya terminé", "ya termine", "listo", "finalizar reporte", 
+                "estoy listo", "he terminado", "terminar", "finalizar",
+                "terminé de enviar", "no más imágenes", "cuando hayas terminado",
+                "avísame cuando", "solo indícamelo", "indicarme cuando desees"
+                        ]
+
         for phrase in blocked_phrases:
             if phrase.lower() in response_content.lower():
                 # Modify the message to avoid triggering phrases

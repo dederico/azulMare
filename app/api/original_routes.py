@@ -87,6 +87,7 @@ reports_lock = threading.Lock()
 reports_in_progress = {}
 transferred_numbers = {}  # key: phone_number, value: expiration_timestamp
 transfer_timeout = 15 * 60  # 15 minutes in seconds
+last_response_time = {}  # Para rastrear cuándo se envió la última respuesta a cada número
 
 # async def process_and_save_report(from_number, location, images=None, descriptions=None):
 #     """
@@ -939,7 +940,21 @@ async def whatsapp(request: Request):
         logger.error(f"Error al generar la respuesta: {str(e)}")
         return JSONResponse(content={"error": f"Error al generar respuesta: {str(e)}"}, status_code=500)
     
+    
     # Enviar la respuesta a través de Chat2Desk
+    current_time = datetime.now().timestamp()
+
+    # Verificar si ya se envió una respuesta a este número recientemente 
+    if from_number in last_response_time:
+        time_since_last_response = current_time - last_response_time[from_number]
+        # Si han pasado menos de 5 segundos desde la última respuesta, no enviar otra
+        if time_since_last_response < 5:  # 5 segundos como tiempo mínimo entre respuestas
+            logger.info(f"Evitando respuesta duplicada para {from_number} (solo han pasado {time_since_last_response:.2f} segundos)")
+            return JSONResponse(content={"status": True, "message": "Evitada respuesta duplicada"})
+
+    # Actualizar el tiempo de la última respuesta
+    last_response_time[from_number] = current_time
+
     try:
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"

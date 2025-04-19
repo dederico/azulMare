@@ -32,6 +32,8 @@ from langchain_community.chat_message_histories.in_memory import ChatMessageHist
 import traceback
 from app.services.llm.llm_service import LLMService
 import psycopg2
+from collections import OrderedDict
+from datetime import datetime, timedelta
 
 
 load_dotenv(override=True)
@@ -49,6 +51,7 @@ from app.services.llm.config.system import system_message
 from app.services.functions.function_manager import FunctionManager
 from app.services.functions.implementations.geocoding import latlong_to_address
 from app.services.functions.implementations.nearest_office import find_nearest_government_office
+from app.util.rate_limiter import image_processing_queue
 
 
 from twilio.rest import Client
@@ -72,6 +75,7 @@ from twilio.base.exceptions import TwilioRestException
 import threading
 import asyncio
 from app.services.functions.implementations.transfer_message_event import transfer_to_group
+from threading import RLock
 
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -86,6 +90,7 @@ CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
 # Diccionario para almacenar reportes en progreso
 report_sessions = {}  # key: phone_number, value: {images: [], image_descriptions: [], location: str, timestamp: datetime}
 reports_lock = threading.Lock()
+report_sessions_lock = RLock()  # More robust than a simple Lock
 reports_in_progress = {}
 transferred_numbers = {}  # key: phone_number, value: expiration_timestamp
 transfer_timeout = 15 * 60  # 15 minutes in seconds
@@ -130,7 +135,99 @@ last_response_time = {}  # Para rastrear cuándo se envió la última respuesta 
 #         with reports_lock:
 #             if from_number in reports_in_progress:
 #                 reports_in_progress[from_number] = False
+# Using OrderedDict as a simple TTL cache
+class TTLCache:
+    def __init__(self, max_size=1000, ttl_seconds=3600):
+        self.cache = OrderedDict()
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+    
+    def add(self, key):
+        # Clean expired entries first
+        self._clean_expired()
+        
+        # Add new entry with timestamp
+        self.cache[key] = datetime.now()
+        
+        # If over size limit, remove oldest
+        if len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)
+    
+    def contains(self, key):
+        if key not in self.cache:
+            return False
+        
+        # Check if expired
+        timestamp = self.cache[key]
+        if datetime.now() - timestamp > timedelta(seconds=self.ttl_seconds):
+            del self.cache[key]
+            return False
+        
+        return True
+    
+    def _clean_expired(self):
+        # Remove expired entries
+        now = datetime.now()
+        expired_keys = [k for k, v in self.cache.items() 
+                       if now - v > timedelta(seconds=self.ttl_seconds)]
+        for key in expired_keys:
+            del self.cache[key]
+    
+    # Add this method to support len()
+    def __len__(self):
+        self._clean_expired()  # Clean expired entries first
+        return len(self.cache)
 
+async def analyze_image_with_rate_limit(client, photo_url):
+    """
+    Analyze an image with rate limiting to prevent API overload.
+    
+    Args:
+        client: OpenAI client instance
+        photo_url: URL of the image to analyze
+        
+    Returns:
+        str: Image description from the analysis
+    """
+    try:
+        logger.debug(f"Starting rate-limited image analysis for: {photo_url}")
+        
+        # Download the image with timeout
+        async with aiohttp.ClientSession() as session:
+            async with session.get(photo_url, timeout=10) as response:
+                response.raise_for_status()
+                image_content = BytesIO(await response.read())
+        
+        # Rate-limited OpenAI API call
+        async def _analyze_with_openai():
+            image_analysis = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe esta imagen en detalle."},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=300,
+            )
+            return image_analysis.choices[0].message.content
+            
+        # Use the queue to process with rate limiting
+        description = await image_processing_queue.add_task(_analyze_with_openai)
+        return description
+        
+    except Exception as e:
+        logger.error(f"Error analyzing image: {str(e)}")
+        return f"Error al analizar la imagen: {str(e)}"
+    
 async def manage_message_history(db, number, max_messages=20):
     """
     Mantiene solo los últimos max_messages mensajes para un número dado
@@ -170,26 +267,55 @@ async def check_report_timeouts():
     while True:
         await asyncio.sleep(60)  # Revisar cada minuto
         now = datetime.now(pytz.timezone('America/Mexico_City'))
-        
-        for number, session in list(report_sessions.items()):
-            elapsed = (now - session["timestamp"]).total_seconds()
-            if elapsed > 180:  # 3 minutos de inactividad
-                # Solo finalizar si hay imágenes
-                if session["images"]:
-                    # Usar la función centralizada para procesar el reporte
-                    location = session["location"] or "ubicación no especificada"
-                    result = await process_and_save_report(
-                        number, 
-                        location,
-                        session["images"],
-                        session["image_descriptions"]
-                    )
+        db = LocalStorage()
+
+        numbers_to_process = []
+
+        with report_sessions_lock:
+            for number, session in list(report_sessions.items()):
+                elapsed = (now - session["timestamp"]).total_seconds()
+                if elapsed > 180:  # 3 minutos de inactividad
+                    # Solo finalizar si hay imágenes
+                    # Only consider sessions with images
+                    if session["images"]:
+                        numbers_to_process.append(number)
                     
-                    if result != "en_proceso" and not result.startswith("error:"):
-                        logger.info(f"Reporte finalizado automáticamente por timeout: {result}")
-                    
-                # Limpiar la sesión independientemente del resultado
-                del report_sessions[number]
+        # Process them outside the lock
+        for number in numbers_to_process:
+            try:
+                with report_sessions_lock:
+                    if number not in report_sessions:
+                        continue
+                        
+                    session = report_sessions[number]
+                    if not session["images"]:
+                        continue
+                
+                # Process the report without holding the lock on the entire report_sessions dict
+                location = session["location"] or "ubicación no especificada"
+                num_images = len(session["images"])
+                
+                # Generate the report
+                folio = await save_client_selection(
+                    number, 
+                    location,
+                    "", "", "", "", "", "",
+                    None,
+                    session["images"],
+                    session["image_descriptions"]
+                )
+                
+                # Clean up after successful processing
+                with report_sessions_lock:
+                    if number in report_sessions:
+                        del report_sessions[number]
+                        
+            except Exception as e:
+                logger.error(f"Error al finalizar reporte automáticamente: {str(e)}")
+                # Still try to clean up
+                with report_sessions_lock:
+                    if number in report_sessions:
+                        del report_sessions[number]
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
@@ -548,7 +674,8 @@ router = APIRouter()
 
 
 # Add this at the module level (outside of the function)
-processed_message_ids = set()
+# Initialize the TTL cache - messages expire after 1 hour, max 1000 entries
+processed_message_ids = TTLCache(max_size=1000, ttl_seconds=3600)
 
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
@@ -574,7 +701,7 @@ async def whatsapp(request: Request):
             return JSONResponse(content={"status": True, "message": "Mensaje del sistema ignorado"})
         
         # Verificar si este mensaje ya ha sido procesado (deduplicación)
-        if uid in processed_message_ids:
+        if processed_message_ids.contains(uid):
             logger.debug(f"Ignorando mensaje duplicado con id={uid}")
             return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
         
@@ -705,6 +832,47 @@ async def whatsapp(request: Request):
                                             if isinstance(office, dict):  # Verificar que office sea un diccionario
                                                 body += f"{i}. *{office.get('name', 'No disponible')}* - {office.get('distance', 'No disponible')} km\n"
                                                 body += f"   📍 {office.get('address', 'No disponible')}\n"
+                                    # IMPORTANTE: Enviar este mensaje directamente al usuario sin pasar por el LLM
+                                    # Guardar el mensaje en la BD
+                                    logger.debug(f"Guardando respuesta directa con información de oficina cercana: {body[:30]}...")
+                                    assistant_message = Message(
+                                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        senderName="Assistant",
+                                        message=body,
+                                        number=from_number,
+                                        uid=uid,
+                                        direction="outbound",
+                                        mtype="text",
+                                        source="whatsapp"
+                                    )
+                                    db.Insert(assistant_message)
+                                    await manage_message_history(db, from_number)
+                                    
+                                    # Enviar mensaje directamente a través de Chat2Desk
+                                    api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                                    chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                                    
+                                    headers = {
+                                        "Authorization": api_token,
+                                        "Content-Type": "application/json"
+                                    }
+                                    
+                                    data = {
+                                        "client_id": client_id,
+                                        "channel_id": channel_id,
+                                        "transport": "wa_direct",
+                                        "text": body
+                                    }
+                                    
+                                    direct_response = requests.post(chat2desk_url, json=data, headers=headers)
+                                    
+                                    if direct_response.status_code == 200:
+                                        logger.debug(f"Información de oficina cercana enviada exitosamente a Chat2Desk")
+                                        # No continuar con el procesamiento normal del LLM
+                                        return JSONResponse(content={"status": True, "message": "Respuesta directa enviada por Chat2Desk"})
+                                    else:
+                                        logger.error(f"Error al enviar mensaje directo a Chat2Desk: {direct_response.status_code} - {direct_response.text}")
+                                        # Continuar con el flujo normal si falla el envío directo
                                 else:
                                     body = f"Lo siento, tuve un problema al buscar la oficina más cercana. {result.get('error', '')}"
                             except Exception as e:
@@ -736,34 +904,9 @@ async def whatsapp(request: Request):
             photo_url = payload.get("photo")
             if photo_url:
                 try:
-                    # Descargar la imagen 
-                    response = requests.get(photo_url)
-                    image_content = BytesIO(response.content)
-                    
-                    # Analizar la imagen
-                    image_analysis = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "Describe esta imagen en detalle."},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
-                                        },
-                                    },
-                                ],
-                            }
-                        ],
-                        max_tokens=300,
-                    )
-                    
-                    # Obtener la descripción de la imagen
-                    image_description = image_analysis.choices[0].message.content
-                    body = f"Imagen recibida. Descripción: {image_description}"
-                    
+                    # Analizar la imagen con rate limiting
+                    image_description = await analyze_image_with_rate_limit(client, photo_url)
+
                     # Almacenar en la sesión de reporte
                     if from_number not in report_sessions:
                         report_sessions[from_number] = {
@@ -773,17 +916,25 @@ async def whatsapp(request: Request):
                             "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
                         }
                     
-                    # Añadir esta imagen al reporte en progreso
-                    report_sessions[from_number]["images"].append(photo_url)
-                    report_sessions[from_number]["image_descriptions"].append(image_description)
-                    report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                    # Añadir esta imagen al reporte en progreso - con verificación
+                    if isinstance(photo_url, str) and (photo_url.startswith("http") or "storage.chat2desk.com" in photo_url):
+                        # Asegurarse de que la imagen no esté duplicada
+                        if photo_url not in report_sessions[from_number]["images"]:
+                            report_sessions[from_number]["images"].append(photo_url)
+                            report_sessions[from_number]["image_descriptions"].append(image_description)
+                            report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                            
+                            logger.info(f"Imagen #{len(report_sessions[from_number]['images'])} añadida al reporte para {from_number}")
+                        else:
+                            logger.warning(f"Imagen duplicada ignorada: {photo_url[:50]}...")
+                    else:
+                        logger.error(f"URL de imagen inválida: {str(photo_url)[:50]}...")
                     
                     num_images = len(report_sessions[from_number]["images"])
-
                     if num_images == 1:
-                        body = f"Imagen recibida y guardada para tu reporte. Descripción: {image_description}\n\nPuedes enviar más imágenes o indicarme la ubicación del problema. NO ESTOY CREANDO NINGÚN REPORTE TODAVÍA. Cuando quieras finalizar tu reporte, dime claramente 'Crear reporte'."
+                        body = f"He recibido tu imagen y la he guardado para el reporte. Puedes enviar más imágenes o indicarme la ubicación del problema."
                     else:
-                        body = f"Imagen adicional recibida ({num_images} en total). Descripción: {image_description}\n\nPuedes seguir enviando imágenes. NO ESTOY CREANDO NINGÚN REPORTE TODAVÍA. Cuando estés listo, dime claramente 'Crear reporte'."
+                        body = f"He recibido otra imagen (tienes {num_images} en total). Puedes seguir enviando imágenes o finalizar cuando estés listo."
                     
                     logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
                     

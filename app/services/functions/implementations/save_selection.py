@@ -12,6 +12,34 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+async def process_images_batch(images_list, descriptions_list=None):
+    """
+    Process a batch of images, ensuring valid URLs and matching descriptions.
+    """
+    if not images_list or not isinstance(images_list, list):
+        return []
+        
+    images_data = []
+    
+    for i, img_url in enumerate(images_list):
+        # Skip invalid URLs
+        if not isinstance(img_url, str) or not (img_url.startswith("http") or "storage.chat2desk.com" in img_url):
+            logger.warning(f"Skipping invalid image URL: {str(img_url)[:50]}...")
+            continue
+            
+        # Get description if available
+        description = "Imagen de reporte"
+        if descriptions_list and i < len(descriptions_list) and descriptions_list[i]:
+            description = descriptions_list[i]
+            
+        images_data.append({
+            "url": img_url.strip(),
+            "descripcion": description
+        })
+        
+    logger.info(f"Processed {len(images_data)} valid images out of {len(images_list)} total images")
+    return images_data
+
 def get_token():
     req_url = "https://api.neurocity.solutions/api/auth/authenticate"
     
@@ -212,50 +240,27 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
             }
         }
 
-        # Agregar información de imágenes múltiples
-        if images_list and len(images_list) > 0:
-            # Lista para almacenar los objetos de imagen
-            imagenes = []
-            
-            # Procesar cada imagen individualmente 
-            for i, img_url in enumerate(images_list):
-                desc = descriptions_list[i] if descriptions_list and i < len(descriptions_list) else "Sin descripción"
-                # Asegurarnos de que cada URL es un string independiente
-                if isinstance(img_url, str):
-                    imagenes.append({
-                        "url": img_url.strip(),  # Eliminar espacios extra
-                        "descripcion": desc
-                    })
-            
-            # Añadir al payload (ajusta según la API)
-            payload["imagenes"] = imagenes
+        # Procesar imágenes de forma optimizada
+        imagenes_validas = await process_images_batch(images_list, descriptions_list)
+
+        # Procesar selection8 para compatibilidad
+        if not imagenes_validas and selection8 and isinstance(selection8, str):
+            if selection8.startswith("http") or "storage.chat2desk.com" in selection8:
+                imagenes_validas.append({
+                    "url": selection8.strip(),
+                    "descripcion": "Imagen de reporte"
+                })
+                
+        # Agregar imágenes al payload
+        if imagenes_validas:
+            payload["imagenes"] = imagenes_validas
+            logger.info(f"Añadiendo {len(imagenes_validas)} imágenes válidas al reporte")
             
             # Para compatibilidad con el código existente
             if not selection4 or selection4.strip() == "":
-                # Si no hay descripción, usar la primera descripción de imagen
                 if descriptions_list and len(descriptions_list) > 0:
                     payload["detalleSolicitud"] = descriptions_list[0]
                     payload["_direccionReporte"]["referencias"] = descriptions_list[0]
-
-        # Manejar también selection8 para compatibilidad
-        elif selection8 and selection8.strip():
-            # Si selection8 contiene varias URLs separadas por espacios
-            if " " in selection8:
-                urls = selection8.split()
-                imagenes = []
-                for url in urls:
-                    if url.strip():  # Asegurarse de que no sea vacío
-                        imagenes.append({
-                            "url": url.strip(),
-                            "descripcion": "Imagen de reporte"
-                        })
-                payload["imagenes"] = imagenes
-            else:
-                # Una sola imagen en selection8
-                payload["imagenes"] = [{
-                    "url": selection8.strip(),
-                    "descripcion": "Imagen de reporte"
-                }]
 
         logger.debug(f"Payload preparado: {payload}")
 
@@ -282,8 +287,8 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
             folio = response.text.strip()
         
         # Mensaje personalizado para reportes con imágenes
-        if images_list and len(images_list) > 0:
-            return f"Reporte con {len(images_list)} imágenes creado correctamente. Número de folio: {folio}"
+        if "imagenes" in payload and len(payload["imagenes"]) > 0:
+            return f"Reporte con {len(payload['imagenes'])} imágenes creado correctamente. Número de folio: {folio}"
         elif campos_llenos < 7:
             return f"Reporte creado con información parcial. Número de folio: {folio}"
         else:

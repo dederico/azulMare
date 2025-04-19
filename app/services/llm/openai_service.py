@@ -19,16 +19,44 @@ class OpenAIService(LLMService):
         self.config = config
         self.client = openai.AsyncClient(api_key=api_key)
         self.conversation_history = []
-        self.conversation_history.append({"role": "system", "content": system})
+        self.conversation_history.append({"role": "system", "content": self.ensure_valid_message_content(system)})
         self.function_manager = function_manager
         self.functions = {}
         self.current_function_name = None
         # if self.config.get("use_kb"):
         #     self.vectorbase = VectorBase(config.get("agent_name", None))
-
+    def ensure_valid_message_content(self, content):
+        """
+        Asegura que el contenido del mensaje esté en un formato válido para la API de OpenAI.
+        La API espera que content sea un string o un array de objetos.
+        
+        Args:
+            content: El contenido del mensaje a validar
+            
+        Returns:
+            El contenido en un formato válido
+        """
+        # Si es None, convertirlo a string vacío
+        if content is None:
+            return ""
+        
+        # Si ya es un string, devolverlo como está
+        if isinstance(content, str):
+            return content
+        
+        # Si es un diccionario o cualquier otro objeto, convertirlo a string
+        if isinstance(content, (dict, list, tuple, set)):
+            return str(content)
+        
+        # Para cualquier otro tipo, convertir a string
+        return str(content)
+    
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         """Añadir mensaje al historial con optimización de contexto"""
-        self.conversation_history.append({"role": role, "content": content, **kwargs})
+        # Aplicar ensure_valid_message_content al contenido
+        validated_content = self.ensure_valid_message_content(content)
+        
+        self.conversation_history.append({"role": role, "content": validated_content, **kwargs})
         
         # Verificar si el historial ha crecido demasiado
         max_messages = self.config.get("max_context_messages", 20)  # Configurable

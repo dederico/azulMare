@@ -48,6 +48,8 @@ from app.services.functions.function_registry import registered_functions
 from app.services.llm.config.system import system_message
 from app.services.functions.function_manager import FunctionManager
 from app.services.functions.implementations.geocoding import latlong_to_address
+from app.services.functions.implementations.nearest_office import find_nearest_government_office
+
 
 from twilio.rest import Client
 from urllib.parse import parse_qs
@@ -640,14 +642,85 @@ async def whatsapp(request: Request):
                         
                         # Convertir la latitud y longitud a dirección
                         address = await latlong_to_address(latitude, longitude)
-                        body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
+                        # Verificar si hay un contexto de búsqueda de oficinas gubernamentales
+                        # Esto puede ser determinado por mensajes previos del usuario o una variable de sesión
+                        office_search_context = False
+                        office_type = None
                         
-                        # Si hay un reporte en progreso, actualizar la ubicación
-                        if from_number in report_sessions:
-                            report_sessions[from_number]["location"] = address
-                            report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                        # Si el usuario tiene una sesión activa, podemos verificar los mensajes recientes
+                        if from_number in user_sessions:
+                            recent_messages = user_sessions[from_number].history.messages[-5:]  # Últimos 5 mensajes
+                            for msg in recent_messages:
+                                if isinstance(msg, HumanMessage):
+                                    msg_content = msg.content.lower()
+                                    
+                                    # Buscar referencias a oficinas gubernamentales
+                                    if any(term in msg_content for term in ["registro civil", "acta", "nacimiento", "matrimonio", "defunción"]):
+                                        office_search_context = True
+                                        office_type = "registro_civil"
+                                        break
+                                        
+                                    if any(term in msg_content for term in ["centro comunitario", "comunitario", "cursos", "talleres", "actividades"]):
+                                        office_search_context = True
+                                        office_type = "centro_comunitario"
+                                        break
+                                        
+                                    # Buscar indicios de querer saber la más cercana
+                                    if any(term in msg_content for term in ["cerca", "cercana", "cercano", "próxima", "próximo", "oficina"]):
+                                        # Si no se ha identificado un tipo específico pero el usuario mencionó algo de cercanía
+                                        if "registro" in msg_content or "acta" in msg_content:
+                                            office_search_context = True
+                                            office_type = "registro_civil"
+                                            break
+                                        elif "centro" in msg_content or "comunitario" in msg_content:
+                                            office_search_context = True
+                                            office_type = "centro_comunitario"
+                                            break
+                        
+                        if office_search_context and office_type:
+                            try:
+                                result = await find_nearest_government_office(
+                                    latitude=float(latitude),
+                                    longitude=float(longitude),
+                                    office_type=office_type
+                                )
+                                
+                                if result.get("success", False):
+                                    nearest = result.get("nearest_office", {})
+                                    
+                                    # Crear respuesta con la oficina más cercana
+                                    office_type_name = "Registro Civil" if office_type == "registro_civil" else "Centro Comunitario"
+                                    body = f"He encontrado el {office_type_name} más cercano a tu ubicación:\n\n"
+                                    body += f"🏢 *{nearest.get('name', 'No disponible')}*\n"
+                                    body += f"📍 Dirección: {nearest.get('address', 'No disponible')}\n"
+                                    body += f"📞 Teléfono: {nearest.get('phone', 'No disponible')}\n"
+                                    body += f"🕒 Horario: {nearest.get('schedule', 'No disponible')}\n"
+                                    body += f"🚶 Distancia: {nearest.get('distance', 'No disponible')} km\n\n"
+                                    
+                                    # Añadir recomendaciones alternativas (las siguientes 2 más cercanas)
+                                    all_offices = result.get("all_offices", [])
+                                    if len(all_offices) > 1:
+                                        body += "Otras opciones cercanas:\n\n"
+                                        for i, office in enumerate(all_offices[1:3], 1):
+                                            if isinstance(office, dict):  # Verificar que office sea un diccionario
+                                                body += f"{i}. *{office.get('name', 'No disponible')}* - {office.get('distance', 'No disponible')} km\n"
+                                                body += f"   📍 {office.get('address', 'No disponible')}\n"
+                                else:
+                                    body = f"Lo siento, tuve un problema al buscar la oficina más cercana. {result.get('error', '')}"
+                            except Exception as e:
+                                logger.error(f"Error al buscar oficina cercana: {str(e)}")
+                                body = f"Lo siento, ocurrió un error al buscar oficinas cercanas. Por favor, intenta de nuevo más tarde."
+                        else:
+                            # Respuesta estándar para ubicación (mantener el comportamiento actual)
+                            body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
+                            
+                            # Si hay un reporte en progreso, actualizar la ubicación
+                            if from_number in report_sessions:
+                                report_sessions[from_number]["location"] = address
+                                report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                            
                     except Exception as e:
-                        logger.error(f"Error al convertir coordenadas a dirección: {str(e)}")
+                        logger.error(f"Error al procesar coordenadas: {str(e)}")
                         body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
                     
                     logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")

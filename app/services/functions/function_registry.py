@@ -35,8 +35,8 @@ from .implementations.get_miercoles_ciudadano import get_miercoles_ciudadano
 from .implementations.get_mercado_fregoneria import get_mercado_fregoneria
 from .implementations.get_licencias_temporales import get_licencia_provisional
 from .implementations.get_licencia_chofer import get_licencia_chofer
-
-
+from .implementations.get_government_location import get_nearest_office
+from .implementations.nearest_office import find_nearest_government_office
 
 
 registered_functions = [
@@ -75,6 +75,7 @@ registered_functions = [
     get_mercado_fregoneria,
     get_licencia_provisional,
     get_licencia_chofer,
-    transfer_to_group]
-
-
+    transfer_to_group,
+    get_nearest_office,
+    find_nearest_government_office
+]

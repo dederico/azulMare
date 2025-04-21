@@ -243,9 +243,46 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
         # Procesar imágenes de forma optimizada
         imagenes_validas = await process_images_batch(images_list, descriptions_list)
 
+        #  YOLO todo Hay que hablar con NEUROCITY para determinar porque tira el 500
+        # Procesar selection8 para compatibilidad
+        # if not imagenes_validas and selection8 and isinstance(selection8, str):
+        #     if '' in selection8 and any(part.startswith('http') for part in selection8.split()):
+        #         for url in selection8.split():
+        #             if url.startswith('http') or 'storage.chat2desk.com' in url:
+        #                 imagenes_validas.append({
+        #                     "url": selection8.strip(),
+        #                     "descripcion": "Imagen de reporte"
+        #                 })
+        #         logger.info(f"Procesadas {len(imagenes_validas)} URLs de selection8")
+        #     elif selection8.startswith('http') or 'storage.chat2desk.com' in selection8:
+        #         imagenes_validas.append({
+        #                     "url": selection8.strip(),
+        #                     "descripcion": "Imagen de reporte"
+        #                 })
+
         # Procesar selection8 para compatibilidad
         if not imagenes_validas and selection8 and isinstance(selection8, str):
-            if selection8.startswith("http") or "storage.chat2desk.com" in selection8:
+            # YOLO fix - TODO: Properly handle multiple URLs when Neurocity API supports it
+            # For now, just take the first valid URL to avoid 500 errors
+            urls_in_string = selection8.split()
+            first_valid_url = None
+            
+            if ' ' in selection8:
+                # Find the first valid URL in the string
+                for url in urls_in_string:
+                    if url.startswith('http') or 'storage.chat2desk.com' in url:
+                        first_valid_url = url.strip()
+                        break
+                
+                if first_valid_url:
+                    imagenes_validas.append({
+                        "url": first_valid_url,
+                        "descripcion": "Imagen de reporte (primera de varias)"
+                    })
+                    logger.info(f"YOLO fix: Usando solo la primera URL válida de {len(urls_in_string)} detectadas")
+            
+            # Single URL case - original behavior
+            elif selection8.startswith('http') or 'storage.chat2desk.com' in selection8:
                 imagenes_validas.append({
                     "url": selection8.strip(),
                     "descripcion": "Imagen de reporte"

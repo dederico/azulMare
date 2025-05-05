@@ -598,7 +598,6 @@ async def whatsapp(request: Request):
         photo_url = None
         audio_url = None
         image_description = None
-        
         # Handle location data
         if payload.get("coordinates"):
             coords = payload.get("coordinates")

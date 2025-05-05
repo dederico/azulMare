@@ -233,7 +233,7 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
             "_long": "0",
             "_direccionReporte": {
                 "calle": selection5 or "No proporcionada",
-                "noExt": selection6 or "S/N",
+                "noExt": selection6 or 100,
                 "colonia": selection7 or "No proporcionada",
                 "entreCalles": "Aramberri",
                 "referencias": selection4 or "No proporcionadas"

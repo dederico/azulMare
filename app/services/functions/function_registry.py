@@ -37,6 +37,14 @@ from .implementations.get_licencias_temporales import get_licencia_provisional
 from .implementations.get_licencia_chofer import get_licencia_chofer
 from .implementations.get_government_location import get_nearest_office
 from .implementations.nearest_office import find_nearest_government_office
+from .implementations.get_circuitos_de_transporte import get_circuitos_de_transporte
+from .implementations.get_inah import get_inah
+from .implementations.get_jueces_auxiliares import get_jueces_auxiliares
+from .implementations.get_licencia_16 import get_licencia_16
+from .implementations.get_licencia_automovilista import get_licencia_automovilista
+from .implementations.get_lugares_de_interes import get_lugares_de_interes
+from .implementations.get_movilidad import get_movilidad
+from .implementations.get_predial import get_predial
 
 
 registered_functions = [
@@ -77,5 +85,13 @@ registered_functions = [
     get_licencia_chofer,
     transfer_to_group,
     get_nearest_office,
-    find_nearest_government_office
+    find_nearest_government_office,
+    get_circuitos_de_transporte,
+    get_inah,
+    get_jueces_auxiliares,
+    get_licencia_16,
+    get_licencia_automovilista,
+    get_lugares_de_interes,
+    get_movilidad,
+    get_predial
 ]

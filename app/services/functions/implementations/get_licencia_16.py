@@ -1,6 +1,7 @@
 TC = """
 Este documento contiene información sobre los requisitos para tramitar
 la licencia de conducir de menores de 16 y 17 años
+
 Pregunta: ¿Cómo puedo realizar el trámite de licencia de conducir de menores de 16 y 17
 años?
 Respuesta: Aquí te compartimos los links para realizar el trámite:
@@ -69,10 +70,10 @@ Respuesta: Puede comunicarse vía telefónica al número: 8137157391 o al 813715
 área de Licencias de Tránsito para que le brinden la atención que usted necesita.
 """
 
-async def get_licencia_provisional():
-    """Obtener información sobre los requisitos para tramitar la licencia de conducir provisional para 15 años en caso de ser necesario.
+async def get_licencia_16():
+    """Obtener información sobre los requisitos para tramitar la licencia de conducir de menores de 16 y 17 años, en caso de ser necesario.
 
     Returns:
-        string: información sobre los requisitos para tramitar la licencia de conducir provisional para 15 años.
+        string: información sobre los requisitos para tramitar la licencia de conducir de menores de 16 y 17 años."
     """
     return TC

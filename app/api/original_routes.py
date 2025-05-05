@@ -764,6 +764,12 @@ async def whatsapp(request: Request):
         message_type = payload.get('type', '')
         uid = payload.get('message_id')
         
+        # Block the specific auto-reply message with "scenario.scenarioTitle.default"
+        message_text = payload.get('text', '')
+        if message_type == 'autoreply' and 'scenario.scenarioTitle.default' in message_text and 'End - Finalizar este chat' in message_text:
+            logger.debug(f"Ignorando mensaje autoreply con escenario de finalización: {uid}")
+            return JSONResponse(content={"status": True, "message": "Mensaje de escenario de fin ignorado"})
+        
         # Solo procesar mensajes que vienen del cliente (ignorar webhooks de mensajes enviados por el bot)
         if message_type != 'from_client':
             logger.debug(f"Ignorando mensaje con type={message_type} que no es from_client")

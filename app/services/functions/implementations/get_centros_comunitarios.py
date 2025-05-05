@@ -16,7 +16,7 @@ Respuesta:
 - Zona Oriente: P.º Esperanza 980, Ampliación Valle del Mirador, 66260 San Pedro Garza García, N.L.
 
 Pregunta: ¿Cuál es el contacto para registrarse en las clases?
-Respuesta: Teléfono: 81 8400 4400 Ext. 2791
+Respuesta: Teléfono: 81 8400 2791
 
 Pregunta: ¿Cuáles son los talleres / clases que brindan en los centros comunitarios?
 Respuesta:

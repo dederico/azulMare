@@ -764,10 +764,64 @@ async def whatsapp(request: Request):
         message_type = payload.get('type', '')
         uid = payload.get('message_id')
         
-        # Block the specific auto-reply message with "scenario.scenarioTitle.default"
+        # THIS IS WHERE THE FILTER CODE SHOULD BE
+        # Block the specific auto-reply "End chat" scenario messages
+        # Add this at the top of your whatsapp function, right after parsing the JSON payload
+        # This will give you detailed debug information about what's happening
+
+        # Deep debug for the scenario message filter
+        message_type = payload.get('type', '')
+        uid = payload.get('message_id')
         message_text = payload.get('text', '')
-        if message_type == 'autoreply' and 'scenario.scenarioTitle.default' in message_text and 'End - Finalizar este chat' in message_text:
-            logger.debug(f"Ignorando mensaje autoreply con escenario de finalización: {uid}")
+        hook_type = payload.get('hook_type', '')
+
+        # Log ALL autoreply messages with full details
+        if message_type == 'autoreply':
+            # Create a proper debug log with all relevant fields
+            
+            # Obtener el texto y normalizarlo (eliminar espacios extras, convertir a minúsculas)
+            raw_text = payload.get('text', '')
+            if raw_text:
+                # Imprimir el texto exacto para depuración
+                print(f"Texto original: {repr(raw_text)}")
+                # Normalizar el texto para hacer comparaciones más robustas
+                # - Convertir a minúsculas
+                # - Eliminar saltos de línea y caracteres especiales
+                # - Eliminar espacios extras
+                normalized_text = raw_text.lower().replace('\n', ' ').replace('-', '').strip()
+                print(f"Texto normalizado: {repr(normalized_text)}")
+
+                # Buscar patrones clave en lugar de coincidencias exactas
+                if 'scenario' in normalized_text and 'title' in normalized_text and 'default' in normalized_text:
+                    # Es probablemente un mensaje de escenario
+                    if 'end' in normalized_text and 'finalizar' in normalized_text:
+                        # Es un mensaje de finalización
+                        logger.debug(f"Bloqueando mensaje de finalización de escenario: {uid}")
+                        return JSONResponse(content={"status": True, "message": "Mensaje de escenario de finalización bloqueado"})
+            
+            debug_info = {
+                "message_id": uid,
+                "type": message_type,
+                "hook_type": hook_type,
+                "text_length": len(message_text) if message_text else 0,
+                "text_sample": message_text[:50] if message_text else "None",
+                "text_contains_scenario": 'scenario.scenarioTitle.default' in (message_text or ""),
+                "text_contains_finalizar": 'End - Finalizar este chat' in (message_text or ""),
+                "raw_text": repr(message_text),  # This shows exact string with escape codes
+            }
+            logger.debug(f"AUTOREPLY DEBUG: {json.dumps(debug_info)}")
+            
+            # Now with explicit detailed checks, try to catch these messages
+            if message_text and 'scenario' in message_text and 'default' in message_text and 'End' in message_text:
+                logger.info(f"BLOCKING SCENARIO MESSAGE: {repr(message_text)}")
+                return JSONResponse(content={"status": True, "message": "Mensaje de escenario bloqueado con debug"})
+
+        # Then continue with your existing filter logic:
+        if (message_type == 'autoreply' and 
+            'scenario.scenarioTitle.default' in (message_text or "") and 
+            'End - Finalizar este chat' in (message_text or "")):
+            
+            logger.debug(f"Bloqueando mensaje autoreply de escenario de finalización: {uid}")
             return JSONResponse(content={"status": True, "message": "Mensaje de escenario de fin ignorado"})
         
         # Solo procesar mensajes que vienen del cliente (ignorar webhooks de mensajes enviados por el bot)

@@ -225,7 +225,7 @@ Respuesta: Arturo Catro Navarro. Coordinador de Juntas de Vecinos. Tel: 81105241
 
 """
 
-def get_ks():
+async def get_ks():
     """Obtener Información de los Responsables de Sector en caso de ser necesario.
 
     Returns:

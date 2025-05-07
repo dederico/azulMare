@@ -84,7 +84,7 @@ registered_functions = [
     get_licencia_provisional,
     get_licencia_chofer,
     transfer_to_group,
-    get_nearest_office,
+    #get_nearest_office,
     find_nearest_government_office,
     get_circuitos_de_transporte,
     get_inah,

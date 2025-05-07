@@ -203,9 +203,9 @@ Valle de San Agustín
 Pregunta: ¿Quiénes son los Responsables de Sector (K)?
 Respuesta:
 Responsable de Sector K1: Patricio Zavala Barragán. Tel: 8110524182. patricio.zavala@sanpedro.gob.mx
-Responsable de Sector K2: Rodrigo de la Cerda. 8111991677.
+Responsable de Sector K2: Rodrigo de la Cerda. Tel: 8184785395. rodrigo.delacerda@sanpedro.gob.mx
 Responsable de Sector K3: Hector Hugo Coronado Saldaña. Tel: 8184782946. hector.coronado@sanpedro.gob.mx
-Responsable de Sector K4: Betsaida Marisol Segovia Rivera. 8184782980. betsaida.segovia@sanpedro.gob.mx
+Responsable de Sector K4: Jennifer Carolina Gomez Morales. 8184782980.
 Responsable de Sector K5: Juan José Zamorez. Tel: 8111991677. juan.zamorez@sanpedro.gob.mx
 Responsable de Sector K6: Alejandro Dávila Peña. Tel: 8184782978. alejandro.davila@sanpedro.gob.mx
 
@@ -222,6 +222,7 @@ Diálogos y recorridos por las comunidades
 
 Pregunta: ¿Quién es el responsable de las juntas vecinales?
 Respuesta: Arturo Catro Navarro. Coordinador de Juntas de Vecinos. Tel: 8110524181. arturo.castro@sanpedro.gob.mx
+
 
 """
 

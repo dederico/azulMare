@@ -206,7 +206,7 @@ async def analyze_image_with_rate_limit(client, photo_url):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Describe esta imagen en detalle."},
+                            {"type": "text", "text": "Describe esta imagen en una frase breve (máximo 15 palabras)."},
                             {
                                 "type": "image_url",
                                 "image_url": {
@@ -216,7 +216,7 @@ async def analyze_image_with_rate_limit(client, photo_url):
                         ],
                     }
                 ],
-                max_tokens=300,
+                max_tokens=100,
             )
             return image_analysis.choices[0].message.content
             

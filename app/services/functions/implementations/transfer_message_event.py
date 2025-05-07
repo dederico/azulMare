@@ -136,7 +136,7 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
             "client_id": client_id,
             "channel_id": 43347,  # Valor fijo para channel_id
             "transport": "wa_direct",
-            "text": "Solicitando transferencia a un agente humano"
+            "text": "Claro"
         }
 
 

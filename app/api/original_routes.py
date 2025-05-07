@@ -1462,7 +1462,7 @@ async def whatsapp(request: Request):
                 transferred_numbers[from_number] = expiration_time
                 logger.info(f"Transfer for {from_number} active until {datetime.fromtimestamp(expiration_time).strftime('%Y-%m-%d %H:%M:%S')}")
                 
-                response_content = "Estoy transfiriendo tu conversación a un agente humano que podrá asistirte mejor. Un agente te atenderá en breve."
+                response_content = "En breve uno de nuestros agentes te enviará un mensaje. Gracias por tu paciencia."
                 
                 # Execute the actual transfer - CHANGE FROM ASYNC TO SYNC
                 phone_number = from_number

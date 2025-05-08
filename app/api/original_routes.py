@@ -725,7 +725,7 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text):
 
 
 # Modify the process_and_save_report function
-async def process_and_save_report(from_number, location, images, descriptions,report_type,name):
+async def process_and_save_report(from_number, location, images, descriptions):
     """
     Process and save a report with improved error handling and deduplication.
     Returns a dict with status and additional information.
@@ -735,9 +735,8 @@ async def process_and_save_report(from_number, location, images, descriptions,re
         location (str): Ubicación o detalles del reporte
         images (list): Lista de URLs de imágenes
         descriptions (list): Lista de descripciones de imágenes
-        report_type (str): Tipo de reporte (por defecto "3" para luminarias)
-        name (str): Nombre del ciudadano
     """
+    # Add a unique report ID to track this specific report creation attempt
     logger.debug(f"process_and_save_report called for {from_number} with {len(images) if images else 0} images")
     
     # Check if we already have a recent report for this number
@@ -789,17 +788,12 @@ async def process_and_save_report(from_number, location, images, descriptions,re
             
         # Try to create the report
         folio = await save_client_selection(
-            from_number,      # yoga_number
-            report_type,      # selection1 - Tipo de reporte (3 = Mantenimiento de alumbrado)
-            name,             # selection2 - Nombre del ciudadano
-            "",               # selection3 - Apellido (siempre vacío)
-            location,         # selection4 - Detalles/razón del reporte
-            street,           # selection5 - Calle
-            "100",            # selection6 - Número (por defecto 100)
-            neighborhood,     # selection7 - Colonia
-            None,             # selection8 - deprecated, se usan images_list y descriptions_list
-            images,           # images_list
-            descriptions      # descriptions_list
+            from_number, 
+            location,
+            "", "", "", "", "", "", "",
+            None,
+            images,
+            descriptions
         )
         
         # Record this successful report

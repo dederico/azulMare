@@ -202,7 +202,7 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
             return error_msg
         
         # 5. Enviar mensaje de notificación al cliente
-        transfer_message = f"Su conversación ha sido transferida al {group_name}. Un agente le atenderá en breve."
+        transfer_message = "En breve uno de nuestros agentes te enviará un mensaje."
         
         if reason:
             transfer_message += f"\n\nMotivo: {reason}"

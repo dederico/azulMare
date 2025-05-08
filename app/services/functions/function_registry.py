@@ -45,6 +45,7 @@ from .implementations.get_licencia_automovilista import get_licencia_automovilis
 from .implementations.get_lugares_de_interes import get_lugares_de_interes
 from .implementations.get_movilidad import get_movilidad
 from .implementations.get_predial import get_predial
+from .implementations.get_rutas_reciclaje import get_rutas_reciclaje
 
 
 registered_functions = [
@@ -93,5 +94,6 @@ registered_functions = [
     get_licencia_automovilista,
     get_lugares_de_interes,
     get_movilidad,
-    get_predial
+    get_predial,
+    get_rutas_reciclaje
 ]

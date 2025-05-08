@@ -160,7 +160,7 @@ import base64
 import os
 from app.util.logger import logger
 
-async def save_client_selection(yoga_number: str, selection1: str, selection2: str, selection3: str, 
+async def save_client_selection(yoga_number: str, selection1: str, selection2: str, selection3: str,
                                selection4: str, selection5: str, selection6: str, selection7: str, 
                                selection8: str = None, images_list: list = None, descriptions_list: list = None):
     """Guardar la información de las preguntas según las respuestas del cliente.
@@ -169,7 +169,7 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
         yoga_number (string): El número de teléfono del cliente.
         selection1 (string): Respuesta a la pregunta 1.
         selection2 (string): Respuesta a la pregunta 2.
-        selection3 (string): Respuesta a la pregunta 3.
+        selection3 (string): Respuesta a la pregunta 3, SIEMPRE debe ser una cadena vacía.
         selection4 (string): Respuesta a la pregunta 4.
         selection5 (string): Respuesta a la pregunta 5.
         selection6 (string): Respuesta a la pregunta 6.

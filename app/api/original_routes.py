@@ -95,6 +95,11 @@ reports_in_progress = {}
 transferred_numbers = {}  # key: phone_number, value: expiration_timestamp
 transfer_timeout = 15 * 60  # 15 minutes in seconds
 last_response_time = {}  # Para rastrear cuándo se envió la última respuesta a cada número
+completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio: str}
+
+
+
+
 
 # async def process_and_save_report(from_number, location, images=None, descriptions=None):
 #     """
@@ -293,22 +298,23 @@ async def check_report_timeouts():
                 
                 # Process the report without holding the lock on the entire report_sessions dict
                 location = session["location"] or "ubicación no especificada"
-                num_images = len(session["images"])
                 
-                # Generate the report
-                folio = await save_client_selection(
+                # Use the new process_and_save_report function
+                result = await process_and_save_report(
                     number, 
                     location,
-                    "", "", "", "", "", "",
-                    None,
                     session["images"],
                     session["image_descriptions"]
                 )
                 
-                # Clean up after successful processing
-                with report_sessions_lock:
-                    if number in report_sessions:
-                        del report_sessions[number]
+                # Only clean up if successful
+                if result['status'] == 'success':
+                    logger.info(f"Auto-finalization successful: {result['message']}")
+                    with report_sessions_lock:
+                        if number in report_sessions:
+                            del report_sessions[number]
+                else:
+                    logger.warning(f"Auto-finalization failed for {number}: {result.get('message', 'Unknown error')}")
                         
             except Exception as e:
                 logger.error(f"Error al finalizar reporte automáticamente: {str(e)}")
@@ -593,72 +599,237 @@ async def check_inactivity():
 
 finalized_report_numbers = set()
 
+def is_finalization_message(text):
+    """
+    Determine if a message is attempting to finalize a report.
+    This enhanced version detects many more ways to express "finalize a report" in Spanish.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    
+    # Convert to lowercase for case-insensitive matching
+    text_lower = text.lower()
+    
+    # 1. Direct finalization keywords
+    direct_keywords = [
+        # Basic completion terms
+        "listo", "lista", "ya terminé", "ya termine", "terminé", "termine", "he terminado", 
+        "estoy listo", "estoy lista", "finalizar", "finaliza", "finalizado", "culminar",
+        "completar", "completado", "completo", "completa", "acabar", "acabado", "acabé", 
+        "acabe", "concluir", "concluido", "concluso", "concluyó", "concluyo",
+        
+        # Report specific
+        "generar reporte", "genera reporte", "crear reporte", "crea reporte", "hacer reporte", 
+        "haz reporte", "levantar reporte", "levanta reporte", "enviar reporte", "envía reporte",
+        "reportar", "reporta", "reportarlo", "ingresar reporte", "ingresa reporte", "manda reporte",
+        "mandar reporte", "envia", "enviar", "registrar", "registra", "registrarlo", "registro",
+        
+        # Send/submit variations
+        "enviar", "envía", "mandar", "manda", "envíalo", "envialo", "mándalo", "mandalo",
+        "someter", "somete", "somételo", "sometelo", "presentar", "presenta", "preséntalo",
+        "presentarlo", "subir", "sube", "súbelo", "súbelo", "procesar", "procesa", "procésalo",
+        
+        # OK/Proceed variations
+        "adelante", "procede", "proceda", "continua", "continúa", "avanza", "ejecuta", "ejecutar",
+        "seguir adelante", "sigue adelante", "dale", "dale paso", "confirmar", "confirma", "aceptar",
+        "acepta", "aprobar", "aprueba", "ok", "okay", "sí", "si", "afirmativo"
+    ]
+    
+    # 2. Phrase patterns that indicate finalization
+    finalization_phrases = [
+        "ya está", "ya esta", "eso es todo", "es todo", "eso sería todo", "con eso", 
+        "así está bien", "asi esta bien", "ya quedó", "ya quedo", "está completo", "esta completo",
+        "puedes finalizar", "puedes terminar", "puedes proceder", "puedes continuar",
+        "puedes procesar", "puedes enviarlo", "puedes mandarlo", "puedes registrarlo",
+        "por favor finaliza", "por favor termina", "por favor procede", "por favor continúa",
+        "favor de finalizar", "favor de terminar", "favor de proceder", "favor de continuar",
+        "favor de enviarlo", "favor de mandarlo", "favor de registrarlo",
+        "no más fotos", "no más imágenes", "no más", "solo esas fotos", "solo esas imágenes",
+        "son todas las fotos", "son todas las imágenes", "ya tengo todas", "ya mandé todas",
+        "ya envié todas", "puedes hacer", "puedes generar", "genera el reporte", "crea el reporte"
+    ]
+    
+    # 3. Negative-word filters (words that might indicate the user is NOT ready)
+    negative_indicators = [
+        "no estoy listo", "no he terminado", "no está listo", "no esta listo", "todavía no", 
+        "aún no", "falta", "faltan", "espera", "espere", "aguanta", "aguante", "detente", 
+        "más tarde", "luego", "después", "despues", "no lo envíes", "no lo envies", 
+        "no lo mandes", "no finalices", "no termines", "no generes", "no crees",
+        "no quiero finalizar", "no quiero terminar", "no deseo finalizar", "no deseo terminar",
+        "no lo hagas"
+    ]
+    
+    # Check for direct keywords (simple full or partial matches)
+    if any(keyword in text_lower.split() or keyword in text_lower for keyword in direct_keywords):
+        # But make sure none of the negative indicators are present
+        if not any(neg in text_lower for neg in negative_indicators):
+            return True
+    
+    # Check for phrase patterns (more complex expressions)
+    if any(phrase in text_lower for phrase in finalization_phrases):
+        # But make sure none of the negative indicators are present
+        if not any(neg in text_lower for neg in negative_indicators):
+            return True
+    
+    # Additional context-aware checks for very short responses
+    if len(text_lower.split()) <= 3:  # Very short responses
+        # Common short approvals
+        short_approvals = ["ok", "sí", "si", "yes", "ya", "dale", "eso", "ese", "esta bien", "está bien", "listo"]
+        if any(text_lower == word or text_lower.startswith(word + " ") or text_lower.endswith(" " + word) for word in short_approvals):
+            return True
+            
+        # Check for standalone "1" or "ok" which users sometimes send as confirmation
+        if text_lower in ["1", "ok", "👍", "👌"]:
+            return True
+    
+    # If none of the above conditions match, it's not a finalization message
+    return False
+
+async def remove_from_completed_reports(number, delay_seconds):
+    """Remove a number from completed_reports after a delay."""
+    await asyncio.sleep(delay_seconds)
+    if number in completed_reports:
+        del completed_reports[number]
+        logger.debug(f"Removed {number} from completed reports after {delay_seconds} seconds")
+
+async def send_chat2desk_message(phone_number, client_id, channel_id, text):
+    """Send a message via Chat2Desk API."""
+    try:
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+        
+        headers = {
+            "Authorization": api_token,
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "client_id": client_id,
+            "channel_id": channel_id,
+            "transport": "wa_direct",
+            "text": text
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(chat2desk_url, json=data, headers=headers)
+            
+        if response.status_code == 200:
+            logger.debug(f"Message sent successfully to Chat2Desk")
+            return True
+        else:
+            logger.error(f"Error sending message to Chat2Desk: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"Exception while sending Chat2Desk message: {str(e)}")
+        return False
+
+
 # Modify the process_and_save_report function
-async def process_and_save_report(from_number, location, images, descriptions):
+async def process_and_save_report(from_number, location, images, descriptions,report_type,name):
     """
-    Función centralizada para procesar y guardar reportes.
-    Evita múltiples llamadas a save_client_selection para el mismo número.
+    Process and save a report with improved error handling and deduplication.
+    Returns a dict with status and additional information.
+
+    Args:
+        from_number (str): Número telefónico del remitente
+        location (str): Ubicación o detalles del reporte
+        images (list): Lista de URLs de imágenes
+        descriptions (list): Lista de descripciones de imágenes
+        report_type (str): Tipo de reporte (por defecto "3" para luminarias)
+        name (str): Nombre del ciudadano
     """
-    # Add a unique report ID to track this specific report creation attempt
-    report_attempt_id = f"{from_number}-{datetime.now().timestamp()}"
-    logger.info(f"Starting report creation attempt {report_attempt_id}")
+    logger.debug(f"process_and_save_report called for {from_number} with {len(images) if images else 0} images")
     
-    # EXTRA CHECK: Verify if this number has recently finalized a report
-    if from_number in finalized_report_numbers:
-        logger.warning(f"Reporte ya finalizado recientemente para {from_number}, ignorando solicitud duplicada")
-        return "ya_finalizado"
+    # Check if we already have a recent report for this number
+    current_time = datetime.now().timestamp()
+    if from_number in completed_reports:
+        info = completed_reports[from_number]
+        time_diff = current_time - info['timestamp']
+        if time_diff < 300:  # 5 minutes
+            logger.warning(f"Report already created recently for {from_number} ({time_diff:.1f} seconds ago)")
+            return {
+                'status': 'duplicate',
+                'message': f"Tu reporte ya fue creado recientemente (folio: {info['folio']})",
+                'folio': info['folio']
+            }
     
-    # Verificar si ya hay un reporte en proceso para este número
+    # Check if a report is already in progress
     with reports_lock:
         if from_number in reports_in_progress and reports_in_progress[from_number]:
-            logger.warning(f"Ya hay un reporte en proceso para {from_number}, ignorando solicitud adicional")
-            return "en_proceso"
+            logger.warning(f"Report already in progress for {from_number}")
+            return {
+                'status': 'in_progress',
+                'message': "Tu reporte ya está siendo procesado. Por favor, espera unos momentos."
+            }
         
-        # Marcar que estamos procesando un reporte para este número
+        # Mark that we're processing a report for this number
         reports_in_progress[from_number] = True
-        logger.info(f"Marcando reporte como en proceso para {from_number}")
     
     try:
-        # Check if there are actually images to process
+        # Verify there are images to process
         if not images or len(images) == 0:
-            logger.warning(f"Intento de finalizar reporte sin imágenes para {from_number}")
-            with reports_lock:
-                reports_in_progress[from_number] = False
-            return "sin_imagenes"
-            
-        # Log the full report details before creation
-        logger.info(f"Creating report for {from_number} with {len(images)} images and location: {location}")
+            logger.warning(f"No images provided for report from {from_number}")
+            return {
+                'status': 'no_images',
+                'message': "No se han adjuntado imágenes al reporte. Por favor, envía al menos una imagen."
+            }
         
-        # Intentar crear el reporte
+        # Extraer partes de la ubicación si es posible
+        street = "No especificada"
+        neighborhood = "No especificada"
+        
+        # Intentar extraer calle y colonia de la ubicación
+        location_parts = location.split(',')
+        if len(location_parts) >= 2:
+            street = location_parts[0].strip()
+            neighborhood = location_parts[1].strip()
+        else:
+            # Si no se puede dividir, usar la ubicación completa como calle
+            street = location
+            
+        # Try to create the report
         folio = await save_client_selection(
-            from_number, 
-            location,
-            "", "", "", "", "", "",
-            None,
-            images,
-            descriptions
+            from_number,      # yoga_number
+            report_type,      # selection1 - Tipo de reporte (3 = Mantenimiento de alumbrado)
+            name,             # selection2 - Nombre del ciudadano
+            "",               # selection3 - Apellido (siempre vacío)
+            location,         # selection4 - Detalles/razón del reporte
+            street,           # selection5 - Calle
+            "100",            # selection6 - Número (por defecto 100)
+            neighborhood,     # selection7 - Colonia
+            None,             # selection8 - deprecated, se usan images_list y descriptions_list
+            images,           # images_list
+            descriptions      # descriptions_list
         )
         
-        # Add this number to the finalized set to prevent immediate duplicates
-        finalized_report_numbers.add(from_number)
-        logger.info(f"Report created successfully for {from_number}, folio: {folio}")
+        # Record this successful report
+        completed_reports[from_number] = {
+            'timestamp': current_time,
+            'folio': folio
+        }
         
-        # Schedule removal from finalized set after 5 minutes
-        asyncio.create_task(remove_from_finalized(from_number, 300))  # 300 seconds = 5 minutes
+        # Schedule removal from tracking after 30 minutes
+        asyncio.create_task(remove_from_completed_reports(from_number, 1800))
         
-        # Si llegamos aquí, el reporte se creó con éxito
-        return folio
+        logger.info(f"Report successfully created for {from_number}, folio: {folio}")
+        
+        # Success!
+        return {
+            'status': 'success',
+            'message': f"Reporte creado exitosamente. Folio: {folio}",
+            'folio': folio
+        }
     except Exception as e:
-        logger.error(f"Error al procesar reporte para {from_number}: {str(e)}")
-        traceback.print_exc()  # Add full traceback to logs
-        return f"error: {str(e)}"
+        logger.error(f"Error processing report for {from_number}: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f"Error al procesar el reporte: {str(e)}"
+        }
     finally:
-        # Siempre liberar el estado "en proceso"
+        # Always release the "in progress" state
         with reports_lock:
             if from_number in reports_in_progress:
                 reports_in_progress[from_number] = False
-                logger.info(f"Marcando reporte como no longer in progress para {from_number}")
-
 # Helper function to remove a number from the finalized set after a delay
 async def remove_from_finalized(number, delay_seconds):
     await asyncio.sleep(delay_seconds)
@@ -825,6 +996,11 @@ async def whatsapp(request: Request):
             return JSONResponse(content={"status": True, "message": "Mensaje de escenario de fin ignorado"})
         
         # Solo procesar mensajes que vienen del cliente (ignorar webhooks de mensajes enviados por el bot)
+        if message_type == 'to_client':
+            logger.debug(f"Ignorando mensaje saliente con type={message_type}")
+            return JSONResponse(content={"status": True, "message": "Mensaje saliente ignorado"})
+            
+        # Only process incoming client messages
         if message_type != 'from_client':
             logger.debug(f"Ignorando mensaje con type={message_type} que no es from_client")
             return JSONResponse(content={"status": True, "message": "Mensaje del sistema ignorado"})
@@ -1179,11 +1355,8 @@ async def whatsapp(request: Request):
             
             # Now check if this is providing location or requesting finalization
             is_location = any(keyword in body.lower() for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"])
-            is_finalization = any(keyword in body.lower() for keyword in [
-                "listo", "ya terminé", "he terminado", "terminé", "estoy listo", 
-                "generar reporte", "crear reporte", "hacer reporte", 
-                "levantar reporte", "reportar", "ingresar", "finalizar"
-            ])
+            is_finalization = is_finalization_message(body)
+
             
             # Log the classification for debugging
             logger.debug(f"Message classification - Is location: {is_location}, Is finalization: {is_finalization}")
@@ -1222,23 +1395,22 @@ async def whatsapp(request: Request):
                 # Usar la función centralizada para procesar el reporte
                 result = await process_and_save_report(from_number, user_location, unique_images, unique_descriptions)
                 
-                if result == "en_proceso":
-                    body = "Tu reporte ya está siendo procesado. Por favor, espera unos momentos."
-                elif result == "ya_finalizado":
-                    body = "Tu reporte ya fue finalizado hace unos momentos. Por favor, espera mientras se procesa."
-                elif result == "sin_imagenes":
-                    body = "Necesito que envíes al menos una imagen para poder generar el reporte. Por favor, envía una foto del problema."
-                elif result.startswith("error:"):
-                    body = f"Lo siento, hubo un error al finalizar tu reporte: {result[6:]}. Por favor, intenta nuevamente."
-                else:
+                if result['status'] == 'in_progress':
+                    body = result['message']
+                elif result['status'] == 'duplicate':
+                    body = result['message']
+                elif result['status'] == 'no_images':
+                    body = result['message']
+                elif result['status'] == 'error':
+                    body = f"Lo siento, hubo un error al finalizar tu reporte: {result['message']}. Por favor, intenta nuevamente."
+                elif result['status'] == 'success':
                     # El reporte se creó exitosamente
-                    folio = result
+                    folio = result['folio']
                     logger.info(f"Successfully created report with folio {folio} for request {request_id}")
-                    
                     # Limpiar la sesión de reporte después de finalizar
                     if from_number in report_sessions:
                         del report_sessions[from_number]
-                    
+                                            
                     # Importante: Construir un mensaje informativo que *NO* requiera acción adicional del usuario
                     image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
                     body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. ¿Hay algo más en lo que pueda asistirte hoy?"

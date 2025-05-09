@@ -97,9 +97,62 @@ transfer_timeout = 15 * 60  # 15 minutes in seconds
 last_response_time = {}  # Para rastrear cuándo se envió la última respuesta a cada número
 completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio: str}
 
+# Ahora, añade esta nueva función para verificar si un número ya tiene un reporte reciente
+def has_recent_report(phone_number, max_age_minutes=10):
+    """
+    Verifica si un número tiene un reporte creado recientemente.
+    
+    Args:
+        phone_number (str): Número de teléfono a verificar
+        max_age_minutes (int): Tiempo máximo en minutos para considerar un reporte como "reciente"
+        
+    Returns:
+        dict: None si no hay reporte reciente, o información del reporte si existe
+    """
+    if phone_number not in completed_reports:
+        return None
+    
+    # Verificar si el reporte es reciente
+    report_info = completed_reports[phone_number]
+    current_time = datetime.now().timestamp()
+    elapsed_minutes = (current_time - report_info['timestamp']) / 60
+    
+    if elapsed_minutes <= max_age_minutes:
+        return report_info
+    
+    # Si el reporte es antiguo, eliminarlo del registro y retornar None
+    del completed_reports[phone_number]
+    return None
 
 
-
+# Añade esta función wrapper alrededor de save_client_selection
+async def save_client_selection_with_deduplication(yoga_number, *args, **kwargs):
+    """
+    Wrapper alrededor de save_client_selection para evitar reportes duplicados.
+    """
+    # Verificar si ya existe un reporte reciente para este número
+    recent_report = has_recent_report(yoga_number)
+    if recent_report:
+        logger.warning(f"Evitando reporte duplicado para {yoga_number}. Folio existente: {recent_report['folio']}")
+        return recent_report['folio']  # Retornar el folio del reporte existente
+    
+    # Si no hay reporte reciente, proceder con la creación
+    try:
+        folio = await save_client_selection(yoga_number, *args, **kwargs)
+        
+        # Registrar este reporte exitoso
+        completed_reports[yoga_number] = {
+            'timestamp': datetime.now().timestamp(),
+            'folio': folio
+        }
+        
+        # Programar eliminación del registro después de cierto tiempo (e.g., 30 minutos)
+        asyncio.create_task(remove_from_completed_reports(yoga_number, 1800))
+        
+        return folio
+    except Exception as e:
+        logger.error(f"Error al crear reporte para {yoga_number}: {str(e)}")
+        raise
 
 # async def process_and_save_report(from_number, location, images=None, descriptions=None):
 #     """
@@ -686,11 +739,14 @@ def is_finalization_message(text):
     return False
 
 async def remove_from_completed_reports(number, delay_seconds):
-    """Remove a number from completed_reports after a delay."""
-    await asyncio.sleep(delay_seconds)
-    if number in completed_reports:
-        del completed_reports[number]
-        logger.debug(f"Removed {number} from completed reports after {delay_seconds} seconds")
+    """Remove a number from completed_reports after a delay with error handling."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        if number in completed_reports:
+            del completed_reports[number]
+            logger.debug(f"Removed {number} from completed reports after {delay_seconds} seconds")
+    except Exception as e:
+        logger.error(f"Error removing {number} from completed reports: {str(e)}")
 
 async def send_chat2desk_message(phone_number, client_id, channel_id, text):
     """Send a message via Chat2Desk API."""
@@ -744,7 +800,7 @@ async def process_and_save_report(from_number, location, images, descriptions):
     if from_number in completed_reports:
         info = completed_reports[from_number]
         time_diff = current_time - info['timestamp']
-        if time_diff < 300:  # 5 minutes
+        if time_diff < 1800:  # 30 minutes
             logger.warning(f"Report already created recently for {from_number} ({time_diff:.1f} seconds ago)")
             return {
                 'status': 'duplicate',
@@ -787,7 +843,7 @@ async def process_and_save_report(from_number, location, images, descriptions):
             street = location
             
         # Try to create the report
-        folio = await save_client_selection(
+        folio = await save_client_selection_with_deduplication(
             from_number, 
             location,
             "", "", "", "", "", "", "",
@@ -799,7 +855,7 @@ async def process_and_save_report(from_number, location, images, descriptions):
         # Record this successful report
         completed_reports[from_number] = {
             'timestamp': current_time,
-            'folio': folio
+            'folio': folio,
         }
         
         # Schedule removal from tracking after 30 minutes
@@ -939,6 +995,70 @@ async def whatsapp(request: Request):
         uid = payload.get('message_id')
         message_text = payload.get('text', '')
         hook_type = payload.get('hook_type', '')
+
+        # Check if this is a message from a human agent with the goodbye text
+        if message_type == 'to_client' and "¡Gracias por contactarse a Atención Ciudadana! Procederé a reiniciar el chatbot para que pueda recibir más reportes usando Sam." in (message_text or ""):
+            # This is a goodbye message from human agent, return control to AI
+            logger.info(f"Human agent goodbye detected, returning control to AI")
+            
+            # Extract the phone number from the payload
+            from_number = payload.get('client', {}).get('phone')
+            client_id = payload.get('client_id')
+            channel_id = payload.get('channel_id')
+            
+            if from_number in transferred_numbers:
+                del transferred_numbers[from_number]
+                
+            # Send a confirmation message from the AI
+            ai_greeting = "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n" + \
+              "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
+              "¿Con quien tengo el gusto?"
+            
+            # Store the message in conversation history
+            if from_number in user_sessions:
+                conversation_history = user_sessions[from_number].history
+                conversation_history.add_ai_message(ai_greeting)
+            
+            # Send the greeting message via Chat2Desk
+            try:
+                api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                
+                headers = {
+                    "Authorization": api_token,
+                    "Content-Type": "application/json"
+                }
+                
+                data = {
+                    "client_id": client_id,
+                    "channel_id": channel_id,
+                    "transport": "wa_direct",
+                    "text": ai_greeting
+                }
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(chat2desk_url, json=data, headers=headers)
+                
+                # Store the message in the database
+                assistant_message = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="Assistant",
+                    message=ai_greeting,
+                    number=from_number,
+                    uid=f"return-to-ai-{datetime.now().timestamp()}",
+                    direction="outbound",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(assistant_message)
+                await manage_message_history(db, from_number)
+                
+                # Return early since we've processed this message
+                return JSONResponse(content={"status": True, "message": "Control returned to AI"})
+            
+            except Exception as e:
+                logger.error(f"Error sending AI greeting after return from human agent: {str(e)}")
+
 
         # Log ALL autoreply messages with full details
         if message_type == 'autoreply':

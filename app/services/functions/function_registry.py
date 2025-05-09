@@ -46,6 +46,7 @@ from .implementations.get_lugares_de_interes import get_lugares_de_interes
 from .implementations.get_movilidad import get_movilidad
 from .implementations.get_predial import get_predial
 from .implementations.get_rutas_reciclaje import get_rutas_reciclaje
+from .implementations.get_instituto_control_vehicular import get_icvnl
 
 
 registered_functions = [
@@ -95,5 +96,6 @@ registered_functions = [
     get_lugares_de_interes,
     get_movilidad,
     get_predial,
-    get_rutas_reciclaje
+    get_rutas_reciclaje,
+    get_icvnl
 ]

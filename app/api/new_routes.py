@@ -65,7 +65,6 @@ from app.models.Config import Config
 from app.util.factory import Hooks
 from app.util.database import LocalStorage
 from app.services.functions.implementations.save_selection2 import save_client_selection2
-from app.services.functions.implementations.save_selection import find_row_and_update_selection
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
@@ -126,11 +125,56 @@ def has_recent_report(phone_number, max_age_minutes=10):
     return None
 
 
+def detect_report_topic(text):
+    """
+    Detecta el tema principal de un texto para agrupar conversaciones.
+    
+    Args:
+        text (str): Texto a analizar
+        
+    Returns:
+        str: Tema detectado o None si no se detecta ningún tema claro
+    """
+    if not text:
+        return None
+        
+    text_lower = text.lower()
+    
+    # Diccionario de palabras clave por tema
+    topics = {
+        "bache": ["bache", "hoyo", "pavimento", "asfalto", "calle dañada"],
+        "basura": ["basura", "desechos", "recolección", "residuos", "limpieza"],
+        "agua": ["fuga", "agua", "drenaje", "alcantarilla", "inundación"],
+        "luz": ["lámpara", "alumbrado", "luz", "poste", "luminaria", "oscuro"],
+        "seguridad": ["robo", "asalto", "pelea", "delincuencia", "sospechoso", "seguridad"],
+        "ruido": ["ruido", "escándalo", "música alta", "fiesta", "sonido"],
+        "animal": ["perro", "gato", "mascota", "animal", "callejero", "abandonado"],
+        "tránsito": ["tráfico", "semáforo", "accidente", "choque", "transporte", "vialidad"],
+        "árbol": ["árbol", "poda", "rama", "caída", "tronco", "vegetación"]
+    }
+    
+    # Buscar palabras clave en el texto
+    for topic, keywords in topics.items():
+        if any(keyword in text_lower for keyword in keywords):
+            return topic
+            
+    # Si no se detecta ningún tema específico
+    return None
+
+
 # Añade esta función wrapper alrededor de save_client_selection
-async def save_client_selection_with_deduplication(yoga_number, *args, **kwargs):
+async def save_client_selection_with_deduplication(yoga_number, selection1, selection2, selection3,
+                                       selection4, selection5, selection6, selection7, 
+                                       selection8=None, images_list=None, descriptions_list=None):
     """
     Wrapper alrededor de save_client_selection para evitar reportes duplicados.
     """
+    from app.util.logger import logger
+    
+    logger.debug(f"============= LLAMADA A SAVE CLIENT SELECTION CON DEDUP =============")
+    logger.debug(f"Número: {yoga_number}")
+    logger.debug(f"Images list recibida en deduplication: {images_list}")
+    
     # Verificar si ya existe un reporte reciente para este número
     recent_report = has_recent_report(yoga_number)
     if recent_report:
@@ -139,7 +183,27 @@ async def save_client_selection_with_deduplication(yoga_number, *args, **kwargs)
     
     # Si no hay reporte reciente, proceder con la creación
     try:
-        folio = await save_client_selection2(yoga_number, *args, **kwargs)
+        # Asegurarse de que todos los parámetros son del tipo correcto
+        if images_list is not None and not isinstance(images_list, list):
+            images_list = [images_list]
+        
+        if descriptions_list is not None and not isinstance(descriptions_list, list):
+            descriptions_list = [descriptions_list]
+            
+        # Llamar a la función de manera consistente con su firma
+        folio = await save_client_selection2(
+            yoga_number=str(yoga_number),
+            selection1=str(selection1) if selection1 is not None else "",
+            selection2=str(selection2) if selection2 is not None else "",
+            selection3=str(selection3) if selection3 is not None else "",
+            selection4=str(selection4) if selection4 is not None else "",
+            selection5=str(selection5) if selection5 is not None else "",
+            selection6=str(selection6) if selection6 is not None else "",
+            selection7=str(selection7) if selection7 is not None else "",
+            selection8=selection8,
+            images_list=images_list,
+            descriptions_list=descriptions_list
+        )
         
         # Registrar este reporte exitoso
         completed_reports[yoga_number] = {
@@ -147,7 +211,7 @@ async def save_client_selection_with_deduplication(yoga_number, *args, **kwargs)
             'folio': folio
         }
         
-        # Programar eliminación del registro después de cierto tiempo (e.g., 30 minutos)
+        # Programar eliminación del registro después de cierto tiempo
         asyncio.create_task(remove_from_completed_reports(yoga_number, 1800))
         
         return folio
@@ -354,7 +418,7 @@ async def check_report_timeouts():
                 location = session["location"] or "ubicación no especificada"
                 
                 # Use the new process_and_save_report function
-                result = await process_and_save_report(
+                result = await process_and_save_report2(
                     number, 
                     location,
                     session["images"],
@@ -535,9 +599,13 @@ class WhatsAppSession:
     def __init__(self, history):
         self.history = history
         self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
+        self.current_topic = None  # Agregar atributo para el tema actual
     
     def update_activity(self):
         self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
+        
+    def set_topic(self, topic):
+        self.current_topic = topic
 
 async def check_inactivity():
     """
@@ -743,9 +811,12 @@ async def remove_from_completed_reports(number, delay_seconds):
     """Remove a number from completed_reports after a delay with error handling."""
     try:
         await asyncio.sleep(delay_seconds)
-        if number in completed_reports:
-            del completed_reports[number]
-            logger.debug(f"Removed {number} from completed reports after {delay_seconds} seconds")
+        # Importante: verificar nuevamente que el número esté en el diccionario
+        # ya que podría haber sido eliminado por otro proceso
+        with report_sessions_lock:  # Usar un lock para esta operación
+            if number in completed_reports:
+                del completed_reports[number]
+                logger.debug(f"Removed {number} from completed reports after {delay_seconds} seconds")
     except Exception as e:
         logger.error(f"Error removing {number} from completed reports: {str(e)}")
 
@@ -780,11 +851,19 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text):
         logger.error(f"Exception while sending Chat2Desk message: {str(e)}")
         return False
 
+async def process_and_save_report2(from_number, location, images, descriptions):
+    from app.util.logger import logger
+    import asyncio
+    from datetime import datetime
+    import re
 
-# Modify the process_and_save_report function
-async def process_and_save_report(from_number, location, images, descriptions):
+    # Añadir logging específico para verificar que las imágenes se están recibiendo
+    logger.critical(f"process_and_save_report2 recibió images: {images}")
+    logger.critical(f"process_and_save_report2 recibió descriptions: {descriptions}")
+
     """
     Process and save a report with improved error handling and deduplication.
+    Automatically determines the appropriate asunto ID based on image descriptions.
     Returns a dict with status and additional information.
 
     Args:
@@ -793,8 +872,38 @@ async def process_and_save_report(from_number, location, images, descriptions):
         images (list): Lista de URLs de imágenes
         descriptions (list): Lista de descripciones de imágenes
     """
+    # Logs iniciales
+    logger.debug(f"================== INICIO PROCESO DE REPORTE ==================")
+    logger.debug(f"Número: {from_number}")
+    logger.debug(f"Ubicación: {location}")
+    logger.debug(f"Tipo de 'images': {type(images)}")
+    logger.debug(f"Número de imágenes recibidas: {len(images) if images else 0}")
+    
+    if images:
+        logger.debug(f"Número de imágenes recibidas: {len(images)}")
+        for i, img in enumerate(images):
+            logger.debug(f"  Imagen {i+1}: {img}")
+            logger.debug(f"  Tipo: {type(img)}")
+    else:
+        logger.debug("No se recibieron imágenes o el parámetro 'images' es None")
+
+    # IMPORTANTE: Validar imágenes primero
+    validated_images = []
+    for img in images or []:
+        if isinstance(img, str):
+            if img.startswith('http') or 'storage.chat2desk.com' in img:
+                validated_images.append(img)
+                logger.debug(f"URL válida añadida: {img}")
+            else:
+                logger.warning(f"URL inválida ignorada: {img}")
+        else:
+            logger.warning(f"Objeto no string ignorado: {type(img)}")
+            
+    logger.debug(f"Total de URLs de imágenes validadas: {len(validated_images)}/{len(images) if images else 0}")
+    
+    
     # Add a unique report ID to track this specific report creation attempt
-    logger.debug(f"process_and_save_report called for {from_number} with {len(images) if images else 0} images")
+    logger.debug(f"process_and_save_report2 called for {from_number} with {len(images) if images else 0} images")
     
     # Check if we already have a recent report for this number
     current_time = datetime.now().timestamp()
@@ -805,7 +914,7 @@ async def process_and_save_report(from_number, location, images, descriptions):
             logger.warning(f"Report already created recently for {from_number} ({time_diff:.1f} seconds ago)")
             return {
                 'status': 'duplicate',
-                'message': f"Tu reporte ya fue creado recientemente (folio: {info['folio']})",
+                'message': f"Tu reporte ya fue creado recientemente {info['folio']})",
                 'folio': info['folio']
             }
     
@@ -823,35 +932,186 @@ async def process_and_save_report(from_number, location, images, descriptions):
     
     try:
         # Verify there are images to process
-        if not images or len(images) == 0:
+        if not validated_images or len(validated_images) == 0:
             logger.warning(f"No images provided for report from {from_number}")
             return {
                 'status': 'no_images',
-                'message': "No se han adjuntado imágenes al reporte. Por favor, envía al menos una imagen."
+                'message': "No se han adjuntado imágenes al reporte."
             }
         
-        # Extraer partes de la ubicación si es posible
+        # Extract location parts if possible
         street = "No especificada"
         neighborhood = "No especificada"
+        street_number = "100"  # Default value per prompt
         
-        # Intentar extraer calle y colonia de la ubicación
+        # Try to extract street and neighborhood from location
         location_parts = location.split(',')
         if len(location_parts) >= 2:
             street = location_parts[0].strip()
             neighborhood = location_parts[1].strip()
-        else:
-            # Si no se puede dividir, usar la ubicación completa como calle
-            street = location
             
-        # Try to create the report
+            # Check if street might contain a number
+            street_parts = re.split(r'\s+(?=\d+$)', street, 1)
+            if len(street_parts) > 1:
+                street = street_parts[0].strip()
+                street_number = street_parts[1].strip()
+        else:
+            # If can't split, use full location as street
+            street = location
+        
+        # Determine the appropriate asunto ID based on descriptions
+        asunto_id = "984"  # Default: Baches (ID 984)
+        
+        # Combine all descriptions into a single text for analysis
+        combined_desc = " ".join(descriptions).lower() if descriptions else ""
+        
+        # Define keyword mappings to asuntoId
+        keyword_to_asunto = {
+            # Asuntos comunes basados en palabras clave
+            "bache": "984",  # Baches
+            "hoyo": "984",  # Baches
+            "hundimiento": "1037",  # Hundimientos
+            "basura": "974",  # Recolección de basura
+            "desecho": "974",  # Recolección de basura
+            "residuo": "974",  # Recolección de basura
+            "cacharr": "106",  # Recolección de cacharros
+            "mueble viejo": "106",  # Recolección de cacharros
+            "luminaria": "982",  # Luminarias apagadas
+            "alumbrado": "981",  # Mantenimiento a luminarias
+            "lámpara": "981",  # Mantenimiento a luminarias
+            "poste": "1060",  # Postes ladeados o caídos
+            "cable": "19",  # Cables caídos o colgados
+            "banqueta": "992",  # Construcción o rehabilitación de banquetas
+            "acera": "992",  # Construcción o rehabilitación de banquetas
+            "árbol": "979",  # Poda de Árboles en Áreas Verdes
+            "rama": "979",  # Poda de Árboles en Áreas Verdes
+            "tala": "1001",  # Tala, mutilación o poda excesiva
+            "poda": "979",  # Poda de Árboles en Áreas Verdes
+            "drenaje": "1020",  # Drenaje - Gestiones Agua y Drenaje
+            "alcantarilla": "224",  # Drenaje pluvial sin tapa
+            "pluvial": "985",  # Desazolve de pluviales
+            "inundac": "985",  # Desazolve de pluviales
+            "agua": "1109",  # Agua - Gestiones Agua y Drenaje
+            "fuga": "726",  # Fugas de agua
+            "escombro": "986",  # Retiro de Escombro
+            "grafiti": "499",  # Retiro de grafiti
+            "graffiti": "499",  # Retiro de grafiti
+            "pinta": "499",  # Retiro de grafiti
+            "pintura": "988",  # Pintura vial
+            "señalamiento": "900",  # Mantenimiento a señalamientos verticales
+            "vial": "988",  # Pintura vial
+            "semáforo": "523",  # Mantenimiento correctivo de semáforos
+            "perro": "994",  # Captura de perros y gatos
+            "gato": "994",  # Captura de perros y gatos
+            "animal": "14",  # Animales dentro de propiedad privada
+            "insecto": "287",  # Fumigacion
+            "plaga": "1071",  # Presencia de plagas
+            "mosquito": "287",  # Fumigacion
+            "zancudo": "287",  # Fumigacion
+            "fumig": "287",  # Fumigacion
+            "hierba": "213",  # Deshierbe en vías públicas
+            "maleza": "213",  # Deshierbe en vías públicas
+            "juego": "978",  # Mantenimiento menor a parques
+            "parque": "978",  # Mantenimiento menor a parques
+            "jardín": "978",  # Mantenimiento menor a parques
+            "plaza": "978",  # Mantenimiento menor a parques
+            "ruido": "1000",  # Emisión de Ruido
+            "volumen": "407",  # Música a alto volumen
+            "música": "407",  # Música a alto volumen
+            "olor": "750",  # Gestiones de emisiónes de olores
+            "contamin": "999",  # Gestiones de emisiónes de contaminantes
+            "polvo": "998",  # Emisión de polvo
+            "lote baldío": "976",  # Lotes baldíos
+            "registro": "1061",  # Registros abiertos
+            "tapa": "224",  # Drenaje pluvial sin tapa
+            "limpieza": "989",  # Limpieza de áreas de banquetas
+            "barrido": "348"  # Barrido de calles
+        }
+        
+        # Check for keywords in the combined description
+        for keyword, id in keyword_to_asunto.items():
+            if keyword in combined_desc:
+                asunto_id = id
+                logger.debug(f"Asunto ID {id} selected based on keyword '{keyword}' in description")
+                break
+                
+        # Use information from location if available and no keyword match found
+        if asunto_id == "984" and location:
+            location_lower = location.lower()
+            for keyword, id in keyword_to_asunto.items():
+                if keyword in location_lower:
+                    asunto_id = id
+                    logger.debug(f"Asunto ID {id} selected based on keyword '{keyword}' in location")
+                    break
+        
+        # Get report description from descriptions or use default
+        # Buscar mejor descripción para el reporte
+        # Primero, ver si hay una descripción del problema almacenada
+        if from_number in report_sessions and "problem_desc" in report_sessions[from_number]:
+            report_desc = report_sessions[from_number]["problem_desc"]
+            logger.debug(f"Usando descripción del problema guardada: {report_desc}")
+        # Segundo, verificar si el campo location tiene contenido útil (no solo "es todo" o similar)
+        elif location and len(location) > 15 and not is_finalization_message(location):
+            report_desc = location
+            logger.debug(f"Usando location como descripción del reporte: {report_desc}")
+        # Como fallback, usar la descripción de la imagen
+        else:
+            report_desc = descriptions[0] if descriptions and len(descriptions) > 0 else "Reporte de incidencia"
+            logger.debug(f"Usando descripción de imagen como fallback: {report_desc}")
+        
+        # Dentro de process_and_save_report2, justo antes de la llamada a save_client_selection_with_deduplication:
+        logger.debug(f"Llamando a save_client_selection_with_deduplication con:")
+        logger.debug(f"  from_number: {from_number}")
+        logger.debug(f"  asunto_id: {asunto_id}")
+        logger.debug(f"  report_desc: {report_desc}")
+        logger.debug(f"  street: {street}")
+        logger.debug(f"  street_number: {street_number}")
+        logger.debug(f"  neighborhood: {neighborhood}")
+        logger.debug(f"  Number of images: {len(validated_images) if validated_images else 0}")
+        logger.debug(f"  Images: {validated_images}")
+
+        # Dentro de process_and_save_report2, justo antes de llamar a save_client_selection_with_deduplication
+        logger.debug(f"Imágenes validadas antes de llamar a save_client_selection_with_deduplication:")
+        logger.debug(f"  Total: {len(validated_images) if validated_images else 0}")
+        if validated_images:
+            for i, img in enumerate(validated_images):
+                logger.debug(f"  Imagen {i+1}: {img}")
+
+
+        # Call the save function with proper parameters
+        logger.critical(f"Llamando a save_client_selection_with_deduplication con:")
+        logger.critical(f"  from_number: {from_number}")
+        logger.critical(f"  asunto_id: {asunto_id}")
+        logger.critical(f"  images_list: {validated_images}")
+        logger.critical(f"  Número de imágenes validadas: {len(validated_images)}")
+
+        # Call the save function with proper parameters
         folio = await save_client_selection_with_deduplication(
-            from_number, 
-            location,
-            "", "", "", "", "", "", "",
-            None,
-            images,
-            descriptions
-        )
+                from_number,          # yoga_number 
+                asunto_id,            # selection1 (asuntoId)
+                "Ciudadano",          # selection2 (nombre)
+                "",                   # selection3 (SIEMPRE cadena vacía)
+                report_desc,          # selection4 (descripción)
+                street,               # selection5 (calle)
+                street_number,        # selection6 (número)
+                neighborhood,         # selection7 (colonia)
+                None,                 # selection8 (deprecated)
+                # IMPORTANTE: ¡Asegúrate de que estos parámetros se pasen por nombre!
+                images_list=validated_images if validated_images and len(validated_images) > 0 else None,
+                descriptions_list=descriptions            
+                )
+        
+        # Asegurar que el folio sea una cadena válida y formateada
+        if not folio:
+            folio = "Reporte generado correctamente"
+        elif not isinstance(folio, str):
+            folio = str(folio)
+        
+        # Si el folio es solo un número, agregar contexto
+        if folio.isdigit():
+            folio_display = f"Folio: {folio}"
+        else:
+            folio_display = folio
         
         # Record this successful report
         completed_reports[from_number] = {
@@ -864,11 +1124,11 @@ async def process_and_save_report(from_number, location, images, descriptions):
         
         logger.info(f"Report successfully created for {from_number}, folio: {folio}")
         
-        # Success!
+        # Success! - Usar folio_display para mensaje al usuario
         return {
             'status': 'success',
-            'message': f"Reporte creado exitosamente. Folio: {folio}",
-            'folio': folio
+            'message': f"Reporte creado exitosamente. {folio_display}",
+            'folio': folio  # Mantener el folio original para referencia interna
         }
     except Exception as e:
         logger.error(f"Error processing report for {from_number}: {str(e)}")
@@ -881,6 +1141,7 @@ async def process_and_save_report(from_number, location, images, descriptions):
         with reports_lock:
             if from_number in reports_in_progress:
                 reports_in_progress[from_number] = False
+
 # Helper function to remove a number from the finalized set after a delay
 async def remove_from_finalized(number, delay_seconds):
     await asyncio.sleep(delay_seconds)
@@ -940,32 +1201,45 @@ def is_bot_generated_message(message_text, recent_ai_messages=None):
         "para finalizar tu reporte"
     ]
 
+    common_human_words = [
+        "hola", "gracias", "adios", "adiós", "hasta luego", "ok", "bueno",
+        "bien", "perfecto", "listo", "si", "sí", "no", "chao", "bye"
+    ]
+    # Verificar si es un mensaje muy corto que podría ser una despedida o saludo
+    if len(message_text.split()) <= 2:
+        # Si es una palabra común que podría usar un humano, NO lo consideramos eco del bot
+        if any(word in message_text.lower() for word in common_human_words):
+            return False
+        
     # Use glob-style pattern matching (with * as wildcard)
     for pattern in exact_bot_patterns:
-        if pattern.lower() in message_text.lower():
+        if "*" in pattern:
+            parts = pattern.split("*")
+            if all(part.lower() in message_text.lower() for part in parts if part):
+                return True
+        elif pattern.lower() in message_text.lower():
             return True
     
     # Check if the message closely matches a recent AI message
     if recent_ai_messages:
         for ai_message in recent_ai_messages:
-            # If message is very similar to a recent AI message, it's likely an echo
-            if ai_message == message_text or (
-                len(ai_message) > 20 and len(message_text) > 20 and
-                (ai_message in message_text or message_text in ai_message)
-            ):
+            # Mensaje exactamente igual (evita procesar el mismo mensaje dos veces)
+            if ai_message == message_text:
                 return True
             
-            # # Check similarity ratio for longer messages
-            # if len(message_text) > 15 and len(ai_message) > 15:
-            #     # Simple similarity check - shared words
-            #     msg_words = set(message_text.lower().split())
-            #     ai_words = set(ai_message.lower().split())
-            #     common_words = msg_words.intersection(ai_words)
-                
-            #     # If they share more than 70% of words, likely an echo
-            #     if len(common_words) / max(len(msg_words), len(ai_words)) > 0.7:
-            #         return True
+            # Mensaje que es parte del mensaje del bot (texto bastante largo y embebido)
+            if (len(ai_message) > 30 and len(message_text) > 10 and 
+                message_text in ai_message and 
+                float(len(message_text)) / len(ai_message) > 0.8):  # Si es más del 80% del mensaje original
+                return True
+            
+            # Mensaje del bot que es parte del mensaje del usuario (muy improbable)
+            if (len(message_text) > 30 and len(ai_message) > 10 and 
+                ai_message in message_text and 
+                float(len(ai_message)) / len(message_text) > 0.8):  # Si es más del 80% del mensaje original
+                return True
     
+    # Si no coincide con ninguna de las condiciones anteriores, no es un eco del bot
     return False
 
 @router.post("/whatsapp")
@@ -1006,10 +1280,8 @@ async def whatsapp(request: Request):
             from_number = payload.get('client', {}).get('phone')
             client_id = payload.get('client_id')
             channel_id = payload.get('channel_id')
-            
             if from_number in transferred_numbers:
-                del transferred_numbers[from_number]
-                
+                del transferred_numbers[from_number]                
             # Send a confirmation message from the AI
             ai_greeting = "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n" + \
               "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
@@ -1029,6 +1301,7 @@ async def whatsapp(request: Request):
                     "Authorization": api_token,
                     "Content-Type": "application/json"
                 }
+
                 
                 data = {
                     "client_id": client_id,
@@ -1122,8 +1395,12 @@ async def whatsapp(request: Request):
         
         # Verificar si este mensaje ya ha sido procesado (deduplicación)
         if processed_message_ids.contains(uid):
-            logger.debug(f"Ignorando mensaje duplicado con id={uid}")
-            return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
+            # No ignorar mensajes que contienen imágenes aunque tengan un ID duplicado
+            if payload.get("photo"):
+                logger.debug(f"Mensaje con ID duplicado {uid} pero contiene imagen, continuando procesamiento")
+            else:
+                logger.debug(f"Ignorando mensaje duplicado con id={uid}")
+                return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
         
         # Marcar este mensaje como procesado
         processed_message_ids.add(uid)
@@ -1146,6 +1423,35 @@ async def whatsapp(request: Request):
         channel_id = payload.get('channel_id')
         client_id = payload.get('client_id')
 
+        # VERIFICAR SI ES UN SALUDO PARA LIMPIAR ESTADO ANTERIOR
+        if body and any(greeting in body.lower() for greeting in ["hola", "buenos días", "buenas tardes", "buenas noches", "ey", "hey", "ayuda", "quiero reportar"]):
+            # Limpiar cualquier estado anterior
+            if from_number in report_sessions:
+                logger.info(f"Limpiando sesión de reporte para {from_number} por nuevo saludo")
+                del report_sessions[from_number]
+            if from_number in completed_reports:
+                logger.info(f"Limpiando reporte completado para {from_number} por nuevo saludo")
+                del completed_reports[from_number]
+            logger.debug(f"Nueva conversación iniciada para {from_number}, estado limpiado")
+            
+        # VERIFICAR CAMBIO DE TEMA
+        current_topic = detect_report_topic(body) if body else None
+        if from_number in user_sessions:
+            if not hasattr(user_sessions[from_number], 'current_topic'):
+                user_sessions[from_number].current_topic = None
+                
+            previous_topic = user_sessions[from_number].current_topic
+            if current_topic and previous_topic and current_topic != previous_topic:
+                # Cambio de tema detectado, reiniciar sesión de reporte
+                if from_number in report_sessions:
+                    del report_sessions[from_number]
+                logger.debug(f"Reiniciando sesión de reporte para {from_number} por cambio de tema de {previous_topic} a {current_topic}")
+            
+            # Actualizar el tema actual
+            user_sessions[from_number].current_topic = current_topic
+
+
+            
         # Get recent AI messages for this number to check for echoes
         recent_ai_messages = []
         if from_number in user_sessions:
@@ -1299,7 +1605,7 @@ async def whatsapp(request: Request):
                                         "Authorization": api_token,
                                         "Content-Type": "application/json"
                                     }
-                                    
+
                                     data = {
                                         "client_id": client_id,
                                         "channel_id": channel_id,
@@ -1327,6 +1633,10 @@ async def whatsapp(request: Request):
                             
                             # Si hay un reporte en progreso, actualizar la ubicación
                             if from_number in report_sessions:
+                                logger.debug(f"Estado actual del reporte para {from_number}:")
+                                logger.debug(f"  - Imágenes guardadas: {len(report_sessions[from_number]['images'])}")
+                                logger.debug(f"  - Primera imagen: {report_sessions[from_number]['images'][0] if report_sessions[from_number]['images'] else 'No hay imágenes'}")
+                                logger.debug(f"  - Descripciones: {len(report_sessions[from_number]['image_descriptions'])}")
                                 report_sessions[from_number]["location"] = address
                                 report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
                             
@@ -1345,6 +1655,16 @@ async def whatsapp(request: Request):
         elif payload.get("photo"):
             # Procesamiento de imagen
             photo_url = payload.get("photo")
+            # AÑADE ESTA VERIFICACIÓN para revisar también los adjuntos
+            if not photo_url and payload.get("attachments"):
+                # Intentar extraer la URL de la imagen de los adjuntos
+                for attachment in payload.get("attachments", []):
+                    if attachment.get("content_type", "").startswith("image/"):
+                        if attachment.get("file", {}).get("url"):
+                            photo_url = attachment["file"]["url"]
+                            logger.debug(f"URL de imagen extraída de attachments: {photo_url}")
+                            break
+
             if photo_url:
                 try:
                     # Analizar la imagen con rate limiting
@@ -1356,7 +1676,8 @@ async def whatsapp(request: Request):
                             "images": [],
                             "image_descriptions": [],
                             "location": None,
-                            "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
+                            "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
+                            "problem_desc": None 
                         }
                     
                     # Añadir esta imagen al reporte en progreso - con verificación
@@ -1472,6 +1793,8 @@ async def whatsapp(request: Request):
             is_location = any(keyword in body.lower() for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"])
             is_finalization = is_finalization_message(body)
 
+            is_description = len(body) > 15 and not is_location and not is_finalization
+
             
             # Log the classification for debugging
             logger.debug(f"Message classification - Is location: {is_location}, Is finalization: {is_finalization}")
@@ -1481,68 +1804,239 @@ async def whatsapp(request: Request):
                 report_sessions[from_number]["location"] = body
                 report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
                 body = f"Ubicación registrada: {body}. Para finalizar tu reporte con las imágenes que has enviado, avísame cuando estés listo."
+            elif is_description:
+                # Verificar si report_sessions tiene la estructura necesaria
+                if "problem_desc" not in report_sessions[from_number]:
+                    report_sessions[from_number]["problem_desc"] = body
+                else:
+                    # Concatenar con la descripción existente
+                    report_sessions[from_number]["problem_desc"] += ". " + body
+                
+                report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                body = f"Gracias por la descripción. Puedes continuar proporcionando más detalles o indicarme cuando estés listo para finalizar el reporte."
             elif is_finalization:
                 # Generate a unique request ID for this report finalization request
                 request_id = f"{from_number}-{int(datetime.now().timestamp())}"
                 logger.info(f"Report finalization request {request_id} received")
                 
-                # El usuario quiere finalizar el reporte
-                images = report_sessions[from_number]["images"]
-                descriptions = report_sessions[from_number]["image_descriptions"]
-                
-                # Deduplicate images to ensure no duplicates
-                unique_images = []
-                unique_descriptions = []
-                img_set = set()
-                
-                for i, img in enumerate(images):
-                    if img not in img_set:
-                        img_set.add(img)
-                        unique_images.append(img)
-                        if i < len(descriptions):
-                            unique_descriptions.append(descriptions[i])
-                
-                logger.info(f"After deduplication: {len(unique_images)} of {len(images)} images remain")
-                
-                # Use the location stored in the report session or the current message as fallback
-                user_location = report_sessions[from_number]["location"] or body or "ubicación no especificada"
-                
-                # Usar la función centralizada para procesar el reporte
-                result = await process_and_save_report(from_number, user_location, unique_images, unique_descriptions)
-                
-                if result['status'] == 'in_progress':
-                    body = result['message']
-                elif result['status'] == 'duplicate':
-                    body = result['message']
-                elif result['status'] == 'no_images':
-                    body = result['message']
-                elif result['status'] == 'error':
-                    body = f"Lo siento, hubo un error al finalizar tu reporte: {result['message']}. Por favor, intenta nuevamente."
-                elif result['status'] == 'success':
-                    # El reporte se creó exitosamente
-                    folio = result['folio']
-                    logger.info(f"Successfully created report with folio {folio} for request {request_id}")
-                    # Limpiar la sesión de reporte después de finalizar
-                    if from_number in report_sessions:
-                        del report_sessions[from_number]
-                                            
-                    # Importante: Construir un mensaje informativo que *NO* requiera acción adicional del usuario
-                    image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
-                    body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. ¿Hay algo más en lo que pueda asistirte hoy?"
+                # IMPORTANTE: Verificar que realmente haya un reporte en progreso con imágenes
+                if from_number in report_sessions and report_sessions[from_number]["images"]:
+                    logger.critical(f"Reporte encontrado para {from_number} con {len(report_sessions[from_number]['images'])} imágenes")
                     
-                    # Crear y guardar un mensaje de sistema explicando lo que ocurrió
-                    img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
-                    system_notification = Message(
-                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        senderName="System",
-                        message=f"[SISTEMA: Se generó el reporte con folio {folio} {img_count}de la ubicación '{user_location}'. El reporte ha sido enviado al sistema.]",
-                        number=from_number,
-                        uid=f"system-{request_id}",
-                        direction="system",
-                        mtype="text",
-                        source="whatsapp"
+                    # El usuario quiere finalizar el reporte
+                    images = report_sessions[from_number]["images"]
+                    descriptions = report_sessions[from_number]["image_descriptions"]
+                    
+                    # Log detallado de las imágenes antes de la deduplicación
+                    logger.critical(f"Imágenes antes de deduplicación:")
+                    for i, img in enumerate(images):
+                        logger.critical(f"  - Imagen {i+1}: {img}")
+                
+                    # Deduplicate images to ensure no duplicates
+                    unique_images = []
+                    unique_descriptions = []
+                    img_set = set()
+                    
+                    for i, img in enumerate(images):
+                        if img not in img_set:
+                            img_set.add(img)
+                            unique_images.append(img)
+                            if i < len(descriptions):
+                                unique_descriptions.append(descriptions[i])
+                    
+                    logger.critical(f"After deduplication: {len(unique_images)} of {len(images)} images remain")
+                    for i, img in enumerate(unique_images):
+                        logger.critical(f"  - Imagen deduplicada {i+1}: {img}")
+                
+                    # Use the location stored in the report session or the current message as fallback
+                    user_location = report_sessions[from_number]["location"] or body or "ubicación no especificada"
+                    
+                    # IMPORTANTE: Agregar logs críticos para depurar lo que se está enviando
+                    logger.critical(f"LLAMANDO A process_and_save_report2 con {len(unique_images)} imágenes")
+                    logger.critical(f"Unique images a enviar: {unique_images}")
+                    if unique_descriptions:
+                        logger.critical(f"Descriptions a enviar: {unique_descriptions[:2]}...")  # Solo logging parcial para evitar logs enormes
+                    
+                    validated_unique_images = []
+                    for img in unique_images:
+                        if isinstance(img, str) and (img.startswith("http") or "storage.chat2desk.com" in img):
+                            validated_unique_images.append(img)
+                            logger.critical(f"  - Imagen validada: {img}")
+
+                    if not validated_unique_images:
+                        logger.warning(f"No hay imágenes válidas para enviar al reporte")
+                        body = "No se encontraron imágenes válidas para crear el reporte. Por favor, envía al menos una imagen."
+                        # Código para enviar mensaje de error...
+                        return JSONResponse(content={"status": False, "error": "No hay imágenes válidas"})
+
+                    # Después de recibir el resultado de process_and_save_report
+                    result = await process_and_save_report2(
+                        from_number, 
+                        user_location, 
+                        unique_images,  # Asegurarse de que estas sean URLs de imágenes válidas
+                        unique_descriptions
                     )
-                    db.Insert(system_notification)
+                    
+                    # IMPORTANTE: Todo lo que usa 'result' debe estar DENTRO del mismo bloque donde se define
+                    if result['status'] == 'in_progress':
+                        body = result['message']
+                    elif result['status'] == 'duplicate':
+                        body = result['message']
+                    elif result['status'] == 'no_images':
+                        body = result['message']
+                    elif result['status'] == 'error':
+                        body = f"Lo siento, hubo un error al finalizar tu reporte: {result['message']}. Por favor, intenta nuevamente."
+                    elif result['status'] == 'success':
+                        # El reporte se creó exitosamente
+                        folio = result['folio']
+                        logger.info(f"Successfully created report with folio {folio} for request {request_id}")
+                        
+                        # Limpiar la sesión de reporte después de finalizar
+                        if from_number in report_sessions:
+                            del report_sessions[from_number]
+                        
+                        # Importante: Construir un mensaje informativo que NO esté vacío
+                        image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
+                        
+                        # Asegurar que el mensaje tenga suficiente contenido
+                        body = f"Tu reporte ha sido generado con éxito. {result['message']} Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. ¿Hay algo más en lo que pueda asistirte hoy?"
+                        
+                        # Verificar que el mensaje no esté vacío 
+                        if not body or len(body.strip()) == 0:
+                            body = f"Tu reporte ha sido generado exitosamente. Agradecemos tu colaboración. ¿Hay algo más en lo que pueda ayudarte?"
+                        
+                        # Crear y guardar un mensaje de sistema explicando lo que ocurrió
+                        img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
+                        system_notification = Message(
+                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            senderName="System",
+                            message=f"[SISTEMA: Se generó el reporte con folio {folio} {img_count}de la ubicación '{user_location}'. El reporte ha sido enviado al sistema.]",
+                            number=from_number,
+                            uid=f"system-{request_id}",
+                            direction="system",
+                            mtype="text",
+                            source="whatsapp"
+                        )
+                        db.Insert(system_notification)
+                        
+                        # Log para debugging
+                        logger.debug(f"Mensaje preparado para Chat2Desk: '{body}'")
+
+                    # Y en la parte donde se envía el mensaje a Chat2Desk
+                    try:
+                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                        
+                        headers = {
+                            "Authorization": api_token,
+                            "Content-Type": "application/json"
+                        }
+                        
+                        # Asegurar que body nunca esté vacío
+                        if not body or len(body.strip()) == 0:
+                            body = "Gracias por tu mensaje. Tu solicitud ha sido procesada."
+
+                        # Asegurarnos de que el mensaje tenga suficiente texto para evitar errores de Chat2Desk
+                        if len(body) < 5:
+                            body = f"{body} - Gracias por comunicarte con nosotros."
+                        
+                        data = {
+                            "client_id": client_id,
+                            "channel_id": channel_id,
+                            "transport": "wa_direct",
+                            "text": body
+                        }
+                        
+                        # Log de los datos exactos que se envían
+                        logger.debug(f"Enviando mensaje a Chat2Desk: client_id={client_id}, channel_id={channel_id}, text_length={len(body)}")
+                        
+                        response = requests.post(chat2desk_url, json=data, headers=headers)
+                        
+                        if response.status_code == 200:
+                            logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
+                            return JSONResponse(content={"status": True, "message": "Respuesta enviada por Chat2Desk"})
+                        else:
+                            logger.error(f"Error al enviar mensaje a Chat2Desk: {response.status_code} - {response.text}")
+                            
+                            # Si falla con "missing required field", hacer un segundo intento con un mensaje más simple
+                            if "missing required field" in response.text:
+                                simple_data = {
+                                    "client_id": client_id,
+                                    "channel_id": channel_id,
+                                    "transport": "wa_direct",
+                                    "text": "Tu reporte ha sido recibido. Gracias por tu mensaje."
+                                }
+                                
+                                retry_response = requests.post(chat2desk_url, json=simple_data, headers=headers)
+                                if retry_response.status_code == 200:
+                                    logger.debug("Segundo intento exitoso con mensaje simplificado")
+                                    return JSONResponse(content={"status": True, "message": "Respuesta enviada por Chat2Desk (segundo intento)"})
+                                else:
+                                    logger.error(f"Segundo intento también falló: {retry_response.status_code} - {retry_response.text}")
+                                    return JSONResponse(content={"status": False, "error": f"Error al enviar mensaje en ambos intentos: {response.status_code}"})
+                            else:
+                                return JSONResponse(content={"status": False, "error": f"Error al enviar mensaje: {response.status_code}"})
+
+                    except requests.RequestException as e:
+                        logger.error(f"Error de conexión con Chat2Desk: {str(e)}")
+                        return JSONResponse(content={"status": False, "error": f"Error de conexión: {str(e)}"})
+                    except Exception as e:
+                        logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
+                        return JSONResponse(content={"status": False, "error": f"Error inesperado: {str(e)}"})
+                else:
+                    # No hay reporte en progreso o no hay imágenes
+                    logger.warning(f"No report in progress or no images for {from_number}")
+                    body = "No se encontraron imágenes para crear el reporte. Por favor, envía al menos una imagen."
+                    
+                    # Enviar mensaje de error (reporte sin imágenes) a través de Chat2Desk
+                    try:
+                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                        headers = {
+                            "Authorization": api_token,
+                            "Content-Type": "application/json"
+                        }
+                        data = {
+                            "client_id": client_id,
+                            "channel_id": channel_id,
+                            "transport": "wa_direct",
+                            "text": body
+                        }
+                        response = requests.post(chat2desk_url, json=data, headers=headers)
+                        
+                        if response.status_code == 200:
+                            logger.debug(f"Mensaje de error enviado exitosamente a Chat2Desk")
+                            return JSONResponse(content={"status": True, "message": "Mensaje de error enviado por Chat2Desk"})
+                        else:
+                            logger.error(f"Error al enviar mensaje a Chat2Desk: {response.status_code} - {response.text}")
+                            return JSONResponse(content={"status": False, "error": f"Error al enviar mensaje: {response.status_code}"})
+                        
+                        # Si falla con "missing required field", hacer un segundo intento con un mensaje más simple
+                        if "missing required field" in response.text:
+                            simple_data = {
+                                "client_id": client_id,
+                                "channel_id": channel_id,
+                                "transport": "wa_direct",
+                                "text": "Tu reporte ha sido recibido. Gracias por tu mensaje."
+                            }
+                            
+                            retry_response = requests.post(chat2desk_url, json=simple_data, headers=headers)
+                            if retry_response.status_code == 200:
+                                logger.debug("Segundo intento exitoso con mensaje simplificado")
+                                content = {"status": True, "message": "Respuesta enviada por Chat2Desk (segundo intento)"}
+                            else:
+                                logger.error(f"Segundo intento también falló: {retry_response.status_code} - {retry_response.text}")
+                                content = {"status": False, "error": f"Error al enviar mensaje en ambos intentos: {response.status_code}"}
+                        else:
+                            content = {"status": False, "error": f"Error al enviar mensaje: {response.status_code}"}
+
+                    except requests.RequestException as e:
+                        logger.error(f"Error de conexión con Chat2Desk: {str(e)}")
+                        content = {"status": False, "error": f"Error de conexión: {str(e)}"}
+                    except Exception as e:
+                        logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
+                        content = {"status": False, "error": f"Error inesperado: {str(e)}"}
+
                     
     # Continuar con el procesamiento normal
     except KeyError as e:
@@ -1653,6 +2147,19 @@ async def whatsapp(request: Request):
         response_content = ""
         async for response in model_response:
             response_content += str(response)
+
+        # Detectar si se está creando un reporte pero no se han solicitado imágenes
+        if from_number in report_sessions:
+            # Si aún no hay imágenes y parece que estamos en proceso de reporte
+            if (not report_sessions[from_number]["images"] and 
+                (report_sessions[from_number].get("location") or 
+                report_sessions[from_number].get("problem_desc"))):
+                
+                # Verificar si la respuesta no menciona imágenes o fotos
+                if not any(word in response_content.lower() for word in ["imagen", "foto", "fotografía", "envía", "comparte", "adjunta"]):
+                    # Añadir solicitud de imágenes al final de la respuesta
+                    response_content += "\n\n¿Podrías enviarme una imagen del problema? Las fotos son muy importantes para que podamos atender tu reporte correctamente."
+                    logger.debug(f"Añadida solicitud de imágenes a la respuesta para {from_number}")
             
         # Asegurar que response_content sea un string
         if isinstance(response_content, list):
@@ -1711,6 +2218,14 @@ async def whatsapp(request: Request):
             "Authorization": api_token,
             "Content-Type": "application/json"
         }
+        # IMPORTANTE: Asegurar que response_content nunca esté vacío
+        if not response_content or len(response_content.strip()) == 0:
+            response_content = "Tu mensaje ha sido recibido. Gracias por contactarnos."
+        
+        # Asegurarnos de que el mensaje tenga suficiente texto para evitar errores de Chat2Desk
+        if len(response_content) < 5:
+            response_content = f"{response_content} - Gracias por comunicarte con nosotros."
+
         # Check if the response contains phrases that could trigger finalization
         blocked_phrases = [
                 "ya terminé", "ya termine", "listo", "finalizar reporte", 
@@ -1803,8 +2318,24 @@ async def whatsapp(request: Request):
 
     # Después de enviar la respuesta a través de Chat2Desk y justo antes de return JSONResponse
     # Verificar si el mensaje del usuario indica despedida y la respuesta del bot también
-    farewell_keywords = ["gracias", "adiós", "adios", "hasta luego", "chao", "bye", "es todo", "terminar"]
+    farewell_keywords = [
+        "gracias", "adiós", "adios", "hasta luego", "chao", "bye", "es todo", 
+        "terminar", "hasta pronto", "nos vemos", "gracias por tu ayuda", 
+        "muchas gracias", "listo", "ya quedó", "eso es todo", "nada más"
+    ]
+
     bot_farewell_indicators = ["que tengas", "hasta luego", "adiós", "adios", "buen día", "hasta pronto"]
+
+    if any(keyword in body.lower() for keyword in farewell_keywords):
+        logger.info(f"Mensaje de despedida detectado: '{body}'. Iniciando limpieza para {from_number}")
+        # Crear tarea sin esperar a que termine
+        asyncio.create_task(delayed_cleanup_msgs(from_number))
+    # También limpiar después de un reporte exitoso
+    elif 'result' in locals() and result and result.get('status') == 'success':
+        logger.info(f"Reporte exitoso para {from_number}, programando limpieza...")
+        asyncio.create_task(delayed_cleanup_msgs(from_number))
+
+    return JSONResponse(content=content)
 
     # # Helper function to remove number from transferred set after timeout
     # async def remove_from_transferred(number, delay_seconds):
@@ -1813,40 +2344,86 @@ async def whatsapp(request: Request):
     #         transferred_numbers.remove(number)
     #         logger.debug(f"Removed {number} from transferred numbers list after {delay_seconds} seconds")
     # Función de limpieza definida fuera del bloque if para evitar problemas de acceso
-    async def delayed_cleanup_msgs(phone_number):
-        try:
-            await asyncio.sleep(5)  # Esperar 5 segundos para asegurar que el mensaje se entregó
-            db = LocalStorage()
+
+async def delayed_cleanup_msgs(phone_number):
+    try:
+        logger.info(f"Programada limpieza para {phone_number} en 5 segundos")
+        await asyncio.sleep(5)  # Esperar 5 segundos antes de la limpieza
+        
+        # Limpiar la sesión del usuario
+        if phone_number in user_sessions:
+            del user_sessions[phone_number]
+            logger.info(f"Eliminada sesión de usuario para {phone_number}")
+        
+        # Limpiar la sesión de reporte
+        if phone_number in report_sessions:
+            del report_sessions[phone_number]
+            logger.info(f"Eliminada sesión de reporte para {phone_number}")
+        
+        # Limpiar de completed_reports
+        if phone_number in completed_reports:
+            del completed_reports[phone_number]
+            logger.info(f"Eliminado de completed_reports: {phone_number}")
             
-            # Usar el método para eliminar mensajes por número
-            # Implementa este método en la clase LocalStorage
-            conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
+        # Ahora limpiar los mensajes de la base de datos
+        db = LocalStorage()
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                dbname=db.dbName, 
+                user=db.user, 
+                password=db.password, 
+                host=db.host, 
+                port=db.port,
+                connect_timeout=10
+            )
+            
             cursor = conn.cursor()
             
-            # SQL directo para eliminar mensajes por número
-            cursor.execute("DELETE FROM messages WHERE number = %s", [phone_number])
-            count = cursor.rowcount
+            # Contar antes de eliminar para verificación
+            cursor.execute("SELECT COUNT(*) FROM messages WHERE number = %s", [phone_number])
+            count_before = cursor.fetchone()[0]
+            logger.info(f"Encontrados {count_before} mensajes para eliminar de {phone_number}")
+            
+            if count_before > 0:
+                # Guardar un resumen antes de eliminar
+                cursor.execute("""
+                    SELECT time, direction, message 
+                    FROM messages 
+                    WHERE number = %s 
+                    ORDER BY time DESC 
+                    LIMIT 3
+                """, [phone_number])
+                
+                recent_msgs = cursor.fetchall()
+                logger.info(f"Últimos 3 mensajes antes de eliminar para {phone_number}:")
+                for msg in recent_msgs:
+                    logger.info(f"  [{msg[0]}] {msg[1]}: {msg[2][:30]}...")
+                
+                # Eliminar los mensajes
+                cursor.execute("DELETE FROM messages WHERE number = %s", [phone_number])
+                count_deleted = cursor.rowcount
+                logger.info(f"✅ Eliminados {count_deleted} de {count_before} mensajes para {phone_number}")
+                
+                # Verificar después de eliminar
+                cursor.execute("SELECT COUNT(*) FROM messages WHERE number = %s", [phone_number])
+                count_after = cursor.fetchone()[0]
+                logger.info(f"Mensajes restantes después de eliminar: {count_after}")
             
             conn.commit()
-            conn.close()
             
-            logger.debug(f"Se eliminaron {count} mensajes para el número {phone_number} por despedida.")
-            
-            # Eliminar la sesión también
-            if phone_number in user_sessions:
-                del user_sessions[phone_number]
-                logger.debug(f"Sesión de {phone_number} finalizada por despedida.")
-                
-        except Exception as e:
-            logger.error(f"Error al eliminar mensajes: {str(e)}")
-
-    if (any(keyword in body.lower() for keyword in farewell_keywords) and 
-        any(indicator in response_content.lower() for indicator in bot_farewell_indicators)):
-        
-        # Crear tarea sin esperar a que termine
-        asyncio.create_task(delayed_cleanup_msgs(from_number))
-
-    return JSONResponse(content=content)
+        except Exception as db_error:
+            logger.error(f"⚠️ Error de base de datos: {str(db_error)}")
+            if conn:
+                conn.rollback()
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    except Exception as e:
+        logger.error(f"⚠️ Error general en delayed_cleanup_msgs: {str(e)}", exc_info=True)
 
 def format_phone_number(phone):
     """

@@ -127,7 +127,9 @@ def has_recent_report(phone_number, max_age_minutes=10):
 
 
 # Añade esta función wrapper alrededor de save_client_selection
-async def save_client_selection_with_deduplication(yoga_number, *args, **kwargs):
+async def save_client_selection_with_deduplication(yoga_number, selection1, selection2, selection3,
+                                       selection4, selection5, selection6, selection7, 
+                                       selection8=None, images_list=None, descriptions_list=None):
     """
     Wrapper alrededor de save_client_selection para evitar reportes duplicados.
     """
@@ -139,7 +141,19 @@ async def save_client_selection_with_deduplication(yoga_number, *args, **kwargs)
     
     # Si no hay reporte reciente, proceder con la creación
     try:
-        folio = await save_client_selection2(yoga_number, *args, **kwargs)
+        folio = await save_client_selection2(
+            yoga_number=yoga_number, 
+            selection1=selection1, 
+            selection2=selection2, 
+            selection3=selection3,
+            selection4=selection4, 
+            selection5=selection5, 
+            selection6=selection6, 
+            selection7=selection7,
+            selection8=selection8, 
+            images_list=images_list,  # Asegúrate de que este parámetro se pase
+            descriptions_list=descriptions_list
+        )
         
         # Registrar este reporte exitoso
         completed_reports[yoga_number] = {
@@ -686,7 +700,10 @@ def is_finalization_message(text):
         # OK/Proceed variations
         "adelante", "procede", "proceda", "continua", "continúa", "avanza", "ejecuta", "ejecutar",
         "seguir adelante", "sigue adelante", "dale", "dale paso", "confirmar", "confirma", "aceptar",
-        "acepta", "aprobar", "aprueba", "ok", "okay", "sí", "si", "afirmativo"
+        "acepta", "aprobar", "aprueba", "ok", "okay", "sí", "si", "afirmativo",
+        
+        # Añadir estas expresiones específicas
+        "son todas", "es todo", "todas", "solo estas", "eso es todo", "ya están todas"
     ]
     
     # 2. Phrase patterns that indicate finalization
@@ -700,7 +717,8 @@ def is_finalization_message(text):
         "favor de enviarlo", "favor de mandarlo", "favor de registrarlo",
         "no más fotos", "no más imágenes", "no más", "solo esas fotos", "solo esas imágenes",
         "son todas las fotos", "son todas las imágenes", "ya tengo todas", "ya mandé todas",
-        "ya envié todas", "puedes hacer", "puedes generar", "genera el reporte", "crea el reporte"
+        "ya envié todas", "puedes hacer", "puedes generar", "genera el reporte", "crea el reporte",
+        "son todas", "es todo", "todas", "esas son todas"  # Repetimos aquí para asegurar detección
     ]
     
     # 3. Negative-word filters (words that might indicate the user is NOT ready)
@@ -712,6 +730,11 @@ def is_finalization_message(text):
         "no quiero finalizar", "no quiero terminar", "no deseo finalizar", "no deseo terminar",
         "no lo hagas"
     ]
+
+    # Verificación exacta para frases comunes muy cortas
+    exact_phrases = ["son todas", "es todo", "listo", "todas", "solo estas"]
+    if text_lower.strip() in exact_phrases:
+        return True
     
     # Check for direct keywords (simple full or partial matches)
     if any(keyword in text_lower.split() or keyword in text_lower for keyword in direct_keywords):
@@ -794,7 +817,10 @@ async def process_and_save_report(from_number, location, images, descriptions):
         descriptions (list): Lista de descripciones de imágenes
     """
     # Add a unique report ID to track this specific report creation attempt
-    logger.debug(f"process_and_save_report called for {from_number} with {len(images) if images else 0} images")
+    logger.debug(f"process_and_save_report2: Recibidas {len(images) if images else 0} imágenes")
+    if images:
+        for i, img in enumerate(images):
+            logger.debug(f"  Imagen {i+1}: {img}")
     
     # Check if we already have a recent report for this number
     current_time = datetime.now().timestamp()
@@ -996,6 +1022,14 @@ async def whatsapp(request: Request):
         uid = payload.get('message_id')
         message_text = payload.get('text', '')
         hook_type = payload.get('hook_type', '')
+
+        fotos_urls = []
+        # Si hay una foto en este mensaje, guardarla
+        if payload.get("photo"):
+            photo_url = payload.get("photo")
+            if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
+                fotos_urls.append(photo_url)
+                logger.debug(f"Foto capturada del payload: {photo_url}")
 
         # Check if this is a message from a human agent with the goodbye text
         if message_type == 'to_client' and "¡Gracias por contactarse a Atención Ciudadana! Procederé a reiniciar el chatbot para que pueda recibir más reportes usando Sam." in (message_text or ""):
@@ -1361,6 +1395,14 @@ async def whatsapp(request: Request):
                     
                     # Añadir esta imagen al reporte en progreso - con verificación
                     if isinstance(photo_url, str) and (photo_url.startswith("http") or "storage.chat2desk.com" in photo_url):
+                        # Inicializar session de reporte si no existe
+                        if from_number not in report_sessions:
+                            report_sessions[from_number] = {
+                                "images": [],
+                                "image_descriptions": [],
+                                "location": None,
+                                "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
+            }
                         # Asegurarse de que la imagen no esté duplicada
                         if photo_url not in report_sessions[from_number]["images"]:
                             report_sessions[from_number]["images"].append(photo_url)
@@ -1489,6 +1531,12 @@ async def whatsapp(request: Request):
                 # El usuario quiere finalizar el reporte
                 images = report_sessions[from_number]["images"]
                 descriptions = report_sessions[from_number]["image_descriptions"]
+
+                if fotos_urls:
+                    for foto in fotos_urls:
+                        if foto not in images:
+                            images.append(foto)
+                            descriptions.append("Imagen adicional")  # Descripción genérica
                 
                 # Deduplicate images to ensure no duplicates
                 unique_images = []
@@ -1617,7 +1665,9 @@ async def whatsapp(request: Request):
             now=hour,
             folio="Pendiente de generar",
             address=address if 'address' in locals() else "No he recibido ubicación",
-            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen"
+            image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
+            fotos=", ".join(report_sessions[from_number]["images"]) if from_number in report_sessions else "No hay fotos"
+
         )
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:

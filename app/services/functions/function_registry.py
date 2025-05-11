@@ -1,5 +1,5 @@
 #from .implementations.hangup import hangup
-from .implementations.save_selection import save_client_selection
+from .implementations.save_selection2 import save_client_selection2
 from .implementations.get_directorio import get_funcionarios
 from .implementations.get_centros_comunitarios import get_centros_comunitarios
 from .implementations.get_carta_radicacion import get_carta_radicacion
@@ -51,7 +51,7 @@ from .implementations.get_instituto_control_vehicular import get_icvnl
 
 registered_functions = [
     #hangup,
-    save_client_selection, 
+    save_client_selection2, 
     get_funcionarios, 
     get_centros_comunitarios, 
     get_carta_radicacion, 

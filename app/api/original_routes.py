@@ -131,7 +131,23 @@ async def save_client_selection_with_deduplication(yoga_number, selection1, sele
                                        selection4, selection5, selection6, selection7, 
                                        selection8=None, images_list=None, descriptions_list=None):
     """
-    Wrapper alrededor de save_client_selection para evitar reportes duplicados.
+        Wrapper around save_client_selection2 for report deduplication.
+    
+    Args:
+        yoga_number (str): Phone number
+        selection1 (str): Asunto ID (e.g., "984" for baches)
+        selection2 (str): Name of the reporter
+        selection3 (str): Always empty string ""
+        selection4 (str): Report description
+        selection5 (str): Street name
+        selection6 (str): Street number (default "100")
+        selection7 (str): Neighborhood name
+        selection8 (str, optional): Legacy parameter (not used)
+        images_list (list, optional): List of image URLs
+        descriptions_list (list, optional): List of image descriptions
+        
+    Returns:
+        str: Report folio number
     """
     # Verificar si ya existe un reporte reciente para este número
     recent_report = has_recent_report(yoga_number)
@@ -141,6 +157,17 @@ async def save_client_selection_with_deduplication(yoga_number, selection1, sele
     
     # Si no hay reporte reciente, proceder con la creación
     try:
+        if not selection1 or not selection1.isdigit():
+            selection1 = "984"
+
+        if not selection2:
+            selection2 = "Ciudadano"
+
+        selection3 = ""
+        logger.debug(f"Creating report with params: asunto={selection1}, name={selection2}, " +
+                   f"desc={selection4}, calle={selection5}, numero={selection6}, colonia={selection7}")
+        logger.debug(f"Images: {len(images_list) if images_list else 0}")
+
         folio = await save_client_selection2(
             yoga_number=yoga_number, 
             selection1=selection1, 
@@ -805,97 +832,96 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text):
 
 
 # Modify the process_and_save_report function
-async def process_and_save_report(from_number, location, images, descriptions):
+async def process_and_save_report(from_number, location, images=None, descriptions=None):
     """
     Process and save a report with improved error handling and deduplication.
     Returns a dict with status and additional information.
-
+    
     Args:
-        from_number (str): Número telefónico del remitente
-        location (str): Ubicación o detalles del reporte
-        images (list): Lista de URLs de imágenes
-        descriptions (list): Lista de descripciones de imágenes
+        from_number (str): Sender's phone number
+        location (str): Location information  
+        images (list): List of image URLs
+        descriptions (list): List of image descriptions
     """
-    # Add a unique report ID to track this specific report creation attempt
-    logger.debug(f"process_and_save_report2: Recibidas {len(images) if images else 0} imágenes")
-    if images:
-        for i, img in enumerate(images):
-            logger.debug(f"  Imagen {i+1}: {img}")
+    logger.debug(f"process_and_save_report: Processing report for {from_number}")
     
-    # Check if we already have a recent report for this number
-    current_time = datetime.now().timestamp()
-    if from_number in completed_reports:
-        info = completed_reports[from_number]
-        time_diff = current_time - info['timestamp']
-        if time_diff < 1800:  # 30 minutes
-            logger.warning(f"Report already created recently for {from_number} ({time_diff:.1f} seconds ago)")
-            return {
-                'status': 'duplicate',
-                'message': f"Tu reporte ya fue creado recientemente (folio: {info['folio']})",
-                'folio': info['folio']
-            }
+    # Initialize with empty lists if None
+    images = images or []
+    descriptions = descriptions or []
     
-    # Check if a report is already in progress
+    # Log received images for debugging
+    logger.debug(f"Received {len(images)} images for processing")
+    for i, img in enumerate(images):
+        logger.debug(f"  Image {i+1}: {img[:50]}...")
+    
+    # Check for recent report (deduplication)
+    recent_report = has_recent_report(from_number)
+    if recent_report:
+        logger.warning(f"Recent report found for {from_number}, folio: {recent_report['folio']}")
+        return {
+            'status': 'duplicate',
+            'message': f"Tu reporte ya fue creado recientemente (folio: {recent_report['folio']})",
+            'folio': recent_report['folio']
+        }
+    
+    # Check for empty images
+    if not images:
+        return {
+            'status': 'no_images',
+            'message': "No se han adjuntado imágenes al reporte. Por favor, envía al menos una imagen."
+        }
+    
+    # Mark as in progress (with thread safety)
     with reports_lock:
         if from_number in reports_in_progress and reports_in_progress[from_number]:
-            logger.warning(f"Report already in progress for {from_number}")
             return {
                 'status': 'in_progress',
                 'message': "Tu reporte ya está siendo procesado. Por favor, espera unos momentos."
             }
-        
-        # Mark that we're processing a report for this number
         reports_in_progress[from_number] = True
     
     try:
-        # Verify there are images to process
-        if not images or len(images) == 0:
-            logger.warning(f"No images provided for report from {from_number}")
-            return {
-                'status': 'no_images',
-                'message': "No se han adjuntado imágenes al reporte. Por favor, envía al menos una imagen."
-            }
-        
-        # Extraer partes de la ubicación si es posible
+        # Parse location into components
         street = "No especificada"
         neighborhood = "No especificada"
+        street_number = "100"  # Default value
         
-        # Intentar extraer calle y colonia de la ubicación
-        location_parts = location.split(',')
-        if len(location_parts) >= 2:
-            street = location_parts[0].strip()
-            neighborhood = location_parts[1].strip()
-        else:
-            # Si no se puede dividir, usar la ubicación completa como calle
-            street = location
-            
-        # Try to create the report
-        folio = await save_client_selection_with_deduplication(
-            from_number, 
-            location,
-            "", "", "", "", "", "", "",
-            None,
-            images,
-            descriptions
-        )
+        if location:
+            location_parts = location.split(',')
+            if len(location_parts) >= 2:
+                street = location_parts[0].strip()
+                neighborhood = location_parts[1].strip()
+            else:
+                street = location
         
-        # Record this successful report
+        # Create the report
+            folio = await save_client_selection_with_deduplication(
+                from_number, 
+                location,
+                "", "", "", "", "", "",
+                None,
+                images,
+                descriptions
+            )
+        
+        # Record successful report
+        current_time = datetime.now().timestamp()
         completed_reports[from_number] = {
             'timestamp': current_time,
             'folio': folio,
         }
         
-        # Schedule removal from tracking after 30 minutes
+        # Schedule cleanup
         asyncio.create_task(remove_from_completed_reports(from_number, 1800))
         
         logger.info(f"Report successfully created for {from_number}, folio: {folio}")
         
-        # Success!
         return {
             'status': 'success',
             'message': f"Reporte creado exitosamente. Folio: {folio}",
             'folio': folio
         }
+        
     except Exception as e:
         logger.error(f"Error processing report for {from_number}: {str(e)}")
         return {
@@ -907,6 +933,7 @@ async def process_and_save_report(from_number, location, images, descriptions):
         with reports_lock:
             if from_number in reports_in_progress:
                 reports_in_progress[from_number] = False
+
 # Helper function to remove a number from the finalized set after a delay
 async def remove_from_finalized(number, delay_seconds):
     await asyncio.sleep(delay_seconds)
@@ -1578,6 +1605,10 @@ async def whatsapp(request: Request):
                     image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
                     body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. ¿Hay algo más en lo que pueda asistirte hoy?"
                     
+                    # Verificar que el mensaje no esté vacío 
+                    if not body or len(body.strip()) == 0:
+                        body = f"Tu reporte ha sido generado exitosamente. Agradecemos tu colaboración. ¿Hay algo más en lo que pueda ayudarte?"
+
                     # Crear y guardar un mensaje de sistema explicando lo que ocurrió
                     img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
                     system_notification = Message(
@@ -1591,6 +1622,57 @@ async def whatsapp(request: Request):
                         source="whatsapp"
                     )
                     db.Insert(system_notification)
+
+                    # IMPORTANTE: Ahora vamos a enviar este mensaje directamente a través de Chat2Desk
+                    # para evitar que siga el flujo normal y cause una transferencia a humano
+                    try:
+                        # Guardar la respuesta en el historial y en la base de datos como mensaje del asistente
+                        assistant_message = Message(
+                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            senderName="Assistant",
+                            message=body,
+                            number=from_number,
+                            uid=f"success-report-{request_id}",
+                            direction="outbound",
+                            mtype="text",
+                            source="whatsapp"
+                        )
+                        db.Insert(assistant_message)
+                        await manage_message_history(db, from_number)
+                        
+                        # Enviar directamente el mensaje a través de Chat2Desk
+                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                        
+                        headers = {
+                            "Authorization": api_token,
+                            "Content-Type": "application/json"
+                        }
+                        
+                        data = {
+                            "client_id": client_id,
+                            "channel_id": channel_id,
+                            "transport": "wa_direct",
+                            "text": body
+                        }
+                        
+                        response = requests.post(chat2desk_url, json=data, headers=headers)
+                        
+                        if response.status_code == 200:
+                            logger.debug(f"Mensaje de finalización enviado directamente a través de Chat2Desk")
+                        else:
+                            logger.error(f"Error al enviar mensaje directo a Chat2Desk: {response.status_code} - {response.text}")
+                    except Exception as e:
+                        logger.error(f"Error al enviar mensaje de finalización directo: {str(e)}")
+                    
+                    # IMPORTANTE: Devolver un resultado sin mensaje de texto para evitar el procesamiento posterior
+                    # Esto evitará que el sistema envíe otro mensaje o confunda el texto de respuesta como entrada
+                    return {
+                        'status': 'success',
+                        'message': "",  # Vacío para evitar procesamiento posterior
+                        'folio': folio
+                    }
+
                     
     # Continuar con el procesamiento normal
     except KeyError as e:

@@ -898,8 +898,13 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             folio = await save_client_selection_with_deduplication(
                 from_number, 
                 location,
-                "", "", "", "", "", "",
-                None,
+                "", 
+                "", 
+                "", 
+                "", 
+                "", 
+                "",
+                "",
                 images,
                 descriptions
             )
@@ -1555,6 +1560,17 @@ async def whatsapp(request: Request):
                 request_id = f"{from_number}-{int(datetime.now().timestamp())}"
                 logger.info(f"Report finalization request {request_id} received")
                 
+                # En lugar de procesar directamente, enviar un mensaje especial al modelo
+                finalization_prompt = "El usuario quiere finalizar el reporte. " + \
+                         "Por favor, verifica que has recopilado toda la información necesaria " + \
+                         "(asunto, nombre, calle, número, colonia) y llama a la función save_client_selection " + \
+                         "con los datos completos. Si falta algún dato, solicítalo antes de proceder."
+                
+                # Añadir este mensaje al historial como si fuera un mensaje del sistema
+                if from_number in user_sessions:
+                    conversation_history = user_sessions[from_number].history
+                    conversation_history.add_ai_message(f"[SISTEMA: {finalization_prompt}]")
+
                 # El usuario quiere finalizar el reporte
                 images = report_sessions[from_number]["images"]
                 descriptions = report_sessions[from_number]["image_descriptions"]
@@ -1748,7 +1764,7 @@ async def whatsapp(request: Request):
             folio="Pendiente de generar",
             address=address if 'address' in locals() else "No he recibido ubicación",
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
-            fotos=", ".join(report_sessions[from_number]["images"]) if from_number in report_sessions else "No hay fotos"
+            fotos=(report_sessions[from_number]["images"][0] if from_number in report_sessions and report_sessions[from_number]["images"] else "")
 
         )
         # Añadir instrucción para evitar generación automática de reportes

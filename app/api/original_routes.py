@@ -1026,6 +1026,31 @@ def is_bot_generated_message(message_text, recent_ai_messages=None):
     
     return False
 
+def get_images_from_payload(payload):
+    """
+    Extrae URLs de imágenes del payload de Chat2Desk.
+    
+    Args:
+        payload (dict): El payload recibido de Chat2Desk
+        
+    Returns:
+        list: Lista de URLs de imágenes válidas
+    """
+    fotos_urls = []
+    
+    # Extraer foto si existe en el payload
+    if payload.get("photo"):
+        photo_url = payload.get("photo")
+        if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
+            fotos_urls.append(photo_url)
+            logger.debug(f"Foto capturada del payload: {photo_url}")
+    
+    # También podemos buscar fotos en otros campos si es necesario
+    # Por ejemplo, si hubiera un campo "attachments" o similar
+    
+    return fotos_urls
+
+
 @router.post("/whatsapp")
 async def whatsapp(request: Request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
@@ -1041,27 +1066,46 @@ async def whatsapp(request: Request):
         print(f"Payload recibido: {payload}")
         
         # IMPORTANTE: Verificar si es un mensaje de un cliente o una respuesta del sistema
+        # Extraer información del payload de Chat2Desk
+        chat_id = payload.get('chat_id')
+        from_number = payload.get('client', {}).get('phone')
+        sender_name = payload.get('client', {}).get('name', 'Usuario')
+        body = payload.get('text', '')
         message_type = payload.get('type', '')
-        uid = payload.get('message_id')
+        uid = payload.get('message_id', '')
         
-        # THIS IS WHERE THE FILTER CODE SHOULD BE
-        # Block the specific auto-reply "End chat" scenario messages
-        # Add this at the top of your whatsapp function, right after parsing the JSON payload
-        # This will give you detailed debug information about what's happening
+        # Handle None values in body
+        if body is None:
+            body = ""
+            logger.debug("Message with None body detected, setting to empty string")
+        channel_id = payload.get('channel_id')
+        client_id = payload.get('client_id')
+
+        # Ahora procesar las imágenes cuando ya tenemos from_number
+        fotos_urls = get_images_from_payload(payload)
+
+        # Si hay un reporte en progreso, añadir las imágenes a su lista
+        if from_number in report_sessions and fotos_urls:
+            for foto_url in fotos_urls:
+                if foto_url not in report_sessions[from_number]["images"]:
+                    report_sessions[from_number]["images"].append(foto_url)
+                    report_sessions[from_number]["image_descriptions"].append("Imagen adicional")
+                    report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                    logger.info(f"Imagen añadida al reporte en progreso para {from_number}")
+
+
 
         # Deep debug for the scenario message filter
-        message_type = payload.get('type', '')
-        uid = payload.get('message_id')
         message_text = payload.get('text', '')
         hook_type = payload.get('hook_type', '')
 
-        fotos_urls = []
-        # Si hay una foto en este mensaje, guardarla
-        if payload.get("photo"):
-            photo_url = payload.get("photo")
-            if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
-                fotos_urls.append(photo_url)
-                logger.debug(f"Foto capturada del payload: {photo_url}")
+        # fotos_urls = []
+        # # Si hay una foto en este mensaje, guardarla
+        # if payload.get("photo"):
+        #     photo_url = payload.get("photo")
+        #     if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
+        #         fotos_urls.append(photo_url)
+        #         logger.debug(f"Foto capturada del payload: {photo_url}")
 
         # Check if this is a message from a human agent with the goodbye text
         if message_type == 'to_client' and "¡Gracias por contactarse a Atención Ciudadana! Procederé a reiniciar el chatbot para que pueda recibir más reportes usando Sam." in (message_text or ""):

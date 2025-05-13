@@ -290,7 +290,7 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
                 
         # Agregar imágenes al payload
         if imagenes_validas:
-            payload.get("imagenes") = imagenes_validas
+            payload["imagenes"] = imagenes_validas
             logger.info(f"Añadiendo {len(imagenes_validas)} imágenes válidas al reporte")
             
             # Para compatibilidad con el código existente

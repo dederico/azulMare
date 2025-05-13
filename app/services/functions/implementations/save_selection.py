@@ -296,7 +296,7 @@ async def save_client_selection(yoga_number: str, selection1: str, selection2: s
             # Para compatibilidad con el código existente
             if not selection4 or selection4.strip() == "":
                 if descriptions_list and len(descriptions_list) > 0:
-                    payload.get("detalleSolicitud") = descriptions_list[0]
+                    payload["detalleSolicitud"] = descriptions_list[0]
                     payload["_direccionReporte"]["referencias"] = descriptions_list[0]
 
         logger.debug(f"Payload preparado: {payload}")

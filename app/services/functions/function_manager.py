@@ -43,7 +43,7 @@ class FunctionManager:
                 }
                 if param_name in signature.parameters:
                     param = signature.parameters[param_name]
-                    if param.default is inspect.Parameter.empty:
+                    if param.default is inspect.Parameter.empty and param_name != "yoga_number":
                         parameters["required"].append(param_name)
 
         return {

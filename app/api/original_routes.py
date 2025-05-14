@@ -64,7 +64,7 @@ from app.models.Message import Message
 from app.models.Config import Config
 from app.util.factory import Hooks
 from app.util.database import LocalStorage
-from app.services.functions.implementations.save_selection2 import save_client_selection2, build_selections_payload
+from app.services.functions.implementations.save_selection2 import save_client_selection2
 from app.services.functions.implementations.save_selection import find_row_and_update_selection
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
@@ -97,7 +97,7 @@ transferred_numbers = {}  # key: phone_number, value: expiration_timestamp
 transfer_timeout = 15 * 60  # 15 minutes in seconds
 last_response_time = {}  # Para rastrear cuándo se envió la última respuesta a cada número
 completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio: str}
-
+finalized_report_numbers = set()
 # Ahora, añade esta nueva función para verificar si un número ya tiene un reporte reciente
 def has_recent_report(phone_number, max_age_minutes=10):
     """
@@ -196,45 +196,7 @@ async def save_client_selection_with_deduplication(yoga_number, selection1, sele
         logger.error(f"Error al crear reporte para {yoga_number}: {str(e)}")
         raise
 
-# async def process_and_save_report(from_number, location, images=None, descriptions=None):
-#     """
-#     Función centralizada para procesar y guardar reportes.
-#     Evita múltiples llamadas a save_client_selection para el mismo número.
-#     """
-#     # Initialize empty lists for images and descriptions if None
-#     images = images or []
-#     descriptions = descriptions or []
-    
-#     # Verificar si ya hay un reporte en proceso para este número
-#     with reports_lock:
-#         if from_number in reports_in_progress and reports_in_progress[from_number]:
-#             logger.warning(f"Ya hay un reporte en proceso para {from_number}, ignorando solicitud adicional")
-#             return "en_proceso"
-        
-#         # Marcar que estamos procesando un reporte para este número
-#         reports_in_progress[from_number] = True
-    
-#     try:
-#         # Intentar crear el reporte
-#         folio = await save_client_selection(
-#             from_number, 
-#             location,
-#             "", "", "", "", "", "",
-#             None,
-#             images,
-#             descriptions
-#         )
-        
-#         # Si llegamos aquí, el reporte se creó con éxito
-#         return folio
-#     except Exception as e:
-#         logger.error(f"Error al procesar reporte para {from_number}: {str(e)}")
-#         return f"error: {str(e)}"
-#     finally:
-#         # Siempre liberar el estado "en proceso"
-#         with reports_lock:
-#             if from_number in reports_in_progress:
-#                 reports_in_progress[from_number] = False
+
 # Using OrderedDict as a simple TTL cache
 class TTLCache:
     def __init__(self, max_size=1000, ttl_seconds=3600):
@@ -925,29 +887,21 @@ async def process_and_save_report(from_number, location, images=None, descriptio
                 neighborhood = location_parts[1].strip()
             else:
                 street = location
-        
+
         # Create the report
-            # folio = await save_client_selection_with_deduplication(
-            #     from_number, 
-            #     location,
-            #     "", 
-            #     "", 
-            #     "", 
-            #     "", 
-            #     "", 
-            #     "",
-            #     "",
-            #     images,
-            #     descriptions
-            # )
-            selections = build_selections_payload(from_number)
-            
             folio = await save_client_selection_with_deduplication(
-                yoga_number=from_number,
-                images_list=images,
-                descriptions_list=descriptions,
-                **selections
-                )
+            yoga_number=from_number,
+            selection1="",
+            selection2="",
+            selection3="",
+            selection4="",
+            selection5="",
+            selection6="",
+            selection7="",
+            selection8="",
+            images_list=images,
+            descriptions_list=descriptions
+            )
 
 
         
@@ -982,11 +936,11 @@ async def process_and_save_report(from_number, location, images=None, descriptio
                 reports_in_progress[from_number] = False
 
 # Helper function to remove a number from the finalized set after a delay
-# async def remove_from_finalized(number, delay_seconds):
-#     await asyncio.sleep(delay_seconds)
-#     if number in finalized_report_numbers:
-#         finalized_report_numbers.remove(number)
-#         logger.debug(f"Número {number} removido de la lista de reportes finalizados después de {delay_seconds} segundos")
+async def remove_from_finalized(number, delay_seconds):
+    await asyncio.sleep(delay_seconds)
+    if number in finalized_report_numbers:
+        finalized_report_numbers.remove(number)
+        logger.debug(f"Número {number} removido de la lista de reportes finalizados después de {delay_seconds} segundos")
 
 async def remove_from_transferred(number, delay_seconds):
     await asyncio.sleep(delay_seconds)
@@ -1896,14 +1850,6 @@ async def whatsapp(request: Request):
         elif not isinstance(response_content, str):
             response_content = str(response_content)
         
-        # report_creation_patterns = ["he creado tu reporte", "he generado tu reporte", "tu reporte ha sido", 
-        #                     "el número de folio", "el folio de tu reporte", "se ha generado tu reporte"]
-        
-        # if from_number in report_sessions and report_sessions[from_number]["images"]:
-        #     if any(pattern in response_content.lower() for pattern in report_creation_patterns):
-        #         logger.warning(f"Detectado intento de creación automática de reporte: '{response_content[:50]}...'")
-        # Sustituir con mensaje seguro
-            # response_content = "He guardado toda la información y las imágenes que has enviado. Si deseas finalizar y generar tu reporte ahora, por favor dímelo explícitamente usando las palabras 'Crear reporte'."
         # Guardar la respuesta en el historial y en la base de datos
         conversation_history.add_ai_message(response_content)
         assistant_message = Message(
@@ -2043,11 +1989,12 @@ async def whatsapp(request: Request):
     bot_farewell_indicators = ["que tengas", "hasta luego", "adiós", "adios", "buen día", "hasta pronto"]
 
     # # Helper function to remove number from transferred set after timeout
-    # async def remove_from_transferred(number, delay_seconds):
-    #     await asyncio.sleep(delay_seconds)
-    #     if number in transferred_numbers:
-    #         transferred_numbers.remove(number)
-    #         logger.debug(f"Removed {number} from transferred numbers list after {delay_seconds} seconds")
+    async def remove_from_transferred(number, delay_seconds):
+        await asyncio.sleep(delay_seconds)
+        if number in transferred_numbers:
+            transferred_numbers.remove(number)
+            logger.debug(f"Removed {number} from transferred numbers list after {delay_seconds} seconds")
+
     # Función de limpieza definida fuera del bloque if para evitar problemas de acceso
     async def delayed_cleanup_msgs(phone_number):
         try:

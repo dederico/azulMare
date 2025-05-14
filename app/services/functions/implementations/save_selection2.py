@@ -1,3 +1,13 @@
+# Módulo de almacenamiento temporal por usuario y pregunta
+user_answers = {}  # key: phone_number, value: dict con {question_number: answer}
+
+def save_user_answer(from_number, question_number, selection_text):
+    if from_number not in user_answers:
+        user_answers[from_number] = {}
+    user_answers[from_number][question_number] = selection_text
+
+def get_user_answer(from_number, question_number):
+    return user_answers.get(from_number, {}).get(question_number, "")
 async def save_client_selection2(yoga_number: str, selection1: str, selection2: str, selection3: str,
                                selection4: str, selection5: str, selection6: str, selection7: str, 
                                selection8: str = None, images_list: list = None, descriptions_list: list = None):

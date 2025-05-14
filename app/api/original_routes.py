@@ -77,7 +77,7 @@ import threading
 import asyncio
 from app.services.functions.implementations.transfer_message_event import transfer_to_group
 from threading import RLock
-
+from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
@@ -99,6 +99,38 @@ last_response_time = {}  # Para rastrear cuándo se envió la última respuesta 
 completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio: str}
 finalized_report_numbers = set()
 # Ahora, añade esta nueva función para verificar si un número ya tiene un reporte reciente
+
+import re
+
+def detect_and_store_user_data(from_number: str, body: str):
+    """
+    Detecta y guarda múltiples campos en un solo mensaje.
+    Incluye nombre, tipo, calle, número, colonia.
+    No procesa selection1. Las imágenes van en selection8.
+    """
+    patterns = {
+        "selection2": r"(?i)nombre\s*:\s*([^\n,]+)",
+        "selection4": r"(?i)tipo\s*:\s*([^\n,]+)",
+        "selection5": r"(?i)calle\s*:\s*([^\n,]+)",
+        "selection6": r"(?i)n[uú]mero\s*:\s*([^\n,]+)",
+        "selection7": r"(?i)colonia\s*:\s*([^\n,]+)"
+    }
+
+    saved_fields = []
+
+    for selection_key, pattern in patterns.items():
+        matches = re.findall(pattern, body)
+        for match in matches:
+            value = match.strip()
+            save_user_answer(from_number, selection_key, value)
+            saved_fields.append((selection_key, value))
+    
+    if saved_fields:
+        log_summary = "; ".join([f"{key}='{val}'" for key, val in saved_fields])
+        logger.info(f"[{from_number}] Campos detectados y guardados: {log_summary}")
+    else:
+        logger.debug(f"[{from_number}] No se detectó ningún campo en: {body.strip()}")
+
 def has_recent_report(phone_number, max_age_minutes=10):
     """
     Verifica si un número tiene un reporte creado recientemente.
@@ -888,20 +920,23 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             else:
                 street = location
 
+        selections = {
+            "selection1": get_user_answer(from_number, 1),
+            "selection2": get_user_answer(from_number, 2),
+            "selection3": "",  # siempre vacío
+            "selection4": get_user_answer(from_number, 4),
+            "selection5": get_user_answer(from_number, 5),
+            "selection6": get_user_answer(from_number, 6),
+            "selection7": get_user_answer(from_number, 7),
+        }
+
         # Create the report
-            folio = await save_client_selection_with_deduplication(
+        folio = await save_client_selection_with_deduplication(
             yoga_number=from_number,
-            selection1="",
-            selection2="",
-            selection3="",
-            selection4="",
-            selection5="",
-            selection6="",
-            selection7="",
-            selection8="",
             images_list=images,
-            descriptions_list=descriptions
-            )
+            descriptions_list=descriptions,
+            **selections
+        )
 
 
         
@@ -1023,6 +1058,7 @@ def is_bot_generated_message(message_text, recent_ai_messages=None):
     return False
 
 def get_images_from_payload(payload):
+    global user_sessions, report_sessions
     """
     Extrae URLs de imágenes del payload de Chat2Desk.
     
@@ -1033,10 +1069,17 @@ def get_images_from_payload(payload):
         list: Lista de URLs de imágenes válidas
     """
     fotos_urls = []
-    
+    from_number = payload.get('client', {}).get('phone')
     # Extraer foto si existe en el payload
-    if payload.get("photo"):
+    
+    if payload.get("photo") and from_number:
         photo_url = payload.get("photo")
+        # Verificar si debería ser una nueva sesión
+        if from_number not in user_sessions and from_number in report_sessions:
+            # Si hay user_sessions pero no report_sessions, limpiar report_sessions
+            logger.info(f"Detectada posible sesión huérfana para {from_number}, limpiando datos de reporte antiguos")
+            del report_sessions[from_number]
+        
         if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
             fotos_urls.append(photo_url)
             logger.debug(f"Foto capturada del payload: {photo_url}")
@@ -1452,6 +1495,12 @@ async def whatsapp(request: Request):
             # Procesamiento de imagen
             photo_url = payload.get("photo")
             if photo_url:
+                previous = get_user_answer(from_number, "selection8") or ""
+                updated_list = [url.strip() for url in previous.split(",") if url.strip()]
+                updated_list.append(photo_url)
+                new_value = ",".join(updated_list)
+                save_user_answer(from_number, "selection8", new_value)
+                logger.info(f"[{from_number}] Imagen añadida a selection8: {photo_url}")
                 try:
                     # Analizar la imagen con rate limiting
                     image_description = await analyze_image_with_rate_limit(client, photo_url)
@@ -1553,7 +1602,11 @@ async def whatsapp(request: Request):
             else:
                 body = "Se recibió una notificación de imagen, pero no se encontró la URL de la imagen."
                 logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
-            
+
+        elif body and from_number in report_sessions:
+            detect_and_store_user_data(from_number, body)
+            logger.debug(f"[{from_number}] Revisión anticipada de datos estructurados: '{body[:50]}...'")
+
         # Now let's fix the report finalization check in the WhatsApp endpoint
         elif body and from_number in report_sessions and report_sessions[from_number]["images"]:
             # El usuario ya ha enviado imágenes, este texto podría ser información del reporte
@@ -1577,6 +1630,8 @@ async def whatsapp(request: Request):
                         is_bot_message = True
                         logger.warning(f"Message appears to be a bot message echo: '{body[:50]}...'")
                         break
+            if not is_bot_message:
+                detect_and_store_user_data(from_number, body)
             
             if is_bot_message:
                 # Skip processing if this appears to be from the bot
@@ -1807,7 +1862,6 @@ async def whatsapp(request: Request):
             address=address if 'address' in locals() else "No he recibido ubicación",
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
             fotos=(report_sessions[from_number]["images"][0] if from_number in report_sessions and report_sessions[from_number]["images"] else "")
-
         )
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:
@@ -2019,6 +2073,10 @@ async def whatsapp(request: Request):
             if phone_number in user_sessions:
                 del user_sessions[phone_number]
                 logger.debug(f"Sesión de {phone_number} finalizada por despedida.")
+
+            if phone_number in report_sessions:
+                del report_sessions[phone_number]
+            logger.debug(f"Sesión de reporte de {phone_number} finalizada por despedida.")
                 
         except Exception as e:
             logger.error(f"Error al eliminar mensajes: {str(e)}")

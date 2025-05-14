@@ -120,12 +120,12 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
         async with httpx.AsyncClient() as client:
             groups_response = await client.get(groups_url, headers=headers)
         
-        group_name = "equipo de soporte"
+        group_name = "Atención Ciudadana"
         if groups_response.status_code == 200:
             groups_data = groups_response.json()
             for group in groups_data.get("data", []):
                 if group.get("id") == group_id:
-                    group_name = group.get("name", "equipo de soporte")
+                    group_name = group.get("name", "Atención Ciudadana")
                     break
         
         # 3. Crear un mensaje nuevo para el cliente - usando valores fijos para channel_id

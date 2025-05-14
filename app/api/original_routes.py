@@ -64,7 +64,7 @@ from app.models.Message import Message
 from app.models.Config import Config
 from app.util.factory import Hooks
 from app.util.database import LocalStorage
-from app.services.functions.implementations.save_selection2 import save_client_selection2
+from app.services.functions.implementations.save_selection2 import save_client_selection2, build_selections_payload
 from app.services.functions.implementations.save_selection import find_row_and_update_selection
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
@@ -405,6 +405,7 @@ async def check_report_timeouts():
                 # Only clean up if successful
                 if result['status'] == 'success':
                     logger.info(f"Auto-finalization successful: {result['message']}")
+                    mark_report_as_completed(number)
                     with report_sessions_lock:
                         if number in report_sessions:
                             del report_sessions[number]
@@ -655,55 +656,86 @@ async def check_inactivity():
                     if number in report_sessions:
                         del report_sessions[number]
 
-# # Aquí va la nueva función centralizada
-# async def process_and_save_report(from_number, location, images, descriptions):
-#     """
-#     Función centralizada para procesar y guardar reportes.
-#     Evita múltiples llamadas a save_client_selection para el mismo número.
-#     """
-#     # Verificar si ya hay un reporte en proceso para este número
-#     with reports_lock:
-#         if from_number in reports_in_progress and reports_in_progress[from_number]:
-#             logger.warning(f"Ya hay un reporte en proceso para {from_number}, ignorando solicitud adicional")
-#             return "en_proceso"
-        
-#         # Marcar que estamos procesando un reporte para este número
-#         reports_in_progress[from_number] = True
+# Add this at the module level
+recently_completed_reports = {}  # key: phone_number, value: {timestamp, message_count}
+
+# This function should be called when a report is successfully created
+def mark_report_as_completed(phone_number):
+    """
+    Mark a phone number as having recently completed a report.
+    This helps prevent normal thank you/farewell messages from triggering
+    another report finalization cycle.
     
-#     try:
-#         # Intentar crear el reporte
-#         folio = await save_client_selection(
-#             from_number, 
-#             location,
-#             "", "", "", "", "", "",
-#             None,
-#             images,
-#             descriptions
-#         )
-        
-#         # Si llegamos aquí, el reporte se creó con éxito
-#         return folio
-#     except Exception as e:
-#         logger.error(f"Error al procesar reporte para {from_number}: {str(e)}")
-#         return f"error: {str(e)}"
-#     finally:
-#         # Siempre liberar el estado "en proceso"
-#         with reports_lock:
-#             if from_number in reports_in_progress:
-#                 reports_in_progress[from_number] = False
+    Args:
+        phone_number (str): User's phone number
+    """
+    logger.info(f"MARCANDO NÚMERO {phone_number} COMO COMPLETADO RECIENTEMENTE")  # Log explícito
 
-finalized_report_numbers = set()
+    recently_completed_reports[phone_number] = {
+        'timestamp': datetime.now().timestamp(),
+        'message_count': 0  # Count of messages sent after completion
+    }
+    
+    # Schedule cleanup after 3 minutes
+    asyncio.create_task(remove_from_recently_completed(phone_number, 180))
 
-def is_finalization_message(text):
+# Helper function to remove from the tracking dict after a timeout
+async def remove_from_recently_completed(phone_number, delay_seconds):
+    """Remove a number from recently_completed_reports after a delay."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        if phone_number in recently_completed_reports:
+            del recently_completed_reports[phone_number]
+            logger.debug(f"Removed {phone_number} from recently completed reports tracking")
+    except Exception as e:
+        logger.error(f"Error removing {phone_number} from recently completed reports: {str(e)}")
+
+# Modified is_finalization_message function
+def is_finalization_message(text, from_number=None):
     """
     Determine if a message is attempting to finalize a report.
     This enhanced version detects many more ways to express "finalize a report" in Spanish.
+    It also considers conversation context to avoid treating post-report thank you messages
+    as new finalization requests.
+    
+    Args:
+        text (str): The message text to analyze
+        from_number (str, optional): The phone number of the sender for context checking
+        
+    Returns:
+        bool: True if the message should be treated as report finalization
     """
     if not text or not isinstance(text, str):
         return False
     
     # Convert to lowercase for case-insensitive matching
     text_lower = text.lower()
+    
+    # Check if this number just completed a report
+    if from_number and from_number in recently_completed_reports:
+        completion_info = recently_completed_reports[from_number]
+        current_time = datetime.now().timestamp()
+        elapsed_seconds = current_time - completion_info['timestamp']
+        
+        # If report was completed in the last 60 seconds and this is one of the first 2 messages after
+        if elapsed_seconds < 60 and completion_info['message_count'] < 2:
+            # Increment the message counter
+            completion_info['message_count'] += 1
+            
+            # Common thank you and farewell phrases in Spanish
+            post_report_phrases = [
+                "gracias", "mil gracias", "muchas gracias", "excelente", "perfecto",
+                "genial", "que bueno", "qué bueno", "estupendo", "magnífico",
+                "es todo", "eso es todo", "eso era todo", "es todo por ahora",
+                "es todo lo que necesitaba", "era todo", "no necesito nada más",
+                "así está bien", "así esta bien", "está bien", "esta bien", 
+                "ok", "okay", "bien", "bueno", "de acuerdo", "entendido"
+            ]
+            
+            # If the message looks like a thank you after report completion
+            if any(phrase in text_lower for phrase in post_report_phrases):
+                logger.debug(f"Detected post-report thank you message, not treating as finalization: '{text}'")
+                return False
     
     # 1. Direct finalization keywords
     direct_keywords = [
@@ -895,19 +927,29 @@ async def process_and_save_report(from_number, location, images=None, descriptio
                 street = location
         
         # Create the report
+            # folio = await save_client_selection_with_deduplication(
+            #     from_number, 
+            #     location,
+            #     "", 
+            #     "", 
+            #     "", 
+            #     "", 
+            #     "", 
+            #     "",
+            #     "",
+            #     images,
+            #     descriptions
+            # )
+            selections = build_selections_payload(from_number)
+            
             folio = await save_client_selection_with_deduplication(
-                from_number, 
-                location,
-                "", 
-                "", 
-                "", 
-                "", 
-                "", 
-                "",
-                "",
-                images,
-                descriptions
-            )
+                yoga_number=from_number,
+                images_list=images,
+                descriptions_list=descriptions,
+                **selections
+                )
+
+
         
         # Record successful report
         current_time = datetime.now().timestamp()
@@ -940,11 +982,11 @@ async def process_and_save_report(from_number, location, images=None, descriptio
                 reports_in_progress[from_number] = False
 
 # Helper function to remove a number from the finalized set after a delay
-async def remove_from_finalized(number, delay_seconds):
-    await asyncio.sleep(delay_seconds)
-    if number in finalized_report_numbers:
-        finalized_report_numbers.remove(number)
-        logger.debug(f"Número {number} removido de la lista de reportes finalizados después de {delay_seconds} segundos")
+# async def remove_from_finalized(number, delay_seconds):
+#     await asyncio.sleep(delay_seconds)
+#     if number in finalized_report_numbers:
+#         finalized_report_numbers.remove(number)
+#         logger.debug(f"Número {number} removido de la lista de reportes finalizados después de {delay_seconds} segundos")
 
 async def remove_from_transferred(number, delay_seconds):
     await asyncio.sleep(delay_seconds)
@@ -1588,7 +1630,7 @@ async def whatsapp(request: Request):
             
             # Now check if this is providing location or requesting finalization
             is_location = any(keyword in body.lower() for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"])
-            is_finalization = is_finalization_message(body)
+            is_finalization = is_finalization_message(body, from_number)
 
             
             # Log the classification for debugging
@@ -1657,17 +1699,19 @@ async def whatsapp(request: Request):
                     # El reporte se creó exitosamente
                     folio = result['folio']
                     logger.info(f"Successfully created report with folio {folio} for request {request_id}")
+
+                    mark_report_as_completed(from_number)
                     # Limpiar la sesión de reporte después de finalizar
                     if from_number in report_sessions:
                         del report_sessions[from_number]
                                             
                     # Importante: Construir un mensaje informativo que *NO* requiera acción adicional del usuario
                     image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
-                    body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. ¿Hay algo más en lo que pueda asistirte hoy?"
+                    body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. Estamos para servirte"
                     
                     # Verificar que el mensaje no esté vacío 
                     if not body or len(body.strip()) == 0:
-                        body = f"Tu reporte ha sido generado exitosamente. Agradecemos tu colaboración. ¿Hay algo más en lo que pueda ayudarte?"
+                        body = f"Tu reporte ha sido generado exitosamente. Agradecemos tu colaboración. Estamos para servirte."
 
                     # Crear y guardar un mensaje de sistema explicando lo que ocurrió
                     img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
@@ -1947,14 +1991,14 @@ async def whatsapp(request: Request):
                 phone_number = from_number
                 try:
                     # Extract group_id if specified
-                    group_id = None
+                    group_id = 1772
                     import re
                     group_match = re.search(r'transfer_to_group\(.*?(\d+).*?\)', response_content)
                     if group_match:
                         group_id = int(group_match.group(1))
                     
                     # Execute the transfer function SYNCHRONOUSLY
-                    result = await transfer_to_group(phone_number, group_id)
+                    result = await transfer_to_group(phone_number, group_id, reason="Transferencia automática")
                     logger.info(f"Transfer result: {result}")
                 except Exception as e:
                     logger.error(f"Error executing transfer: {str(e)}")

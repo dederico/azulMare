@@ -1861,7 +1861,7 @@ async def whatsapp(request: Request):
             folio="Pendiente de generar",
             address=address if 'address' in locals() else "No he recibido ubicación",
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
-            fotos=(report_sessions[from_number]["images"][0] if from_number in report_sessions and report_sessions[from_number]["images"] else "")
+            fotos=(report_sessions[from_number]["images"] if from_number in report_sessions and report_sessions[from_number]["images"] else "")
         )
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:

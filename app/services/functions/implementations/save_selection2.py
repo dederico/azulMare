@@ -86,8 +86,16 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
     
     
     # También verificar selection8 para retrocompatibilidad
-    if selection8 and isinstance(selection8, str):
+    if selection8 and isinstance(selection8, list):
         # Manejar casos donde selection8 podría contener varias URLs separadas por espacios
+        logger.debug(f"Procesando selection8 como lista con {len(selection8)} elementos")
+        for url in selection8:
+            if isinstance(url, str) and (url.startswith('http') or 'storage.chat2desk.com' in url) and url not in fotos:
+                clean_url = url.strip()
+                clean_url = urllib.parse.quote(clean_url, safe=':/?&=')
+                fotos.append(clean_url)
+                logger.debug(f"Añadida URL válida desde selection8 (lista): {clean_url}")
+    elif selection8 and isinstance(selection8, str):
         logger.debug(f"Procesando selection8: {selection8}")
         if ' ' in selection8:
             urls = selection8.split()

@@ -53,8 +53,8 @@ async def get_report_status(report_id: str):
                     report_data = data
                 
                 # Extraer la información relevante
-                status = report_data.get("estatus", "Desconocido")
-                creation_date = report_data.get("fechaCreacion", "")
+                status = report_data.get("estatusReporte", "Desconocido")
+                creation_date = report_data.get("fecha", "")
                 location = report_data.get("localizacion", "No especificada")
                 description = report_data.get("reporte", "Sin descripción")
                 
@@ -63,7 +63,6 @@ async def get_report_status(report_id: str):
                     "report_id": report_id_clean,
                     "status": status,
                     "creation_date": creation_date,
-                    "location": location,
                     "description": description,
                     "message": f"El reporte con folio {report_id_clean} tiene un estado: {status}."
                 }

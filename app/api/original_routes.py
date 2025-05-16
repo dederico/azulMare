@@ -610,7 +610,7 @@ async def check_inactivity():
                         client_data = response.json()
                         if client_data.get("status") == "success" and client_data.get("data"):
                             client_id = client_data["data"][0]["id"]
-                            channel_id = 43347  # Canal fijo para WhatsApp
+                            channel_id = 43388  # Canal fijo para WhatsApp
                             
                             # Enviar mensaje de desconexión
                             message_data = {
@@ -1100,10 +1100,15 @@ async def whatsapp(request: Request):
     function_manager = FunctionManager(registered_functions)
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+    # Check if this is a message from a human agent with the human takeover message
+    HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana, le atiende"
+    BOT_RETURN_MESSAGE = "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot"
+    
+    
     try:
         payload = await request.json()  # Recibimos el payload como JSON
         print(f"Payload recibido: {payload}")
-        
+
         # IMPORTANTE: Verificar si es un mensaje de un cliente o una respuesta del sistema
         # Extraer información del payload de Chat2Desk
         chat_id = payload.get('chat_id')
@@ -1112,64 +1117,66 @@ async def whatsapp(request: Request):
         body = payload.get('text', '')
         message_type = payload.get('type', '')
         uid = payload.get('message_id', '')
-        
+        message_text = payload.get('text', '')
+        channel_id = payload.get('channel_id')
+        client_id = payload.get('client_id')
+        hook_type = payload.get('hook_type', '')
+
         # Handle None values in body
         if body is None:
             body = ""
             logger.debug("Message with None body detected, setting to empty string")
-        channel_id = payload.get('channel_id')
-        client_id = payload.get('client_id')
 
-        # Ahora procesar las imágenes cuando ya tenemos from_number
-        fotos_urls = get_images_from_payload(payload)
-
-        # Si hay un reporte en progreso, añadir las imágenes a su lista
-        if from_number in report_sessions and fotos_urls:
-            for foto_url in fotos_urls:
-                if foto_url not in report_sessions[from_number]["images"]:
-                    report_sessions[from_number]["images"].append(foto_url)
-                    report_sessions[from_number]["image_descriptions"].append("Imagen adicional")
-                    report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
-                    logger.info(f"Imagen añadida al reporte en progreso para {from_number}")
-
-
-
-        # Deep debug for the scenario message filter
-        message_text = payload.get('text', '')
-        hook_type = payload.get('hook_type', '')
-
-        # fotos_urls = []
-        # # Si hay una foto en este mensaje, guardarla
-        # if payload.get("photo"):
-        #     photo_url = payload.get("photo")
-        #     if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
-        #         fotos_urls.append(photo_url)
-        #         logger.debug(f"Foto capturada del payload: {photo_url}")
-
-        # Check if this is a message from a human agent with the goodbye text
-        if message_type == 'to_client' and "¡Gracias por contactarse a Atención Ciudadana! Procederé a reiniciar el chatbot para que pueda recibir más reportes usando Sam." in (message_text or ""):
-            # This is a goodbye message from human agent, return control to AI
-            logger.info(f"Human agent goodbye detected, returning control to AI")
+        # PRIMERO - Verificar mensajes especiales de agentes
+        if message_type == 'to_client' and message_text and message_text.startswith(HUMAN_TAKEOVER_MESSAGE):
+            #Human agent is taking over - mark number as transferred with extended timeout
+            logger.info(f"Human agent takeover detected for {from_number}")
             
-            # Extract the phone number from the payload
-            from_number = payload.get('client', {}).get('phone')
-            client_id = payload.get('client_id')
-            channel_id = payload.get('channel_id')
+            #Set a longer timeout (30 minutes) for explicit human takeover
+            expiration_time = datetime.now().timestamp() + (30 * 60)
+            transferred_numbers[from_number] = expiration_time
+            
+            # Store log message in database
+            try:
+                system_notification = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="System",
+                    message=f"[SYSTEM] Conversation transferred to human agent until {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
+                    number=from_number,
+                    uid=f"takeover-{datetime.now().timestamp()}",
+                    direction="system",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(system_notification)
+            except Exception as e:
+                logger.error(f"Error recording human takeover: {str(e)}")
+            
+            return JSONResponse(content={"status": True, "message": "Human agent takeover registered"})
+            
+        # Verificar si es un mensaje de despedida del agente humano
+        if message_type == 'to_client' and message_text and BOT_RETURN_MESSAGE in message_text:
+            # This is a goodbye message from human agent, return control to AI
+            logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Returning control to AI for {from_number}")
             
             if from_number in transferred_numbers:
                 del transferred_numbers[from_number]
                 
             # Send a confirmation message from the AI
             ai_greeting = "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n" + \
-              "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
-              "¿Con quien tengo el gusto?"
+            "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
+            "¿En qué puedo ayudarte hoy?"
             
             # Store the message in conversation history
             if from_number in user_sessions:
                 conversation_history = user_sessions[from_number].history
                 conversation_history.add_ai_message(ai_greeting)
-            
-            # Send the greeting message via Chat2Desk
+            else:
+                # Create new session if needed
+                user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+                user_sessions[from_number].history.add_ai_message(ai_greeting)
+                
+            # AÑADIR ESTO - Enviar el mensaje a través de Chat2Desk
             try:
                 api_token = os.getenv("CHAT2DESK_API_TOKEN")
                 chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
@@ -1203,12 +1210,31 @@ async def whatsapp(request: Request):
                 db.Insert(assistant_message)
                 await manage_message_history(db, from_number)
                 
-                # Return early since we've processed this message
+                # IMPORTANTE - Retornar para evitar el procesamiento posterior
                 return JSONResponse(content={"status": True, "message": "Control returned to AI"})
             
             except Exception as e:
                 logger.error(f"Error sending AI greeting after return from human agent: {str(e)}")
 
+        # Ahora procesar las imágenes cuando ya tenemos from_number
+        fotos_urls = get_images_from_payload(payload)
+
+        # Si hay un reporte en progreso, añadir las imágenes a su lista
+        if from_number in report_sessions and fotos_urls:
+            for foto_url in fotos_urls:
+                if foto_url not in report_sessions[from_number]["images"]:
+                    report_sessions[from_number]["images"].append(foto_url)
+                    report_sessions[from_number]["image_descriptions"].append("Imagen adicional")
+                    report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                    logger.info(f"Imagen añadida al reporte en progreso para {from_number}")
+
+        # fotos_urls = []
+        # # Si hay una foto en este mensaje, guardarla
+        # if payload.get("photo"):
+        #     photo_url = payload.get("photo")
+        #     if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
+        #         fotos_urls.append(photo_url)
+        #         logger.debug(f"Foto capturada del payload: {photo_url}")
 
         # Log ALL autoreply messages with full details
         if message_type == 'autoreply':
@@ -1292,8 +1318,7 @@ async def whatsapp(request: Request):
         if body is None:
             body = ""
             logger.debug("Message with None body detected, setting to empty string")
-        channel_id = payload.get('channel_id')
-        client_id = payload.get('client_id')
+
 
         # Get recent AI messages for this number to check for echoes
         recent_ai_messages = []
@@ -1985,7 +2010,8 @@ async def whatsapp(request: Request):
                 transferred_numbers[from_number] = expiration_time
                 logger.info(f"Transfer for {from_number} active until {datetime.fromtimestamp(expiration_time).strftime('%Y-%m-%d %H:%M:%S')}")
                 
-                response_content = "Gracias por tu paciencia."
+                # Add a log message suggesting the human agent to send the takeover message
+                response_content = "Gracias por tu paciencia. Te estamos transfiriendo a un agente humano que te atenderá en breve."
                 
                 # Execute the actual transfer - CHANGE FROM ASYNC TO SYNC
                 phone_number = from_number
@@ -2000,6 +2026,20 @@ async def whatsapp(request: Request):
                     # Execute the transfer function SYNCHRONOUSLY
                     result = await transfer_to_group(phone_number, group_id, reason="Transferencia automática")
                     logger.info(f"Transfer result: {result}")
+
+                    # Add a notification in the database about the transfer
+                    transfer_note = Message(
+                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        senderName="System",
+                        message=f"[SYSTEM] Se ha iniciado transferencia a agente humano. Se recomienda enviar: '{HUMAN_TAKEOVER_MESSAGE}'",
+                        number=from_number,
+                        uid=f"transfer-note-{datetime.now().timestamp()}",
+                        direction="system",
+                        mtype="text",
+                        source="whatsapp"
+                    )
+                    db.Insert(transfer_note)
+
                 except Exception as e:
                     logger.error(f"Error executing transfer: {str(e)}")
                     # If transfer fails, remove from transferred numbers
@@ -2227,7 +2267,7 @@ async def report_status_update(request: Request):
             )
             
         # En lugar de consultar los canales, usar un valor fijo
-        channel_id = 43347  # Valor fijo conocido para el canal de WhatsApp
+        channel_id = 43388  # Valor fijo conocido para el canal de WhatsApp
         logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
         
         # Preparar y enviar el mensaje al cliente

@@ -1910,7 +1910,7 @@ async def whatsapp(request: Request):
 
         llm_service = DeepSeekService(
             config=config,
-            api_key=os.getenv("OPENAI_API_KEY"),
+            api_key=os.getenv("DEEPGRAM_API_KEY"),
             system=system_prompt,
             function_manager=function_manager
         )

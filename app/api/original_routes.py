@@ -34,7 +34,7 @@ from app.services.llm.llm_service import LLMService
 import psycopg2
 from collections import OrderedDict
 from datetime import datetime, timedelta
-
+from deepseek import DeepSeek
 
 load_dotenv(override=True)
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, FastAPI
@@ -87,6 +87,7 @@ AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
 # Diccionario para almacenar reportes en progreso
 report_sessions = {}  # key: phone_number, value: {images: [], image_descriptions: [], location: str, timestamp: datetime}
@@ -499,7 +500,14 @@ async def websocket_endpoint(ws: WebSocket):
     #folio = await save_client_selection(call_sid, selection1, selection2, selection3, selection4, selection5, selection6, selection7)
 
     logger.debug("Initializing LLM service for the new call")
-    llm_service = OpenAIService(
+    # llm_service = OpenAIService(
+    #     config=config,
+    #     api_key=OPENAI_API_KEY,
+    #     system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio="folio"),
+    #     function_manager=function_manager
+    # )
+
+    llm_service = DeepSeekService(
         config=config,
         api_key=OPENAI_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio="folio"),
@@ -1099,6 +1107,7 @@ async def whatsapp(request: Request):
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = DeepSeek(api_key=os.getenv("DEEPSEEK_API_KEY"))
 
     # Check if this is a message from a human agent with the human takeover message
     HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana, le atiende"
@@ -1892,12 +1901,20 @@ async def whatsapp(request: Request):
         # if from_number in report_sessions and report_sessions[from_number]["images"]:
         #     system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."
 
-        llm_service = OpenAIService(
+        # llm_service = OpenAIService(
+        #     config=config,
+        #     api_key=os.getenv("OPENAI_API_KEY"),
+        #     system=system_prompt,
+        #     function_manager=function_manager
+        # )
+
+        llm_service = DeepSeekService(
             config=config,
             api_key=os.getenv("OPENAI_API_KEY"),
             system=system_prompt,
             function_manager=function_manager
         )
+
 
         # Procesar la imagen si está disponible
         if 'image_description' in locals() and image_description:

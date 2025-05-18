@@ -34,7 +34,7 @@ from app.services.llm.llm_service import LLMService
 import psycopg2
 from collections import OrderedDict
 from datetime import datetime, timedelta
-from deepseek import DeepSeek
+from app.services.llm.deepseek_service import DeepSeekService
 
 load_dotenv(override=True)
 from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, FastAPI

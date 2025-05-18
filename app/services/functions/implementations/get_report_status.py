@@ -39,7 +39,7 @@ async def get_report_status(report_id: str):
         logger.debug(f"Consultando estado de reporte en: {url}")
         
         # Realizar la solicitud HTTP
-        response = requests.get(url, timeout=10)  # Timeout de 10 segundos
+        response = requests.get(url, timeout=30)  # Timeout de 10 segundos
         
         # Verificar si la solicitud fue exitosa
         if response.status_code == 200:

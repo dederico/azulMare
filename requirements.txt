@@ -94,3 +94,4 @@ pydub
 geopy
 pytz
 openai-agents
+deepseek-ai

@@ -509,7 +509,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     llm_service = DeepSeekService(
         config=config,
-        api_key=OPENAI_API_KEY,
+        api_key=DEEPSEEK_API_KEY,
         system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio="folio"),
         function_manager=function_manager
     )

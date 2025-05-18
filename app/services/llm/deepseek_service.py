@@ -5,6 +5,7 @@ import os
 import asyncio
 from app.services.llm.llm_service import LLMService
 from app.util.logger import logger
+from openai import OpenAI
 
 class DeepSeekService(LLMService):
     def __init__(self, config, api_key, system, function_manager=None):
@@ -13,7 +14,7 @@ class DeepSeekService(LLMService):
         self.api_key = api_key
         self.system = system
         self.function_manager = function_manager
-        self.api_base = "https://api.deepseek.com/v1"  # Adjust if their API URL is different
+        self.api_base = "https://api.deepseek.com/beta"  # Adjust if their API URL is different
         self.model = config.get("deepseek_model", "deepseek-chat")  # Default model
 
     async def generate_response(self, user_input):

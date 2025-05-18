@@ -1106,8 +1106,8 @@ async def whatsapp(request: Request):
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    client = DeepSeek(api_key=os.getenv("DEEPSEEK_API_KEY"))
+    #client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"))
 
     # Check if this is a message from a human agent with the human takeover message
     HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana, le atiende"

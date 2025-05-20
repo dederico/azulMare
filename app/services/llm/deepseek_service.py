@@ -1,6 +1,7 @@
 import json
 import time
 import openai
+import os
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
@@ -9,95 +10,163 @@ from app.services.functions.function_manager import FunctionManager
 
 class DeepSeekService(LLMService):
     def __init__(
-        self,
-        config,
-        api_key: str | None,
-        function_manager: FunctionManager,
-        system: str = ""
+    self,
+    config,
+    api_key: str | None,
+    function_manager: FunctionManager,
+    system: str = ""
     ):
         self.config = config
+        
+        # ADD THIS: Ensure API key has sk- prefix
+        if api_key and not api_key.startswith("sk-"):
+            api_key = f"sk-{api_key}"
+        
+        self.api_key = api_key
+        
         # Initialize with DeepSeek's endpoint
         self.client = openai.AsyncClient(
             api_key=api_key,
-            base_url="https://api.deepseek.com"  # DeepSeek endpoint
+            base_url="https://api.deepseek.com/v1"
         )
+        
         self.conversation_history = []
         self.conversation_history.append({"role": "system", "content": self.ensure_valid_message_content(system)})
         self.function_manager = function_manager
         self.functions = {}
         self.current_function_name = None
+        
+        # Log initialization (without exposing full key)
+        if api_key:
+            key_preview = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "too_short"
+            logger.debug(f"DeepSeekService initialized with API key preview: {key_preview}")
+        else:
+            logger.error("DeepSeekService initialized with empty API key")
 
     def ensure_valid_message_content(self, content):
         """
         Asegura que el contenido del mensaje esté en un formato válido para la API.
         """
-        # Si es None, convertirlo a string vacío
         if content is None:
             return ""
         
-        # Si ya es un string, devolverlo como está
         if isinstance(content, str):
             return content
         
-        # Si es un diccionario o cualquier otro objeto, convertirlo a string
         if isinstance(content, (dict, list, tuple, set)):
             return str(content)
         
-        # Para cualquier otro tipo, convertir a string
         return str(content)
     
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         """Añadir mensaje al historial con optimización de contexto"""
-        # Aplicar ensure_valid_message_content al contenido
         validated_content = self.ensure_valid_message_content(content)
+        
+        # For DeepSeek API compatibility:
+        # Convert 'function' role to 'tool' role if needed
+        if role == "function":
+            role = "tool"
+            # Make sure tool_call_id is present if using 'tool' role
+            if 'name' in kwargs and 'tool_call_id' not in kwargs:
+                kwargs['tool_call_id'] = kwargs['name']
         
         self.conversation_history.append({"role": role, "content": validated_content, **kwargs})
         
-        # Verificar si el historial ha crecido demasiado
-        max_messages = self.config.get("max_context_messages", 20)  # Configurable
-        if len(self.conversation_history) > max_messages + 1:  # +1 para el mensaje del sistema
-            # Extraer los mensajes del sistema
+        max_messages = self.config.get("max_context_messages", 20)
+        if len(self.conversation_history) > max_messages + 1:
             system_messages = [msg for msg in self.conversation_history if msg["role"] == "system"]
-            
-            # Mantener solo los mensajes más recientes
             recent_messages = self.conversation_history[-(max_messages - len(system_messages)):]
-            
-            # Reorganizar el historial: primero mensajes del sistema, luego los recientes
             self.conversation_history = system_messages + recent_messages
 
     async def generate_response(self, user_input: str) -> AsyncGenerator[str, None]:
         self.add_to_conversation("user", user_input)
         
-        # Verifica si es necesario resumir el contexto
-        if self.config.get("use_context_summarization", False) and len(self.conversation_history) > self.config.get("summarize_threshold", 15):
-            await self.summarize_conversation_history()
+        # First API call to get potential tool calls
+        try:
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            initial_response = await self.client.chat.completions.create(
+                model=self.config.get("deepseek_model", "deepseek-chat"),
+                messages=self.conversation_history,
+                temperature=0.7,
+                tools=self.function_manager.get_function_definition(),
+                extra_headers=headers
+            )
             
-        generator = await self.llm_generator()
-
-        full_message = ""
-        async for chunk in generator:
-            tool_call = chunk.choices[0].delta.tool_calls if hasattr(chunk.choices[0].delta, 'tool_calls') else None
-            if tool_call:
-                await self.handle_tool_call(tool_call)
-
-            if hasattr(chunk.choices[0], 'finish_reason') and chunk.choices[0].finish_reason == "tool_calls":
-                async for content in self.handle_tool_call_finish():
-                    yield content
-
-            content = chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else None
-            if content:
+            assistant_message = initial_response.choices[0].message
+            
+            # Check if there are tool calls
+            if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
+                # Add assistant's response with tool_calls to history
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        } for tc in assistant_message.tool_calls
+                    ]
+                })
+                
+                # Process each tool call
+                for tool_call in assistant_message.tool_calls:
+                    try:
+                        func_name = tool_call.function.name
+                        args = json.loads(tool_call.function.arguments)
+                        
+                        # Find and execute the function
+                        for func in self.function_manager.registered_functions:
+                            if func.__name__ == func_name:
+                                result = await func(**args)
+                                
+                                # Add tool response with tool_call_id
+                                self.conversation_history.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": result
+                                })
+                                break
+                    except Exception as e:
+                        error_msg = f"Error executing tool call {func_name}: {str(e)}"
+                        logger.error(error_msg)
+                        # Add error as tool response
+                        self.conversation_history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": f"Error: {error_msg}"
+                        })
+                
+                # Make second API call with tool results
+                final_response = await self.client.chat.completions.create(
+                    model=self.config.get("deepseek_model", "deepseek-chat"),
+                    messages=self.conversation_history,
+                    temperature=0.7,
+                    extra_headers=headers
+                )
+                
+                final_content = final_response.choices[0].message.content
+                yield final_content
+                self.add_to_conversation("assistant", final_content)
+                
+            else:
+                # No tool calls, just return the content
+                content = assistant_message.content
                 yield content
-                full_message += content
-
-        if full_message:
-            self.add_to_conversation("assistant", full_message)
+                self.add_to_conversation("assistant", content)
+                
+        except Exception as e:
+            error_message = f"Error: {str(e)}"
+            logger.error(error_message)
+            yield error_message
 
     async def summarize_conversation_history(self):
         """Resumir el historial de conversación cuando se vuelve demasiado largo"""
-        # Extraer el mensaje del sistema original
         system_message = next((msg for msg in self.conversation_history if msg["role"] == "system"), None)
         
-        # Preparar el contenido para ser resumido
         conversation_text = "\n".join([f"{msg['role']}: {msg['content']}" 
                                       for msg in self.conversation_history 
                                       if msg['role'] != "system"])
@@ -107,23 +176,27 @@ class DeepSeekService(LLMService):
 Proporciona un resumen breve pero completo que capture los puntos principales de la conversación."""
         
         try:
-            # Crear una solicitud separada para resumir el contexto
+            # Use explicit headers
+            api_key = self.api_key
+            if not api_key.startswith("sk-"):
+                api_key = f"sk-{api_key}"
+                
+            headers = {"Authorization": f"Bearer {api_key}"}
+            
             summary_response = await self.client.chat.completions.create(
                 model=self.config.get("deepseek_model", "deepseek-chat"),
                 messages=[{"role": "user", "content": summary_prompt}],
                 temperature=0.1,
+                extra_headers=headers
             )
             
             summary = summary_response.choices[0].message.content
             
-            # Reiniciar el historial con el sistema original y el resumen
             self.conversation_history = []
             
-            # Restaurar el mensaje del sistema si existía
             if system_message:
                 self.conversation_history.append(system_message)
                 
-            # Añadir el resumen como contexto
             self.conversation_history.append(
                 {"role": "system", "content": f"Resumen de la conversación anterior: {summary}"}
             )
@@ -131,33 +204,37 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             logger.debug(f"Historial de conversación resumido. Nuevo tamaño: {len(self.conversation_history)}")
             
         except Exception as e:
-            logger.error(f"Error al resumir el historial de conversación: {str(e)}")
-            # Si falla el resumen, aplicar la estrategia de ventana deslizante
+            error_msg = f"Error al resumir el historial de conversación: {str(e)}"
+            logger.error(error_msg)
             self.add_to_conversation("system", "Nota: Parte del historial de conversación anterior ha sido eliminado para optimizar el rendimiento.")
 
     async def llm_generator(self):
-        # Use DeepSeek's model
+        """Only used for simple queries without function calls"""
         model = self.config.get("deepseek_model", "deepseek-chat")
         
         try:
-            # For DeepSeek, simplify the parameters since not all OpenAI params are supported
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            
             generator = await self.client.chat.completions.create(
                 model=model,
                 messages=self.conversation_history,
                 stream=True,
                 temperature=0.7,
-                # Only include tools if they are actually supported by DeepSeek
-                tools=self.function_manager.get_function_definition() if self.config.get("deepseek_supports_tools", False) else None,
+                extra_headers=headers
             )
             return generator
-        except Exception as e:
-            logger.error(f"Error calling DeepSeek API: {str(e)}")
-            # Return a mock generator that yields an error message
+        except Exception as err:
+            error_message = f"Error calling DeepSeek API: {str(err)}"
+            logger.error(error_message)
+            
+            # Safe error generator with properly scoped variables
+            error_content = f"Error accessing API: {str(err)}"
+            
             async def error_generator():
                 yield type('obj', (object,), {
                     'choices': [type('obj', (object,), {
                         'delta': type('obj', (object,), {
-                            'content': f"Error: {str(e)}"
+                            'content': error_content
                         }),
                         'finish_reason': None
                     })]
@@ -165,16 +242,14 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             return error_generator()
 
     async def handle_tool_call(self, tool_call_chunk):
-        # This is the same as in OpenAIService
-        # Only relevant if DeepSeek supports function calling
         tool_call = tool_call_chunk[0]
 
         function_name = None
-        if tool_call.function and tool_call.function.name:
+        if hasattr(tool_call, 'function') and hasattr(tool_call.function, 'name'):
             function_name = tool_call.function.name
 
         arguments_chunk = ""
-        if tool_call.function.arguments:
+        if hasattr(tool_call, 'function') and hasattr(tool_call.function, 'arguments'):
             arguments_chunk = tool_call.function.arguments
 
         if function_name:
@@ -185,14 +260,17 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             self.functions[self.current_function_name] += arguments_chunk
 
     async def handle_tool_call_finish(self):
-        # This is the same as in OpenAIService
         for k, v in self.functions.items():
             logger.debug(f"Call: {k} with arguments: {v}")
             
             try:
                 arguments = json.loads(v)
             except json.decoder.JSONDecodeError as e:
-                logger.error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
+                error_message = f"Error decoding JSON for function {k}: {e}"
+                if hasattr(e, 'message'):
+                    error_message += f", {e.message}"
+                error_message += f" Input was: {v}."
+                logger.error(error_message)
                 continue
 
             for func in self.function_manager.registered_functions:
@@ -200,33 +278,45 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                     try:
                         response = await func(**arguments)
                     except Exception as e:
-                        logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
+                        logger.error(f"Error calling function {k} with arguments {arguments}: {str(e)}")
                         continue
                     
+                    # CHANGE THIS LINE: Use "tool" role instead of "function" for DeepSeek
                     self.add_to_conversation(
-                        "function", content=response, name=func.__name__
+                        "tool", content=response, name=func.__name__, tool_call_id=k
                     )
 
-        generator = await self.llm_generator()
+        try:
+            # Important: Use explicit headers here too
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            
+            generator = await self.client.chat.completions.create(
+                model=self.config.get("deepseek_model", "deepseek-chat"),
+                messages=self.conversation_history,
+                stream=True,
+                temperature=0.7,
+                tools=self.function_manager.get_function_definition(),
+                extra_headers=headers
+            )
 
-        full_message = ""
-        async for chunk in generator:
-            content = chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else None
-            if content:
-                yield content
-                full_message += content
+            full_message = ""
+            async for chunk in generator:
+                content = chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else None
+                if content:
+                    yield content
+                    full_message += content
 
-        self.add_to_conversation("assistant", full_message)
-        self.functions = {}
-        self.current_function_name = None
+            self.add_to_conversation("assistant", full_message)
+        except Exception as local_e:
+            error_content = f"Error in handle_tool_call_finish: {str(local_e)}"
+            logger.error(error_content)
+            yield error_content
+        finally:
+            self.functions = {}
+            self.current_function_name = None
 
     def clear_conversation_history(self) -> None:
         """Limpia el historial de conversación pero conserva los mensajes del sistema"""
-        # Extraer los mensajes del sistema
         system_messages = [msg for msg in self.conversation_history if msg["role"] == "system"]
-        
-        # Limpiar el historial
         self.conversation_history = []
-        
-        # Restaurar los mensajes del sistema
         self.conversation_history.extend(system_messages)

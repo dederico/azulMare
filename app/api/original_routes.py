@@ -1107,7 +1107,8 @@ async def whatsapp(request: Request):
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     function_manager = FunctionManager(registered_functions)
     #client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"))
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
+    image_analysis_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     # Check if this is a message from a human agent with the human takeover message
     HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana, le atiende"
@@ -1537,8 +1538,7 @@ async def whatsapp(request: Request):
                 logger.info(f"[{from_number}] Imagen añadida a selection8: {photo_url}")
                 try:
                     # Analizar la imagen con rate limiting
-                    image_description = await analyze_image_with_rate_limit(client, photo_url)
-
+                    image_description = await analyze_image_with_rate_limit(image_analysis_client, photo_url)
                     # Almacenar en la sesión de reporte
                     if from_number not in report_sessions:
                         report_sessions[from_number] = {
@@ -1910,7 +1910,7 @@ async def whatsapp(request: Request):
 
         llm_service = DeepSeekService(
             config=config,
-            api_key=os.getenv("DEEPGRAM_API_KEY"),
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
             system=system_prompt,
             function_manager=function_manager
         )

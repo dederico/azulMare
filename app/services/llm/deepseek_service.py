@@ -80,7 +80,11 @@ class DeepSeekService(LLMService):
 
     async def generate_response(self, user_input: str) -> AsyncGenerator[str, None]:
         self.add_to_conversation("user", user_input)
-        
+        self.sanitize_messages_for_deepseek()
+        logger.debug("Sending to DeepSeek: %s", 
+                 json.dumps([{k: (v[:50] + "..." if isinstance(v, str) and len(v) > 50 else str(v)) 
+                             for k, v in msg.items()}
+                            for msg in self.conversation_history[:5]]))
         # First API call to get potential tool calls
         try:
             headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -213,6 +217,11 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         model = self.config.get("deepseek_model", "deepseek-chat")
         
         try:
+            self.sanitize_messages_for_deepseek()
+            logger.debug("Sending to DeepSeek (llm_generator): %s", 
+                     json.dumps([{k: (v[:50] + "..." if isinstance(v, str) and len(v) > 50 else str(v)) 
+                                 for k, v in msg.items()}
+                                for msg in self.conversation_history[:5]]))
             headers = {"Authorization": f"Bearer {self.api_key}"}
             
             generator = await self.client.chat.completions.create(
@@ -264,6 +273,11 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             logger.debug(f"Call: {k} with arguments: {v}")
             
             try:
+                self.sanitize_messages_for_deepseek()
+                logger.debug("Sending to DeepSeek (handle_tool_call_finish): %s", 
+                     json.dumps([{k: (v[:50] + "..." if isinstance(v, str) and len(v) > 50 else str(v)) 
+                                 for k, v in msg.items()}
+                                for msg in self.conversation_history[:5]]))
                 arguments = json.loads(v)
             except json.decoder.JSONDecodeError as e:
                 error_message = f"Error decoding JSON for function {k}: {e}"
@@ -320,3 +334,23 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         system_messages = [msg for msg in self.conversation_history if msg["role"] == "system"]
         self.conversation_history = []
         self.conversation_history.extend(system_messages)
+
+    def sanitize_messages_for_deepseek(self):
+        """
+        Ensures all messages are properly formatted for DeepSeek API.
+        DeepSeek requires all message content to be strings.
+        """
+        for i, message in enumerate(self.conversation_history):
+            # Ensure content is always a string
+            if "content" in message and not isinstance(message["content"], str):
+                # Convert complex objects to string representation
+                if message["content"] is None:
+                    message["content"] = ""
+                else:
+                    message["content"] = str(message["content"])
+                    
+            # Remove any unsupported fields that aren't expected in the message format
+            allowed_keys = ["role", "content", "tool_call_id", "tool_calls"]
+            for key in list(message.keys()):
+                if key not in allowed_keys:
+                    del message[key]

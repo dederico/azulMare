@@ -1376,6 +1376,8 @@ async def whatsapp(request: Request):
         if payload.get("coordinates"):
             # Procesamiento de ubicación
             coords = payload.get("coordinates")
+            if not isinstance(coords, str):
+                coords = str(coords)
             logger.debug(f"Formato de coordenadas recibidas: {coords}")
             
             # Manejar tanto formato con coma como con espacio

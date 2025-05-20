@@ -1566,7 +1566,7 @@ async def whatsapp(request: Request):
                     if num_images == 1:
                         body = f"{sender_name} he recibido tu imagen veo {la_foto}, y la he guardado para el reporte. Puedes enviar más imágenes."
                     else:
-                        body = f"[Imagen_Recibida] He recibido otra imagen (tienes {num_images} en total). Puedes seguir enviando imágenes o finalizar cuando estés listo."
+                        body = f"He recibido otra imagen (tienes {num_images} en total). Puedes seguir enviando imágenes o finalizar cuando estés listo."
                     
                     logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
                     

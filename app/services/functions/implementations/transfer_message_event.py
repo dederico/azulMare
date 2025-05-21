@@ -30,13 +30,14 @@ def format_phone_number(phone):
     # Si no coincide con ningún patrón conocido, devolver como está
     return phone
 
-async def transfer_to_group(phone_number, group_id=None, reason=None):
+async def transfer_to_group(phone_number, group_id=None, reason=None, send_notification=True):
     """Transfiere una conversación de WhatsApp a un grupo específico de operadores.
 
     Args:
         phone_number (string): Número de teléfono del cliente. OBLIGATORIO.
         group_id (number, optional): ID del grupo de operadores. Por defecto 1772 (Envios).
         reason (string, optional): Razón de la transferencia.
+        send_notification (bool, optional): Si es True, envía un mensaje de notificación al usuario.
 
     Returns:
         string: Mensaje de confirmación o error.
@@ -56,6 +57,7 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
         # Formatear número de teléfono
         formatted_phone = format_phone_number(phone_number)
         logger.debug(f"Número de teléfono formateado: {phone_number} -> {formatted_phone}")
+
         
         # Configurar encabezados
         api_token = os.environ.get("CHAT2DESK_API_TOKEN")
@@ -69,18 +71,12 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
             "Content-Type": "application/json"
         }
         
-        # 1. Buscar el cliente por número de teléfono usando phone_number como en tu curl
+        # 1. Buscar el cliente por número de teléfono
         search_url = f"{CHAT2DESK_BASE_URL}/clients"
-        params = {"phone_number": formatted_phone}  # Usar phone_number en lugar de phone
+        params = {"phone_number": formatted_phone}
         
         async with httpx.AsyncClient() as client:
             response = await client.get(search_url, params=params, headers=headers)
-        
-        if response.status_code != 200:
-            # Si falla con phone_number, intentar con phone
-            params = {"phone": formatted_phone}
-            async with httpx.AsyncClient() as client:
-                response = await client.get(search_url, params=params, headers=headers)
             
             if response.status_code != 200:
                 error_msg = f"Error al buscar cliente: {response.status_code} - {response.text}"
@@ -130,21 +126,23 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
         
         # 3. Crear un mensaje nuevo para el cliente - usando valores fijos para channel_id
         message_url = f"{CHAT2DESK_BASE_URL}/messages"
+
+        transfer_message = "Claro, En breve uno de nuestros agentes te atenderá." if send_notification else "..."
         
-        # Usar valores fijos como mencionaste
+        if reason and send_notification:
+            transfer_message += f"\n\nMotivo: {reason}"
+
+        # Solo enviar el mensaje si send_notification es True
         message_data = {
-            "client_id": client_id,
-            "channel_id": 43388,  # Valor fijo para channel_id
-            "transport": "wa_direct",
-            "text": "Claro"
-        }
-
-
-
-        
+                "client_id": client_id,
+                "channel_id": 43388,  # Valor fijo para channel_id
+                "transport": "wa_direct",
+                "text": transfer_message
+            }
+            
         async with httpx.AsyncClient() as client:
             message_response = await client.post(message_url, json=message_data, headers=headers)
-        
+            
         if message_response.status_code != 200:
             error_msg = f"Error al enviar mensaje: {message_response.status_code} - {message_response.text}"
             logger.error(error_msg)
@@ -152,7 +150,7 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
         
         message_result = message_response.json()
         logger.debug(f"Respuesta al enviar mensaje: {message_result}")
-        
+                
         # La estructura de la respuesta puede variar, vamos a verificar diferentes posibilidades
         message_id = None
 
@@ -187,41 +185,23 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
             return error_msg
         
         logger.debug(f"ID del mensaje obtenido: {message_id}")
-        
-        # 4. Transferir el mensaje al grupo
+         # 4. Transferir el mensaje al grupo
+
         transfer_url = f"{CHAT2DESK_BASE_URL}/messages/{message_id}/transfer_to_group"
         transfer_params = {"group_id": group_id}
         logger.debug(f"Intentando transferir mensaje con ID {message_id} a grupo {group_id}. URL: {transfer_url}")
 
         async with httpx.AsyncClient() as client:
             transfer_response = await client.get(transfer_url, params=transfer_params, headers=headers)
-        
+            
         if transfer_response.status_code != 200:
             error_msg = f"Error al transferir mensaje: {transfer_response.status_code} - {transfer_response.text}"
             logger.error(error_msg)
             return error_msg
         
-        # 5. Enviar mensaje de notificación al cliente
-        transfer_message = "En breve uno de nuestros agentes te enviará un mensaje."
-        
-        if reason:
-            transfer_message += f"\n\nMotivo: {reason}"
-        
-        notification_data = {
-            "client_id": client_id,
-            "channel_id": 43388,  # Valor fijo para channel_id
-            "transport": "wa_direct",
-            "text": transfer_message
-        }
-        
-        async with httpx.AsyncClient() as client:
-            notification_response = await client.post(message_url, json=notification_data, headers=headers)
-        
-        # No fallamos si la notificación no se puede enviar, ya que la transferencia ya se realizó
-        if notification_response.status_code != 200:
-            logger.warning(f"Error al enviar notificación: {notification_response.status_code} - {notification_response.text}")
-        
-        # 6. Guardar el mensaje en la base de datos local
+    # ELIMINADO: Ya no enviamos un segundo mensaje de notificación
+    
+    # 5. Guardar el mensaje en la base de datos local (si se envió un mensaje)
         try:
             db = LocalStorage()
             message = Message(
@@ -242,11 +222,12 @@ async def transfer_to_group(phone_number, group_id=None, reason=None):
         success_msg = f"La conversación ha sido transferida exitosamente al grupo {group_name}."
         logger.info(success_msg)
         return success_msg
-        
+    
     except Exception as e:
         error_msg = f"Error al transferir conversación: {str(e)}"
         logger.error(error_msg)
         return error_msg
+
 
 async def get_operator_groups():
     """Obtiene la lista de grupos de operadores disponibles."""

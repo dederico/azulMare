@@ -99,8 +99,20 @@ last_response_time = {}  # Para rastrear cuándo se envió la última respuesta 
 completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio: str}
 finalized_report_numbers = set()
 # Ahora, añade esta nueva función para verificar si un número ya tiene un reporte reciente
+recently_returned_to_bot = {}
+BOT_GRACE_PERIOD = 10
 
 import re
+
+async def remove_from_recently_returned(number, delay_seconds):
+    """Remove a number from recently_returned_to_bot after a delay."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        if number in recently_returned_to_bot:
+            del recently_returned_to_bot[number]
+            logger.info(f"Removed {number} from recently returned to bot tracking")
+    except Exception as e:
+        logger.error(f"Error removing {number} from recently returned tracking: {str(e)}")
 
 def detect_and_store_user_data(from_number: str, body: str):
     """
@@ -1103,6 +1115,7 @@ async def whatsapp(request: Request):
     # Check if this is a message from a human agent with the human takeover message
     HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana, le atiende"
     BOT_RETURN_MESSAGE = "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot"
+    BOT_OPERATOR_ID = 227714
     
     
     try:
@@ -1121,38 +1134,19 @@ async def whatsapp(request: Request):
         channel_id = payload.get('channel_id')
         client_id = payload.get('client_id')
         hook_type = payload.get('hook_type', '')
+        operator_id = payload.get('operator_id', '')
 
+        # ADD THIS CHECK RIGHT HERE - AFTER extracting from_number but BEFORE any message processing
+        current_time = datetime.now().timestamp()
+        
         # Handle None values in body
         if body is None:
             body = ""
             logger.debug("Message with None body detected, setting to empty string")
-
-        # PRIMERO - Verificar mensajes especiales de agentes
-        if message_type == 'to_client' and message_text and message_text.startswith(HUMAN_TAKEOVER_MESSAGE):
-            #Human agent is taking over - mark number as transferred with extended timeout
-            logger.info(f"Human agent takeover detected for {from_number}")
-            
-            #Set a longer timeout (30 minutes) for explicit human takeover
-            expiration_time = datetime.now().timestamp() + (30 * 60)
-            transferred_numbers[from_number] = expiration_time
-            
-            # Store log message in database
-            try:
-                system_notification = Message(
-                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    senderName="System",
-                    message=f"[SYSTEM] Conversation transferred to human agent until {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
-                    number=from_number,
-                    uid=f"takeover-{datetime.now().timestamp()}",
-                    direction="system",
-                    mtype="text",
-                    source="whatsapp"
-                )
-                db.Insert(system_notification)
-            except Exception as e:
-                logger.error(f"Error recording human takeover: {str(e)}")
-            
-            return JSONResponse(content={"status": True, "message": "Human agent takeover registered"})
+        
+        # LOG EXPLÍCITO para verificar mensajes con el texto detonante
+        if message_text and BOT_RETURN_MESSAGE in message_text:
+            logger.critical(f"MENSAJE CON TEXTO DETONANTE DETECTADO - Type: {message_type}, Operator: {operator_id}, Text: {message_text[:50]}")
             
         # Verificar si es un mensaje de despedida del agente humano
         if message_type == 'to_client' and message_text and BOT_RETURN_MESSAGE in message_text:
@@ -1161,7 +1155,15 @@ async def whatsapp(request: Request):
             
             if from_number in transferred_numbers:
                 del transferred_numbers[from_number]
+                logger.debug(f"Removed {from_number} from transferred_numbers dictionary")
                 
+            # Marcar como recientemente devuelto al bot con tiempo actual
+            recently_returned_to_bot[from_number] = datetime.now().timestamp()
+            logger.info(f"Added {from_number} to recently_returned_to_bot with grace period of {BOT_GRACE_PERIOD} seconds")
+            
+            # Programar eliminación de la lista después del período de gracia
+            asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
+
             # Send a confirmation message from the AI
             ai_greeting = "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n" + \
             "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
@@ -1215,6 +1217,82 @@ async def whatsapp(request: Request):
             
             except Exception as e:
                 logger.error(f"Error sending AI greeting after return from human agent: {str(e)}")
+        
+        
+        # PRIMERO - Verificar mensajes especiales de agentes
+        if message_type == 'to_client' and message_text and message_text.startswith(HUMAN_TAKEOVER_MESSAGE):
+            #Human agent is taking over - mark number as transferred with extended timeout
+            logger.info(f"Human agent takeover detected for {from_number}")
+            
+            #Set a longer timeout (30 minutes) for explicit human takeover
+            expiration_time = datetime.now().timestamp() + (30 * 60)
+            transferred_numbers[from_number] = expiration_time
+            
+            # Store log message in database
+            try:
+                system_notification = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="System",
+                    message=f"[SYSTEM] Conversation transferred to human agent until {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
+                    number=from_number,
+                    uid=f"takeover-{datetime.now().timestamp()}",
+                    direction="system",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(system_notification)
+            except Exception as e:
+                logger.error(f"Error recording human takeover: {str(e)}")
+            
+            return JSONResponse(content={"status": True, "message": "Human agent takeover registered"})
+        
+        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
+            # This number has been transferred to a human agent and the transfer hasn't expired
+            logger.info(f"Ignoring message from {from_number} as it's being handled by a human agent (expires in {int(transferred_numbers[from_number] - current_time)} seconds)")
+            return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
+        elif from_number in transferred_numbers:
+            # Transfer has expired, remove it from the dictionary
+            logger.info(f"Transfer for {from_number} has expired, bot is now responding again")
+            del transferred_numbers[from_number]
+
+        # Detección automática de intervención humana
+        if (message_type == 'to_client' and 
+            payload.get('operator_id') and 
+            payload.get('operator_id') != BOT_OPERATOR_ID and 
+            from_number not in transferred_numbers and
+            from_number not in recently_returned_to_bot):
+            # Si es la primera vez que un humano responde a esta conversación
+            logger.info(f"Detección automática: Agente humano (ID {payload.get('operator_id')}) tomó la conversación con {from_number}")
+            
+            # Todo dentro del mismo bloque condicional
+            expiration_time = datetime.now().timestamp() + (30 * 60)
+            transferred_numbers[from_number] = expiration_time
+            
+            # Registro también dentro del bloque
+            try:
+                system_notification = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="System",
+                    message=f"[SYSTEM] Detección automática: Conversación transferida a agente humano hasta {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
+                    number=from_number,
+                    uid=f"auto-takeover-{datetime.now().timestamp()}",
+                    direction="system",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(system_notification)
+            except Exception as e:
+                logger.error(f"Error registrando transferencia automática: {str(e)}")
+        elif (message_type == 'to_client' and 
+            payload.get('operator_id') and 
+            payload.get('operator_id') != BOT_OPERATOR_ID and 
+            from_number not in transferred_numbers and
+            from_number in recently_returned_to_bot):
+
+            # Existe en recently_returned_to_bot, respetamos el período de gracia
+            grace_time = int(BOT_GRACE_PERIOD - (datetime.now().timestamp() - recently_returned_to_bot[from_number]))
+            logger.info(f"Ignorando detección automática para {from_number} - en período de gracia ({grace_time} segundos restantes)")
+
 
         # Ahora procesar las imágenes cuando ya tenemos from_number
         fotos_urls = get_images_from_payload(payload)
@@ -1338,17 +1416,6 @@ async def whatsapp(request: Request):
                                          ("total" in body.lower() or "puedes enviar" in body.lower())):
             logger.info(f"Detected image receipt message echo: '{body[:50]}...' - Ignoring")
             return JSONResponse(content={"status": True, "message": "Image receipt message ignored"})
-        
-        # ADD THIS CHECK RIGHT HERE - AFTER extracting from_number but BEFORE any message processing
-        current_time = datetime.now().timestamp()
-        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
-            # This number has been transferred to a human agent and the transfer hasn't expired
-            logger.info(f"Ignoring message from {from_number} as it's being handled by a human agent (expires in {int(transferred_numbers[from_number] - current_time)} seconds)")
-            return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
-        elif from_number in transferred_numbers:
-            # Transfer has expired, remove it from the dictionary
-            logger.info(f"Transfer for {from_number} has expired, bot is now responding again")
-            del transferred_numbers[from_number]
         
         logger.debug(f"Datos recibidos: chat_id={chat_id}, sender_name={sender_name}, body={body}, "
                      f"from_number={from_number}, message_type={message_type}, uid={uid}")
@@ -2003,56 +2070,56 @@ async def whatsapp(request: Request):
         if is_function_call:
             logger.warning(f"Detected function call in response: {response_content}")
             
-            # Check if it's a transfer request
-            if "transfer_to_group" in response_content:
-                # Add to transferred_numbers dictionary with expiration timestamp
-                expiration_time = datetime.now().timestamp() + transfer_timeout
-                transferred_numbers[from_number] = expiration_time
-                logger.info(f"Transfer for {from_number} active until {datetime.fromtimestamp(expiration_time).strftime('%Y-%m-%d %H:%M:%S')}")
-                
-                # Add a log message suggesting the human agent to send the takeover message
-                response_content = "Gracias por tu paciencia. Te estamos transfiriendo a un agente humano que te atenderá en breve."
-                
-                # Execute the actual transfer - CHANGE FROM ASYNC TO SYNC
-                phone_number = from_number
-                try:
-                    # Extract group_id if specified
-                    group_id = 1772
-                    import re
-                    group_match = re.search(r'transfer_to_group\(.*?(\d+).*?\)', response_content)
-                    if group_match:
-                        group_id = int(group_match.group(1))
-                    
-                    # Execute the transfer function SYNCHRONOUSLY
-                    result = await transfer_to_group(phone_number, group_id, reason="Transferencia automática")
-                    logger.info(f"Transfer result: {result}")
-
-                    # Add a notification in the database about the transfer
-                    transfer_note = Message(
-                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        senderName="System",
-                        message=f"[SYSTEM] Se ha iniciado transferencia a agente humano. Se recomienda enviar: '{HUMAN_TAKEOVER_MESSAGE}'",
-                        number=from_number,
-                        uid=f"transfer-note-{datetime.now().timestamp()}",
-                        direction="system",
-                        mtype="text",
-                        source="whatsapp"
-                    )
-                    db.Insert(transfer_note)
-
-                except Exception as e:
-                    logger.error(f"Error executing transfer: {str(e)}")
-                    # If transfer fails, remove from transferred numbers
-                    if from_number in transferred_numbers:
-                        del transferred_numbers[from_number]
+            # En el código de procesamiento de WhatsApp donde se detecta "transfer_to_group"
+        if "transfer_to_group" in response_content:
+            # Marcar como transferido
+            expiration_time = datetime.now().timestamp() + transfer_timeout
+            transferred_numbers[from_number] = expiration_time
             
-            # Check if it's a hangup or farewell
-            elif any(p in response_content for p in ["functions.hangup", "call_sid ="]):
-                response_content = "¡Entendido! Que tengas un excelente día. ¡Hasta pronto!"
+            try:
+                # Extraer group_id si está especificado
+                group_id = 1772  # Valor predeterminado
+                group_match = re.search(r'transfer_to_group\(.*?(\d+).*?\)', response_content)
+                if group_match:
+                    group_id = int(group_match.group(1))
+                
+                # Ejecutar la transferencia enviando un único mensaje desde la función
+                result = await transfer_to_group(
+                    phone_number=from_number, 
+                    group_id=group_id, 
+                    reason="Transferencia automática",
+                    send_notification=True  # La función enviará el único mensaje
+                )
+                
+                # Registrar nota para el sistema, pero no enviar al usuario
+                transfer_note = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="System",
+                    message=f"[SYSTEM] Se ha iniciado transferencia a agente humano. Se recomienda enviar: '{HUMAN_TAKEOVER_MESSAGE}'",
+                    number=from_number,
+                    uid=f"transfer-note-{datetime.now().timestamp()}",
+                    direction="system",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(transfer_note)
+                
+                # ¡IMPORTANTE! Interrumpir el flujo normal para evitar mensajes adicionales
+                return JSONResponse(content={"status": True, "message": "Transferencia iniciada"})
+                
+            except Exception as e:
+                logger.error(f"Error executing transfer: {str(e)}")
+                if from_number in transferred_numbers:
+                    del transferred_numbers[from_number]
 
-            # Generic fallback for other function calls
-            else:
-                response_content = "Estoy procesando tu solicitud. Dame un momento por favor."
+            
+                # Check if it's a hangup or farewell
+                elif any(p in response_content for p in ["functions.hangup", "call_sid ="]):
+                    response_content = "¡Entendido! Que tengas un excelente día. ¡Hasta pronto!"
+
+                # Generic fallback for other function calls
+                else:
+                    response_content = "Estoy procesando tu solicitud. Dame un momento por favor."
 
         data = {
             "client_id": client_id,

@@ -47,7 +47,7 @@ from .implementations.get_movilidad import get_movilidad
 from .implementations.get_predial import get_predial
 from .implementations.get_rutas_reciclaje import get_rutas_reciclaje
 from .implementations.get_instituto_control_vehicular import get_icvnl
-from .implementations.get_emergencia import get_emergencia
+#from .implementations.get_emergencia import get_emergencia
 from .implementations.get_report_status import get_report_status
 
 
@@ -100,6 +100,6 @@ registered_functions = [
     get_predial,
     get_rutas_reciclaje,
     get_icvnl,
-    get_emergencia,
+    #get_emergencia,
     get_report_status
 ]

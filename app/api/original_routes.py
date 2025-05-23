@@ -500,19 +500,19 @@ async def websocket_endpoint(ws: WebSocket):
     #folio = await save_client_selection(call_sid, selection1, selection2, selection3, selection4, selection5, selection6, selection7)
 
     logger.debug("Initializing LLM service for the new call")
-    llm_service = OpenAIService(
-        config=config,
-        api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio="folio"),
-        function_manager=function_manager
-    )
-
-    # llm_service = DeepSeekService(
+    # llm_service = OpenAIService(
     #     config=config,
-    #     api_key=DEEPSEEK_API_KEY,
+    #     api_key=OPENAI_API_KEY,
     #     system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio="folio"),
     #     function_manager=function_manager
     # )
+
+    llm_service = DeepSeekService(
+        config=config,
+        api_key=DEEPSEEK_API_KEY,
+        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio="folio"),
+        function_manager=function_manager
+    )
 
     # tts_service = ElevenTTSService(
     #     api_key=ELEVENLABS_API_KEY,
@@ -1903,19 +1903,19 @@ async def whatsapp(request: Request):
         # if from_number in report_sessions and report_sessions[from_number]["images"]:
         #     system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."
 
-        llm_service = OpenAIService(
-            config=config,
-            api_key=os.getenv("OPENAI_API_KEY"),
-            system=system_prompt,
-            function_manager=function_manager
-        )
-
-        # llm_service = DeepSeekService(
+        # llm_service = OpenAIService(
         #     config=config,
-        #     api_key=os.getenv("DEEPSEEK_API_KEY"),
+        #     api_key=os.getenv("OPENAI_API_KEY"),
         #     system=system_prompt,
         #     function_manager=function_manager
         # )
+
+        llm_service = DeepSeekService(
+            config=config,
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
+            system=system_prompt,
+            function_manager=function_manager
+        )
 
 
         # Procesar la imagen si está disponible

@@ -1,4 +1,3 @@
-#from .implementations.hangup import hangup
 from .implementations.save_selection2 import save_client_selection2
 from .implementations.get_directorio import get_funcionarios
 from .implementations.get_centros_comunitarios import get_centros_comunitarios
@@ -35,7 +34,6 @@ from .implementations.get_miercoles_ciudadano import get_miercoles_ciudadano
 from .implementations.get_mercado_fregoneria import get_mercado_fregoneria
 from .implementations.get_licencias_temporales import get_licencia_provisional
 from .implementations.get_licencia_chofer import get_licencia_chofer
-from .implementations.get_government_location import get_nearest_office
 from .implementations.nearest_office import find_nearest_government_office
 from .implementations.get_circuitos_de_transporte import get_circuitos_de_transporte
 from .implementations.get_inah import get_inah
@@ -47,12 +45,10 @@ from .implementations.get_movilidad import get_movilidad
 from .implementations.get_predial import get_predial
 from .implementations.get_rutas_reciclaje import get_rutas_reciclaje
 from .implementations.get_instituto_control_vehicular import get_icvnl
-#from .implementations.get_emergencia import get_emergencia
 from .implementations.get_report_status import get_report_status
 
 
 registered_functions = [
-    #hangup,
     save_client_selection2, 
     get_funcionarios, 
     get_centros_comunitarios, 
@@ -88,7 +84,6 @@ registered_functions = [
     get_licencia_provisional,
     get_licencia_chofer,
     transfer_to_group,
-    #get_nearest_office,
     find_nearest_government_office,
     get_circuitos_de_transporte,
     get_inah,
@@ -100,6 +95,5 @@ registered_functions = [
     get_predial,
     get_rutas_reciclaje,
     get_icvnl,
-    #get_emergencia,
     get_report_status
 ]

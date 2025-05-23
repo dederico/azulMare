@@ -1398,6 +1398,16 @@ async def whatsapp(request: Request):
                         
                         # Convertir la latitud y longitud a dirección
                         address = await latlong_to_address(latitude, longitude)
+                        # ADD THIS FIX: Ensure address is always a string
+                        if isinstance(address, dict):
+                            # Extract the formatted address string from the dictionary
+                            address = address.get('formatted_address', address.get('display_name', str(address)))
+                        elif address is not None and not isinstance(address, str):
+                            # Convert any other non-string type to string
+                            address = str(address)
+                        else:
+                            # If address is None or empty, provide a default
+                            address = address or "Dirección no disponible"
                         # Verificar si hay un contexto de búsqueda de oficinas gubernamentales
                         # Esto puede ser determinado por mensajes previos del usuario o una variable de sesión
                         office_search_context = False
@@ -1513,7 +1523,8 @@ async def whatsapp(request: Request):
                             
                             # Si hay un reporte en progreso, actualizar la ubicación
                             if from_number in report_sessions:
-                                report_sessions[from_number]["location"] = address
+                                location_str = address if isinstance(address, str) else str(address)
+                                report_sessions[from_number]["location"] = location_str
                                 report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
                             
                     except Exception as e:

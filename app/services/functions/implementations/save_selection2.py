@@ -13,18 +13,18 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
                                selection8: str = None, images_list: list = None, descriptions_list: list = None):
     """Guardar la información de las preguntas según las respuestas del cliente.
 
-    Args:
+   Args:
         yoga_number (string): El número de teléfono del cliente.
         selection1 (string): ID numérico del asunto (ej: "984" para baches) o "0" para auto-clasificación.
         selection2 (string): Nombre del cliente.
         selection3 (string): SIEMPRE debe ser una cadena vacía "".
         selection4 (string): Razón del reporte.
         selection5 (string): Calle.
-        selection6 (string): Número (default: 100).
+        selection6 (string): Número (default: 000).
         selection7 (string): Colonia.
-        selection8 (string, optional): URL o ruta de la imagen para la pregunta 8.
-        images_list (list, optional): Lista de URLs de imágenes.
-        descriptions_list (list, optional): Lista de descripciones correspondientes a las imágenes.
+        selection8 (string): URL o ruta de la imagen para la pregunta 8.
+        images_list (array): Lista de URLs de imágenes.
+        descriptions_list (array): Lista de descripciones correspondientes a las imágenes.
 
     Returns:
         string: Número de folio del reporte.

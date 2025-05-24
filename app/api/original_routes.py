@@ -922,7 +922,7 @@ async def process_and_save_report(from_number, location, images=None, descriptio
         # Parse location into components
         street = "No especificada"
         neighborhood = "No especificada"
-        street_number = "100"  # Default value
+        street_number = "000"  # Default value
         
         if location:
             location_parts = location.split(',')
@@ -942,6 +942,10 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             "selection7": get_user_answer(from_number, 7),
         }
 
+        logger.critical(f"PASANDO {len(images)} IMÁGENES A save_client_selection_with_deduplication")
+        for i, img in enumerate(images):
+            logger.critical(f"  Imagen {i+1}: {img[:50]}...")
+
         # Create the report
         folio = await save_client_selection_with_deduplication(
             yoga_number=from_number,
@@ -950,8 +954,6 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             **selections
         )
 
-
-        
         # Record successful report
         current_time = datetime.now().timestamp()
         completed_reports[from_number] = {
@@ -1113,7 +1115,7 @@ async def whatsapp(request: Request):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     # Check if this is a message from a human agent with the human takeover message
-    HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana, le atiende"
+    HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana. Le atiende"
     BOT_RETURN_MESSAGE = "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot"
     BOT_OPERATOR_ID = 227714
     
@@ -1631,9 +1633,9 @@ async def whatsapp(request: Request):
                     num_images = len(report_sessions[from_number]["images"])
                     la_foto = report_sessions[from_number]["image_descriptions"][0]
                     if num_images == 1:
-                        body = f"{sender_name} he recibido tu imagen veo {la_foto}, y la he guardado para el reporte. Puedes enviar más imágenes."
+                        body = f"{sender_name} recibí tu imagen veo {la_foto}, y la he guardado para el reporte. Si deseas continuar con tu reporte, responde FIN. En caso de que tengas otra foto, por favor envíala."
                     else:
-                        body = f"He recibido otra imagen (tienes {num_images} en total). Puedes seguir enviando imágenes o finalizar cuando estés listo."
+                        body = f"He recibido otra imagen (tienes {num_images} en total). Puedes seguir enviando imágenes o responde FIN cuando estés listo."
                     
                     logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
                     
@@ -1944,7 +1946,26 @@ async def whatsapp(request: Request):
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
     hour = current_datetime.strftime("%I:%M:%S %p")
-    
+    fotos_urls = report_sessions[from_number]["images"] if from_number in report_sessions and report_sessions[from_number]["images"] else []
+
+    # Aplanar cualquier lista anidada y asegurar que todo sean strings
+    flat_fotos = []
+    for item in fotos_urls:
+        if isinstance(item, list):
+            # Si es una lista, agregar cada elemento
+            flat_fotos.extend([str(x) for x in item if x])  # Convertir a string y filtrar vacíos
+        elif isinstance(item, str) and item.strip():
+            # Si es string no vacío, agregarlo
+            flat_fotos.append(item.strip())
+
+    # Crear el string final
+    fotos_string = ",".join(flat_fotos) if flat_fotos else ""
+
+    # Debug log para entender qué está pasando
+    logger.debug(f"Fotos originales: {fotos_urls}")
+    logger.debug(f"Fotos aplanadas: {flat_fotos}")
+    logger.debug(f"Fotos string final: {fotos_string}")
+
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = system_message.format(customer_name=sender_name,call_sid=uid,date2=date_string,
@@ -1953,7 +1974,7 @@ async def whatsapp(request: Request):
             folio="Pendiente de generar",
             address=address if 'address' in locals() else "No he recibido ubicación",
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
-            fotos=(report_sessions[from_number]["images"] if from_number in report_sessions and report_sessions[from_number]["images"] else "")
+            fotos=fotos_string
         )
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:

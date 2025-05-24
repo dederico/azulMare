@@ -31,13 +31,13 @@ def format_phone_number(phone):
     return phone
 
 async def transfer_to_group(phone_number, group_id=None, reason=None, send_notification=True):
-    """Transfiere una conversación de WhatsApp a un grupo específico de operadores.
+    """
+    Transfiere una conversación de WhatsApp a un grupo específico de operadores.
 
-    Args:
-        phone_number (string): Número de teléfono del cliente. OBLIGATORIO.
-        group_id (number, optional): ID del grupo de operadores. Por defecto 1772 (Envios).
-        reason (string, optional): Razón de la transferencia.
-        send_notification (bool, optional): Si es True, envía un mensaje de notificación al usuario.
+    phone_number (string): Número de teléfono del cliente. OBLIGATORIO.
+    group_id (number): ID del grupo de operadores. Por defecto 1772 (Envios).
+    reason (string): Razón de la transferencia.
+    send_notification (boolean): Si es True, envía un mensaje de notificación al usuario.
 
     Returns:
         string: Mensaje de confirmación o error.

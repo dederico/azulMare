@@ -1,6 +1,9 @@
 TC = """
 Este documento contiene información sobre el trámite de pasaportes, costos, requisitos e información general
 
+Pregunta: ¿Hacen citas, o ayudan a hacer citas?
+Respuesta: NO
+
 Pregunta: ¿Cuáles son los costos de los pasaportes?
 Respuesta:
 Vigencia 1 año: $885
@@ -43,6 +46,14 @@ Copia de identificación de ambos padres (ine/pasaporte)
 Pregunta: ¿Qué hago si perdí mi pasaporte?
 Respuesta: En caso de robo/extravío de pasaporte, deberá levantarse denuncia para reportar el documento, y al agendar cita deberá ser como renovación de pasaporte sin documento.
 
+Pregunta: ¿Donde esta la oficina de pasaportes más cercana a mí?
+Respuesta: 
+
+La única ubicación en San Pedro esta en:
+- Av. Ignacio Morones Prieto, Zona Los Callejones, 66228 Monterrey, N.L.
+- De Lunes a Viernes de 08:00 a 15:00
+
+Muy cerca del Auditorio San Pedro.
 """
 
 async def get_pasaportes():

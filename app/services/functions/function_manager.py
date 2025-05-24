@@ -31,19 +31,57 @@ class FunctionManager:
 
         parameters = {"type": "object", "properties": {}, "required": []}
 
-        # Extracting parameter descriptions
-        param_pattern = re.compile(r"(\w+) \((\w+)\): (.+)")
+        # Pattern to extract parameters with optional modifiers
+        # Supports: param_name (type): description
+        # or: param_name (type, optional): description  
+        # or: param_name (array[type]): description
+        param_pattern = re.compile(r"(\w+) \(([^)]+)\): (.+)")
+        
         for line in description_lines:
             match = param_pattern.match(line.strip())
             if match:
-                param_name, param_type, param_desc = match.groups()
-                parameters["properties"][param_name] = {
-                    "type": param_type,
-                    "description": param_desc,
-                }
+                param_name, param_type_full, param_desc = match.groups()
+                
+                # Parse the type and check if it's optional
+                is_optional = False
+                if ", optional" in param_type_full:
+                    is_optional = True
+                    param_type_full = param_type_full.replace(", optional", "").strip()
+                
+                # Check if it's an array with specified item type
+                array_match = re.match(r"array\[(\w+)\]", param_type_full)
+                if array_match:
+                    item_type = array_match.group(1)
+                    parameters["properties"][param_name] = {
+                        "type": "array",
+                        "description": param_desc,
+                        "items": {
+                            "type": item_type
+                        }
+                    }
+                elif param_type_full == "array":
+                    # Default array type (string items)
+                    parameters["properties"][param_name] = {
+                        "type": "array",
+                        "description": param_desc,
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                else:
+                    # Handle type mapping for JSON Schema compatibility
+                    json_type = self._map_to_json_type(param_type_full)
+                    parameters["properties"][param_name] = {
+                        "type": json_type,
+                        "description": param_desc,
+                    }
+                
+                # Add to required list if not optional and has no default
                 if param_name in signature.parameters:
                     param = signature.parameters[param_name]
-                    if param.default is inspect.Parameter.empty and param_name != "yoga_number":
+                    if (not is_optional and 
+                        param.default is inspect.Parameter.empty and 
+                        param_name != "yoga_number"):
                         parameters["required"].append(param_name)
 
         return {
@@ -54,3 +92,17 @@ class FunctionManager:
                 "parameters": parameters,
             },
         }
+    
+    def _map_to_json_type(self, param_type: str) -> str:
+        """Map Python/custom types to valid JSON Schema types."""
+        type_mapping = {
+            "bool": "boolean",
+            "boolean": "boolean", 
+            "int": "number",
+            "integer": "number",
+            "float": "number",
+            "number": "number",
+            "str": "string",
+            "string": "string"
+        }
+        return type_mapping.get(param_type.lower(), "string")  # Default to string if unknown

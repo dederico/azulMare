@@ -104,6 +104,77 @@ BOT_GRACE_PERIOD = 10
 
 import re
 
+def get_auto_finalization_status(from_number):
+    """
+    Obtiene información sobre el estado de auto-finalización de un número.
+    
+    Returns:
+        dict: Información del estado
+    """
+    if from_number not in report_sessions:
+        return {"status": "no_session", "message": "No hay sesión de reporte activa"}
+    
+    session = report_sessions[from_number]
+    now = datetime.now(pytz.timezone('America/Mexico_City'))
+    elapsed = (now - session["timestamp"]).total_seconds()
+    remaining = 10 - elapsed  # 5 minutos = 300 segundos
+    
+    has_complete_data = has_complete_report_data(from_number)
+    has_images = bool(session["images"])
+    
+    return {
+        "status": "active",
+        "elapsed_minutes": elapsed / 60,
+        "remaining_minutes": max(0, remaining / 60),
+        "has_complete_data": has_complete_data,
+        "has_images": has_images,
+        "will_auto_finalize": has_complete_data and has_images and remaining <= 0,
+        "image_count": len(session["images"]),
+        "last_activity": session["timestamp"].isoformat()
+    }
+
+def has_complete_report_data(from_number):
+    """
+    Verifica si un usuario tiene todos los datos necesarios para generar un reporte.
+    
+    Args:
+        from_number (str): Número de teléfono del usuario
+        
+    Returns:
+        bool: True si tiene todos los datos necesarios, False en caso contrario
+    """
+    try:
+        # Obtener todos los datos guardados del usuario
+        selection1 = get_user_answer(from_number, "selection1")  # Tipo de reporte
+        selection2 = get_user_answer(from_number, "selection2")  # Nombre
+        selection4 = get_user_answer(from_number, "selection4")  # Razón del reporte
+        selection5 = get_user_answer(from_number, "selection5")  # Calle
+        selection6 = get_user_answer(from_number, "selection6")  # Número
+        selection7 = get_user_answer(from_number, "selection7")  # Colonia
+        
+        # Verificar que tenga al menos los campos esenciales
+        essential_fields = [selection2, selection4, selection5, selection7]  # Nombre, razón, calle, colonia
+        
+        # Contar campos completados
+        completed_fields = sum(1 for field in essential_fields if field and field.strip())
+        
+        # También verificar si tiene imágenes
+        has_images = (from_number in report_sessions and 
+                     report_sessions[from_number]["images"] and 
+                     len(report_sessions[from_number]["images"]) > 0)
+        
+        # Considerar completo si tiene al menos 3 de los 4 campos esenciales Y tiene imágenes
+        is_complete = completed_fields >= 3 and has_images
+        
+        logger.debug(f"[{from_number}] Verificación de datos completos: "
+                    f"campos={completed_fields}/4, imágenes={has_images}, completo={is_complete}")
+        
+        return is_complete
+        
+    except Exception as e:
+        logger.error(f"Error verificando datos completos para {from_number}: {str(e)}")
+        return False
+
 async def remove_from_recently_returned(number, delay_seconds):
     """Remove a number from recently_returned_to_bot after a delay."""
     try:
@@ -369,7 +440,11 @@ async def manage_message_history(db, number, max_messages=20):
         logger.error(f"Error al gestionar historial de mensajes: {str(e)}")
 
 async def check_report_timeouts():
-    """Revisa sesiones de reporte que han estado inactivas por más de 3 minutos y las finaliza."""
+    """
+    Revisa sesiones de reporte que han estado inactivas por más de 5 minutos 
+    y las finaliza automáticamente si tienen todos los elementos necesarios.
+    Incluye protección contra duplicados.
+    """
     while True:
         await asyncio.sleep(60)  # Revisar cada minuto
         now = datetime.now(pytz.timezone('America/Mexico_City'))
@@ -380,13 +455,53 @@ async def check_report_timeouts():
         with report_sessions_lock:
             for number, session in list(report_sessions.items()):
                 elapsed = (now - session["timestamp"]).total_seconds()
-                if elapsed > 180:  # 3 minutos de inactividad
-                    # Solo finalizar si hay imágenes
-                    # Only consider sessions with images
-                    if session["images"]:
-                        numbers_to_process.append(number)
+                
+                # CAMBIO: Usar 5 minutos (300 segundos) en lugar de 3 minutos (180)
+                if elapsed > 10:  # 5 minutos de inactividad
                     
-        # Process them outside the lock
+                    # CAMBIO: Verificar que tenga todos los elementos necesarios, no solo imágenes
+                    if session["images"] and has_complete_report_data(number):
+                        
+                        # PROTECCIÓN CONTRA DUPLICADOS: Verificar si ya tiene un reporte reciente
+                        recent_report = has_recent_report(number, max_age_minutes=15)
+                        if recent_report:
+                            logger.info(f"[AUTO-TIMEOUT] {number} ya tiene reporte reciente {recent_report['folio']}, "
+                                      f"eliminando sesión sin procesar")
+                            # Limpiar la sesión sin procesar
+                            if number in report_sessions:
+                                del report_sessions[number]
+                            continue
+                        
+                        # PROTECCIÓN ADICIONAL: Verificar si está en el conjunto de reportes completados recientemente
+                        if number in recently_completed_reports:
+                            completion_info = recently_completed_reports[number]
+                            time_since_completion = now.timestamp() - completion_info['timestamp']
+                            
+                            # Si se completó en los últimos 10 minutos, no procesar
+                            if time_since_completion < 600:  # 10 minutos
+                                logger.info(f"[AUTO-TIMEOUT] {number} completó reporte hace {time_since_completion/60:.1f} minutos, "
+                                          f"eliminando sesión sin procesar")
+                                if number in report_sessions:
+                                    del report_sessions[number]
+                                continue
+                        
+                        # PROTECCIÓN FINAL: Verificar si está siendo procesado actualmente
+                        with reports_lock:
+                            if number in reports_in_progress and reports_in_progress[number]:
+                                logger.info(f"[AUTO-TIMEOUT] {number} ya está siendo procesado, saltando")
+                                continue
+                        
+                        numbers_to_process.append(number)
+                        logger.info(f"[AUTO-TIMEOUT] Programado para auto-finalización: {number} "
+                                  f"(inactivo por {elapsed/60:.1f} minutos)")
+                    else:
+                        # No tiene datos completos, solo limpiar la sesión
+                        logger.debug(f"[AUTO-TIMEOUT] {number} inactivo por {elapsed/60:.1f} minutos "
+                                   f"pero no tiene datos completos, limpiando sesión")
+                        if number in report_sessions:
+                            del report_sessions[number]
+        
+        # Procesar los reportes fuera del lock para evitar bloqueos
         for number in numbers_to_process:
             try:
                 with report_sessions_lock:
@@ -394,13 +509,24 @@ async def check_report_timeouts():
                         continue
                         
                     session = report_sessions[number]
-                    if not session["images"]:
+                    if not session["images"] or not has_complete_report_data(number):
                         continue
                 
-                # Process the report without holding the lock on the entire report_sessions dict
+                # Doble verificación de duplicados antes de procesar
+                recent_report_check = has_recent_report(number, max_age_minutes=15)
+                if recent_report_check:
+                    logger.warning(f"[AUTO-TIMEOUT] Última verificación: {number} ya tiene reporte "
+                                 f"{recent_report_check['folio']}, saltando procesamiento")
+                    with report_sessions_lock:
+                        if number in report_sessions:
+                            del report_sessions[number]
+                    continue
+                
                 location = session["location"] or "ubicación no especificada"
                 
-                # Use the new process_and_save_report function
+                logger.info(f"[AUTO-TIMEOUT] Iniciando auto-finalización para {number}")
+                
+                # Usar la función existente process_and_save_report
                 result = await process_and_save_report(
                     number, 
                     location,
@@ -408,19 +534,65 @@ async def check_report_timeouts():
                     session["image_descriptions"]
                 )
                 
-                # Only clean up if successful
+                # Solo limpiar y marcar como completado si fue exitoso
                 if result['status'] == 'success':
-                    logger.info(f"Auto-finalization successful: {result['message']}")
+                    logger.info(f"[AUTO-TIMEOUT] Auto-finalización exitosa: {result['message']}")
+                    
+                    # Marcar como completado para evitar futuros duplicados
                     mark_report_as_completed(number)
+                    
+                    # Limpiar la sesión
+                    with report_sessions_lock:
+                        if number in report_sessions:
+                            del report_sessions[number]
+                    
+                    # OPCIONAL: Enviar notificación al usuario sobre la auto-finalización
+                    try:
+                        auto_message = (f"Tu reporte ha sido procesado automáticamente después de 5 minutos de inactividad. "
+                                      f"Folio: {result['folio']}. Si necesitas hacer cambios, por favor contacta a soporte.")
+                        
+                        # Buscar client_id para enviar mensaje
+                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                        search_url = "https://api.chat2desk.com.mx/v1/clients"
+                        params = {"phone": number}
+                        headers = {"Authorization": api_token, "Content-Type": "application/json"}
+                        
+                        async with httpx.AsyncClient() as client:
+                            response = await client.get(search_url, params=params, headers=headers)
+                            
+                        if response.status_code == 200:
+                            client_data = response.json()
+                            if client_data.get("status") == "success" and client_data.get("data"):
+                                client_id = client_data["data"][0]["id"]
+                                channel_id = 43388
+                                
+                                message_data = {
+                                    "client_id": client_id,
+                                    "channel_id": channel_id,
+                                    "transport": "wa_direct",
+                                    "text": auto_message
+                                }
+                                
+                                chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                                async with httpx.AsyncClient() as client:
+                                    await client.post(chat2desk_url, json=message_data, headers=headers)
+                                    
+                                logger.info(f"[AUTO-TIMEOUT] Notificación enviada a {number}")
+                    except Exception as e:
+                        logger.error(f"[AUTO-TIMEOUT] Error enviando notificación a {number}: {str(e)}")
+                        
+                elif result['status'] == 'duplicate':
+                    logger.info(f"[AUTO-TIMEOUT] Reporte duplicado detectado para {number}: {result['message']}")
+                    # Limpiar sesión para reporte duplicado
                     with report_sessions_lock:
                         if number in report_sessions:
                             del report_sessions[number]
                 else:
-                    logger.warning(f"Auto-finalization failed for {number}: {result.get('message', 'Unknown error')}")
+                    logger.warning(f"[AUTO-TIMEOUT] Auto-finalización falló para {number}: {result.get('message', 'Error desconocido')}")
                         
             except Exception as e:
-                logger.error(f"Error al finalizar reporte automáticamente: {str(e)}")
-                # Still try to clean up
+                logger.error(f"[AUTO-TIMEOUT] Error al auto-finalizar reporte para {number}: {str(e)}")
+                # Limpiar sesión en caso de error para evitar intentos repetidos
                 with report_sessions_lock:
                     if number in report_sessions:
                         del report_sessions[number]

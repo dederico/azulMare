@@ -186,6 +186,7 @@ async def remove_from_recently_returned(number, delay_seconds):
         logger.error(f"Error removing {number} from recently returned tracking: {str(e)}")
 
 def detect_and_store_user_data(from_number: str, body: str):
+    logger.critical(f"🔍 [DEBUG] detect_and_store_user_data llamada: {from_number} - '{body[:50]}...'")
     """
     Detecta y guarda múltiples campos en un solo mensaje.
     Incluye nombre, tipo, calle, número, colonia.
@@ -1094,7 +1095,7 @@ async def process_and_save_report(from_number, location, images=None, descriptio
         # Parse location into components
         street = "No especificada"
         neighborhood = "No especificada"
-        street_number = "000"  # Default value
+        street_number = "0000"  # Default value
         
         if location:
             location_parts = location.split(',')
@@ -1173,6 +1174,8 @@ async def remove_from_transferred(number, delay_seconds):
 # ------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("🚀 INICIANDO SERVIDOR - Creando tareas de background...")
+    logger.critical("🚀 INICIANDO SERVIDOR - Creando tareas de background...")
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
     asyncio.create_task(check_report_timeouts())

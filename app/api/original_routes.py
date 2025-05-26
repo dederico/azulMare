@@ -77,7 +77,7 @@ import threading
 import asyncio
 from app.services.functions.implementations.transfer_message_event import transfer_to_group
 from threading import RLock
-from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
+#from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
@@ -101,8 +101,64 @@ finalized_report_numbers = set()
 # Ahora, añade esta nueva función para verificar si un número ya tiene un reporte reciente
 recently_returned_to_bot = {}
 BOT_GRACE_PERIOD = 10
+user_answers = {}
 
 import re
+
+def create_or_update_report_session(from_number):
+    """
+    Crea o actualiza la sesión de reporte cuando se detecta actividad de reporte.
+    NO requiere imágenes para iniciar la sesión.
+    """
+    with report_sessions_lock:
+        if from_number not in report_sessions:
+            report_sessions[from_number] = {
+                "images": [],
+                "image_descriptions": [],
+                "location": None,
+                "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
+            }
+            logger.critical(f"🎯 [NEW SESSION] Sesión de reporte creada para {from_number}")
+        else:
+            # Actualizar timestamp si ya existe
+            report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+            logger.critical(f"🎯 [UPDATE SESSION] Timestamp actualizado para {from_number}")
+
+def detect_report_intent(body, response_content):
+    """
+    Detecta si el usuario quiere hacer un reporte basándose en keywords.
+    """
+    combined_text = f"{body.lower()} {response_content.lower()}"
+    
+    report_keywords = [
+        "reporte", "reportar", "levantar reporte", "quiero reportar",
+        "problema", "bache", "luminaria", "basura", "drenaje",
+        "hacer reporte", "necesito reportar", "tengo un problema"
+    ]
+    
+    return any(keyword in combined_text for keyword in report_keywords)
+
+def save_user_answer(from_number, question_number, selection_text):
+    """Guarda respuesta del usuario para una pregunta específica"""
+    if from_number not in user_answers:
+        user_answers[from_number] = {}
+    user_answers[from_number][question_number] = selection_text
+    logger.debug(f"💾 [SAVE] {from_number} - {question_number}: {selection_text}")
+    
+    # 🎯 NUEVA LÍNEA: Crear sesión de reporte automáticamente
+    create_or_update_report_session(from_number)
+
+def get_user_answer(from_number, question_number):
+    """Obtiene respuesta guardada del usuario para una pregunta específica"""
+    answer = user_answers.get(from_number, {}).get(question_number, "")
+    logger.debug(f"💾 [GET] {from_number} - {question_number}: {answer}")
+    return answer
+
+def clear_user_answers(from_number):
+    """Limpia todas las respuestas guardadas de un usuario"""
+    if from_number in user_answers:
+        del user_answers[from_number]
+        logger.debug(f"💾 [CLEAR] Datos eliminados para {from_number}")
 
 def get_auto_finalization_status(from_number):
     """
@@ -442,161 +498,266 @@ async def manage_message_history(db, number, max_messages=20):
 
 async def check_report_timeouts():
     """
-    Revisa sesiones de reporte que han estado inactivas por más de 5 minutos 
-    y las finaliza automáticamente si tienen todos los elementos necesarios.
-    Incluye protección contra duplicados.
+    Revisa cada minuto si hay sesiones inactivas por más de 5 minutos.
+    USA LOS DATOS REALES guardados con save_user_answer().
+    VERSIÓN MEJORADA: Crea reportes CON o SIN imágenes.
     """
     while True:
         await asyncio.sleep(60)  # Revisar cada minuto
         now = datetime.now(pytz.timezone('America/Mexico_City'))
-        db = LocalStorage()
+
+        logger.critical(f"🔍 [TIMEOUT] Revisando sesiones activas: {len(report_sessions)}")
 
         numbers_to_process = []
 
         with report_sessions_lock:
             for number, session in list(report_sessions.items()):
                 elapsed = (now - session["timestamp"]).total_seconds()
+                images_count = len(session.get("images", []))
                 
-                # CAMBIO: Usar 5 minutos (300 segundos) en lugar de 3 minutos (180)
-                if elapsed > 10:  # 5 minutos de inactividad
-                    
-                    # CAMBIO: Verificar que tenga todos los elementos necesarios, no solo imágenes
-                    if session["images"] and has_complete_report_data(number):
-                        
-                        # PROTECCIÓN CONTRA DUPLICADOS: Verificar si ya tiene un reporte reciente
-                        recent_report = has_recent_report(number, max_age_minutes=15)
-                        if recent_report:
-                            logger.info(f"[AUTO-TIMEOUT] {number} ya tiene reporte reciente {recent_report['folio']}, "
-                                      f"eliminando sesión sin procesar")
-                            # Limpiar la sesión sin procesar
-                            if number in report_sessions:
-                                del report_sessions[number]
-                            continue
-                        
-                        # PROTECCIÓN ADICIONAL: Verificar si está en el conjunto de reportes completados recientemente
-                        if number in recently_completed_reports:
-                            completion_info = recently_completed_reports[number]
-                            time_since_completion = now.timestamp() - completion_info['timestamp']
-                            
-                            # Si se completó en los últimos 10 minutos, no procesar
-                            if time_since_completion < 600:  # 10 minutos
-                                logger.info(f"[AUTO-TIMEOUT] {number} completó reporte hace {time_since_completion/60:.1f} minutos, "
-                                          f"eliminando sesión sin procesar")
-                                if number in report_sessions:
-                                    del report_sessions[number]
-                                continue
-                        
-                        # PROTECCIÓN FINAL: Verificar si está siendo procesado actualmente
-                        with reports_lock:
-                            if number in reports_in_progress and reports_in_progress[number]:
-                                logger.info(f"[AUTO-TIMEOUT] {number} ya está siendo procesado, saltando")
-                                continue
-                        
+                # 🎯 VERIFICAR SI TIENE DATOS COMPLETOS (con o sin imágenes)
+                has_complete_data = has_complete_report_data_flexible(number)
+                
+                logger.critical(f"🔍 [TIMEOUT] {number}: {elapsed:.1f}s inactivo, {images_count} imágenes, datos_completos={has_complete_data}")
+                
+                # 🎯 NUEVA LÓGICA: Procesar si timeout Y (tiene imágenes O datos completos)
+                if elapsed > 300:  # 5 minutos
+                    if images_count > 0:
+                        # Caso 1: Tiene imágenes (comportamiento original)
+                        logger.critical(f"⏰ [5MIN TIMEOUT] {number} será procesado (CON imágenes)")
                         numbers_to_process.append(number)
-                        logger.info(f"[AUTO-TIMEOUT] Programado para auto-finalización: {number} "
-                                  f"(inactivo por {elapsed/60:.1f} minutos)")
+                    elif has_complete_data:
+                        # Caso 2: NO tiene imágenes pero SÍ datos completos
+                        logger.critical(f"⏰ [5MIN TIMEOUT] {number} será procesado (SIN imágenes, CON datos)")
+                        numbers_to_process.append(number)
                     else:
-                        # No tiene datos completos, solo limpiar la sesión
-                        logger.debug(f"[AUTO-TIMEOUT] {number} inactivo por {elapsed/60:.1f} minutos "
-                                   f"pero no tiene datos completos, limpiando sesión")
-                        if number in report_sessions:
-                            del report_sessions[number]
+                        # Caso 3: NO tiene imágenes NI datos completos
+                        logger.critical(f"🗑️ [CLEANUP] {number} sin imágenes ni datos suficientes, eliminando sesión")
+                        del report_sessions[number]
         
-        # Procesar los reportes fuera del lock para evitar bloqueos
+        # Procesar los que cumplieron 5 minutos Y tienen datos suficientes
         for number in numbers_to_process:
             try:
                 with report_sessions_lock:
                     if number not in report_sessions:
                         continue
-                        
+                    
                     session = report_sessions[number]
-                    if not session["images"] or not has_complete_report_data(number):
-                        continue
+                    images = session.get("images", [])
+                    descriptions = session.get("image_descriptions", [])
+
+                logger.critical(f"⏰ [EJECUTANDO] Creando reporte automático para {number}")
                 
-                # Doble verificación de duplicados antes de procesar
-                recent_report_check = has_recent_report(number, max_age_minutes=15)
-                if recent_report_check:
-                    logger.warning(f"[AUTO-TIMEOUT] Última verificación: {number} ya tiene reporte "
-                                 f"{recent_report_check['folio']}, saltando procesamiento")
-                    with report_sessions_lock:
-                        if number in report_sessions:
-                            del report_sessions[number]
-                    continue
+                # 🎯 RECUPERAR DATOS REALES GUARDADOS
+                saved_selection1 = get_user_answer(number, "selection1") or "984"
+                saved_selection2 = get_user_answer(number, "selection2") or "Ciudadano"
+                saved_selection4 = get_user_answer(number, "selection4") or "Reporte automático por timeout"
+                saved_selection5 = get_user_answer(number, "selection5") or "Sin especificar"
+                saved_selection6 = get_user_answer(number, "selection6") or "100"
+                saved_selection7 = get_user_answer(number, "selection7") or "Sin especificar"
                 
-                location = session["location"] or "ubicación no especificada"
+                logger.critical(f"⏰ [DATOS RECUPERADOS] Para {number}:")
+                logger.critical(f"  - selection1 (tipo): {saved_selection1}")
+                logger.critical(f"  - selection2 (nombre): {saved_selection2}")
+                logger.critical(f"  - selection4 (descripción): {saved_selection4}")
+                logger.critical(f"  - selection5 (calle): {saved_selection5}")
+                logger.critical(f"  - selection6 (número): {saved_selection6}")
+                logger.critical(f"  - selection7 (colonia): {saved_selection7}")
+                logger.critical(f"  - imágenes: {len(images)}")
                 
-                logger.info(f"[AUTO-TIMEOUT] Iniciando auto-finalización para {number}")
-                
-                # Usar la función existente process_and_save_report
-                result = await process_and_save_report(
-                    number, 
-                    location,
-                    session["images"],
-                    session["image_descriptions"]
+                folio = await save_client_selection2(
+                    yoga_number=number,
+                    selection1=saved_selection1,
+                    selection2=saved_selection2,
+                    selection3="",
+                    selection4=saved_selection4,
+                    selection5=saved_selection5,
+                    selection6=saved_selection6,
+                    selection7=saved_selection7,
+                    selection8=",".join(images) if images else "",
+                    images_list=images,
+                    descriptions_list=descriptions
                 )
                 
-                # Solo limpiar y marcar como completado si fue exitoso
-                if result['status'] == 'success':
-                    logger.info(f"[AUTO-TIMEOUT] Auto-finalización exitosa: {result['message']}")
-                    
-                    # Marcar como completado para evitar futuros duplicados
-                    mark_report_as_completed(number)
-                    
-                    # Limpiar la sesión
-                    with report_sessions_lock:
-                        if number in report_sessions:
-                            del report_sessions[number]
-                    
-                    # OPCIONAL: Enviar notificación al usuario sobre la auto-finalización
-                    try:
-                        auto_message = (f"Tu reporte ha sido procesado automáticamente después de 5 minutos de inactividad. "
-                                      f"Folio: {result['folio']}. Si necesitas hacer cambios, por favor contacta a soporte.")
-                        
-                        # Buscar client_id para enviar mensaje
-                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
-                        search_url = "https://api.chat2desk.com.mx/v1/clients"
-                        params = {"phone": number}
-                        headers = {"Authorization": api_token, "Content-Type": "application/json"}
-                        
-                        async with httpx.AsyncClient() as client:
-                            response = await client.get(search_url, params=params, headers=headers)
-                            
-                        if response.status_code == 200:
-                            client_data = response.json()
-                            if client_data.get("status") == "success" and client_data.get("data"):
-                                client_id = client_data["data"][0]["id"]
-                                channel_id = 43388
-                                
-                                message_data = {
-                                    "client_id": client_id,
-                                    "channel_id": channel_id,
-                                    "transport": "wa_direct",
-                                    "text": auto_message
-                                }
-                                
-                                chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-                                async with httpx.AsyncClient() as client:
-                                    await client.post(chat2desk_url, json=message_data, headers=headers)
-                                    
-                                logger.info(f"[AUTO-TIMEOUT] Notificación enviada a {number}")
-                    except Exception as e:
-                        logger.error(f"[AUTO-TIMEOUT] Error enviando notificación a {number}: {str(e)}")
-                        
-                elif result['status'] == 'duplicate':
-                    logger.info(f"[AUTO-TIMEOUT] Reporte duplicado detectado para {number}: {result['message']}")
-                    # Limpiar sesión para reporte duplicado
-                    with report_sessions_lock:
-                        if number in report_sessions:
-                            del report_sessions[number]
-                else:
-                    logger.warning(f"[AUTO-TIMEOUT] Auto-finalización falló para {number}: {result.get('message', 'Error desconocido')}")
-                        
-            except Exception as e:
-                logger.error(f"[AUTO-TIMEOUT] Error al auto-finalizar reporte para {number}: {str(e)}")
-                # Limpiar sesión en caso de error para evitar intentos repetidos
+                logger.critical(f"✅ [SUCCESS] Reporte automático creado: {folio} para {number}")
+                
+                # Notificar al usuario
+                await notify_user_timeout_flexible(number, folio, len(images))
+                
+                # Limpiar sesión Y datos guardados
                 with report_sessions_lock:
                     if number in report_sessions:
                         del report_sessions[number]
+                
+                if number in user_answers:
+                    del user_answers[number]
+                    logger.critical(f"🧹 [CLEANUP] Datos eliminados para {number}")
+                
+            except Exception as e:
+                logger.error(f"💥 [ERROR] Error creando reporte para {number}: {str(e)}")
+                with report_sessions_lock:
+                    if number in report_sessions:
+                        del report_sessions[number]
+                if number in user_answers:
+                    del user_answers[number]
+
+def has_complete_report_data_flexible(from_number):
+    """
+    🎯 VERSIÓN FLEXIBLE: Verifica si tiene datos mínimos necesarios
+    AUNQUE NO TENGA IMÁGENES
+    """
+    try:
+        selection2 = get_user_answer(from_number, "selection2")  # Nombre
+        selection4 = get_user_answer(from_number, "selection4")  # Razón del reporte
+        selection5 = get_user_answer(from_number, "selection5")  # Calle
+        selection7 = get_user_answer(from_number, "selection7")  # Colonia
+        
+        # Campos mínimos requeridos: nombre, problema, calle, colonia
+        essential_fields = [selection2, selection4, selection5, selection7]
+        completed_fields = sum(1 for field in essential_fields if field and field.strip())
+        
+        # 🎯 NUEVA LÓGICA: Es completo si tiene 3 de 4 campos esenciales
+        # NO requiere imágenes obligatoriamente
+        is_complete = completed_fields >= 3
+        
+        logger.debug(f"[{from_number}] Verificación datos flexibles: "
+                    f"campos={completed_fields}/4, completo={is_complete}")
+        
+        return is_complete
+        
+    except Exception as e:
+        logger.error(f"Error verificando datos para {from_number}: {str(e)}")
+        return False
+
+async def notify_user_timeout(phone_number, folio, image_count):
+    """
+    Función BÁSICA para notificar al usuario que se creó reporte por inactividad.
+    Versión simple sin muchos detalles.
+    """
+    try:
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        
+        # Buscar cliente
+        search_url = "https://api.chat2desk.com.mx/v1/clients"
+        params = {"phone": phone_number}
+        headers = {"Authorization": api_token, "Content-Type": "application/json"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(search_url, params=params, headers=headers)
+            
+        if response.status_code == 200:
+            response_data = response.json()
+            if response_data.get("status") == "success" and response_data.get("data"):
+                client_id = response_data["data"][0]["id"]
+                
+                # Mensaje básico simple
+                folio_clean = folio.replace("Folio: ", "") if folio.startswith("Folio: ") else folio
+                message = f"Se creó por inactividad tu reporte con folio {folio_clean}"
+                
+                # Enviar mensaje
+                message_data = {
+                    "client_id": client_id,
+                    "channel_id": 43388,
+                    "transport": "wa_direct", 
+                    "text": message
+                }
+                
+                async with httpx.AsyncClient() as client:
+                    await client.post("https://api.chat2desk.com.mx/v1/messages", 
+                                    json=message_data, headers=headers)
+                    
+                logger.critical(f"📤 [MENSAJE ENVIADO] '{message}' enviado a {phone_number}")
+                    
+    except Exception as e:
+        logger.error(f"Error notificando reporte por inactividad: {str(e)}")
+
+async def notify_user_timeout_flexible(phone_number, folio, image_count):
+    """Notifica con mensaje apropiado según si tiene imágenes o no"""
+    try:
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        
+        search_url = "https://api.chat2desk.com.mx/v1/clients"
+        params = {"phone": phone_number}
+        headers = {"Authorization": api_token, "Content-Type": "application/json"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(search_url, params=params, headers=headers)
+            
+        if response.status_code == 200:
+            response_data = response.json()
+            if response_data.get("status") == "success" and response_data.get("data"):
+                client_id = response_data["data"][0]["id"]
+                
+                folio_clean = folio.replace("Folio: ", "") if folio.startswith("Folio: ") else folio
+                
+                if image_count > 0:
+                    message = f"Se creó automáticamente tu reporte con folio {folio_clean} (con {image_count} imágenes)"
+                else:
+                    message = f"Se creó automáticamente tu reporte con folio {folio_clean} (sin imágenes)"
+                
+                message_data = {
+                    "client_id": client_id,
+                    "channel_id": 43388,
+                    "transport": "wa_direct", 
+                    "text": message
+                }
+                
+                async with httpx.AsyncClient() as client:
+                    await client.post("https://api.chat2desk.com.mx/v1/messages", 
+                                    json=message_data, headers=headers)
+                    
+                logger.critical(f"📤 [MENSAJE ENVIADO] '{message}' enviado a {phone_number}")
+                    
+    except Exception as e:
+        logger.error(f"Error notificando timeout flexible: {str(e)}")
+
+# Función auxiliar mejorada para notificación
+async def send_timeout_notification_with_real_data(phone_number, folio, image_count, sender_name, calle, colonia):
+    """
+    Función COMPLETA que incluye todos los datos del usuario.
+    Versión más detallada con información del contexto LLM.
+    """
+    try:
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        
+        # Buscar cliente
+        search_url = "https://api.chat2desk.com.mx/v1/clients"
+        params = {"phone": phone_number}
+        headers = {"Authorization": api_token, "Content-Type": "application/json"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(search_url, params=params, headers=headers)
+            
+        if response.status_code == 200:
+            response_data = response.json()
+            if response_data.get("status") == "success" and response_data.get("data"):
+                client_id = response_data["data"][0]["id"]
+                
+                # 🎯 MENSAJE SÚPER DETALLADO con todos los datos
+                message = f"⏰ **Hola {sender_name}!**\n\n"
+                message += f"Tu reporte se creó automáticamente por inactividad:\n\n"
+                message += f"📋 **Folio:** {folio}\n"
+                message += f"📸 **Imágenes:** {image_count}\n"
+                message += f"🏠 **Calle:** {calle}\n"
+                message += f"🏘️ **Colonia:** {colonia}\n\n"
+                message += f"Si necesitas agregar más detalles, puedes contactar a atención ciudadana con tu número de folio.\n\n"
+                message += f"¡Gracias por tu reporte!"
+                
+                # Enviar mensaje
+                message_data = {
+                    "client_id": client_id,
+                    "channel_id": 43388,  # Canal fijo
+                    "transport": "wa_direct",
+                    "text": message
+                }
+                
+                async with httpx.AsyncClient() as client:
+                    await client.post("https://api.chat2desk.com.mx/v1/messages", 
+                                    json=message_data, headers=headers)
+                    
+    except Exception as e:
+        logger.error(f"Error en send_timeout_notification_with_real_data: {str(e)}")
+        raise
 
 router = APIRouter()
 # Historial en memoria para una conversación dinámica
@@ -750,7 +911,7 @@ async def websocket_endpoint(ws: WebSocket):
 user_sessions = {}  # key: from_number, value: WhatsAppSession
 
 # Tiempo de inactividad (en segundos) antes de desconectar la sesión (5 minutos)
-INACTIVITY_THRESHOLD = 2 * 60
+INACTIVITY_THRESHOLD = 15 * 60
 
 class WhatsAppSession:
     def __init__(self, history):
@@ -2135,7 +2296,44 @@ async def whatsapp(request: Request):
 
     # Crear el string final
     fotos_string = ",".join(flat_fotos) if flat_fotos else ""
+    
+    if from_number in report_sessions:
+        # Actualizar la sesión con los datos del contexto LLM
+        with report_sessions_lock:
+            session = report_sessions[from_number]
+            
+            # Guardar todos los datos que el LLM tiene disponibles
+            session["llm_context"] = {
+                "yoga_number": from_number,
+                "sender_name": sender_name,
+                "address": address if 'address' in locals() else "Ubicación no disponible",
+                "fotos_string": fotos_string,
+                "date": date_string,
+                "hour": hour,
+                "uid": uid
+            }
+            
+            # También actualizar timestamp
+            session["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+            
+            logger.critical(f"🎯 [LLM CONTEXT] Datos guardados para {from_number}:")
+            logger.critical(f"🎯 [LLM CONTEXT] - Nombre: {sender_name}")
+            logger.critical(f"🎯 [LLM CONTEXT] - Dirección: {address if 'address' in locals() else 'No disponible'}")
+            logger.critical(f"🎯 [LLM CONTEXT] - Fotos: {len(flat_fotos)} URLs")
+            logger.critical(f"🎯 [LLM CONTEXT] - Fecha: {date_string} {hour}")
 
+    # Después crear el system_prompt como siempre:
+    system_prompt = system_message.format(
+        customer_name=sender_name,
+        call_sid=uid,
+        date2=date_string,
+        yoga_number=from_number,
+        now=hour,
+        folio="Pendiente de generar",
+        address=address if 'address' in locals() else "No he recibido ubicación",
+        image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
+        fotos=fotos_string
+    )
     # Debug log para entender qué está pasando
     logger.debug(f"Fotos originales: {fotos_urls}")
     logger.debug(f"Fotos aplanadas: {flat_fotos}")
@@ -2204,6 +2402,177 @@ async def whatsapp(request: Request):
             mtype="text",
             source="whatsapp"
         )
+
+        # ============================================================================
+        # 🎯 AUTO-GUARDAR INFORMACIÓN DETECTADA EN LA CONVERSACIÓN
+        # ============================================================================
+        if from_number and body:
+            logger.critical(f"💾 [AUTO-SAVE] Iniciando detección automática para {from_number}")
+            
+            # 1. DETECTAR NOMBRE DEL USUARIO
+            if sender_name and sender_name != "Usuario" and sender_name.strip():
+                save_user_answer(from_number, "selection2", sender_name)
+                logger.critical(f"💾 [AUTO-SAVE] Nombre guardado: {sender_name}")
+            
+            # 2. DETECTAR TIPO DE PROBLEMA - DICCIONARIO COMPLETO
+            problem_keywords = {
+                # LUMINARIAS Y ALUMBRADO
+                "luminaria": "982", "luminarias": "982", "luz": "982", "luces": "982", 
+                "foco": "982", "focos": "982", "alumbrado": "981", "lámpara": "982",
+                "poste": "1060", "arbotante": "983",
+                
+                # BACHES Y PAVIMENTO  
+                "bache": "984", "baches": "984", "hueco": "984", "huecos": "984",
+                "pavimento": "980", "recarpeteo": "980", "asfalto": "980",
+                "hundimiento": "1037", "zanja": "1039", "rotura": "1039",
+                
+                # LIMPIEZA Y BASURA
+                "basura": "974", "sucio": "1068", "suciedad": "1068", "escombro": "986",
+                "residuos": "974", "desperdicios": "974", "barrido": "348",
+                "contenedor": "1069", "lote baldío": "976", "banqueta": "989",
+                
+                # DRENAJE Y AGUA
+                "drenaje": "727", "alcantarilla": "727", "coladera": "224", "tapa": "1065",
+                "agua": "1109", "fuga": "726", "inundación": "985", "desazolve": "985",
+                "pluvial": "224", "registro": "1061",
+                
+                # SEMÁFOROS Y TRÁNSITO
+                "semáforo": "523", "semáforos": "523", "luz roja": "1073", 
+                "sincronización": "1074", "tránsito": "962", "congestionamiento": "963",
+                "señalamiento": "900", "vial": "965",
+                
+                # ÁRBOLES Y ÁREAS VERDES
+                "árbol": "979", "árboles": "979", "poda": "979", "rama": "81",
+                "tala": "1098", "planta": "1079", "área verde": "1096",
+                "parque": "978", "jardín": "1096", "césped": "1096",
+                
+                # ANIMALES
+                "perro": "994", "perros": "994", "gato": "994", "gatos": "994",
+                "animal muerto": "16", "mascota": "995", "animal": "14",
+                "veterinaria": "995", "esterilización": "995",
+                
+                # CABLES Y TELECOMUNICACIONES
+                "cable": "19", "cables": "19", "cable caído": "19", "fibra": "1170",
+                "poste caído": "1060", "cables expuestos": "1064",
+                
+                # RUIDO Y CONTAMINACIÓN
+                "ruido": "1000", "música": "407", "volumen": "407", "fiesta": "953",
+                "contaminación": "999", "humo": "998", "polvo": "998", "olor": "750",
+                
+                # SEGURIDAD Y VIOLENCIA
+                "robo": "961", "violencia": "891", "maltrato": "892", "abuso": "892",
+                "policía": "955", "vigilancia": "955", "emergencia": "964",
+                
+                # SERVICIOS PÚBLICOS
+                "estacionamiento": "1076", "parquímetro": "624", "mercado": "947",
+                "transporte": "1090", "ruta": "1108", "parabús": "1035",
+                
+                # CONSTRUCCIÓN Y OBRAS
+                "construcción": "903", "obra": "932", "banqueta": "774", "cordón": "774",
+                "puente": "477", "barandal": "993", "bolardo": "987",
+                
+                # TRÁMITES Y SERVICIOS
+                "licencia": "956", "permiso": "952", "trámite": "912", "pasaporte": "949",
+                "registro civil": "1123", "acta": "1123", "INE": "1118", "IMSS": "1119"
+            }
+            
+            body_lower = body.lower()
+            response_lower = response_content.lower() if response_content else ""
+            combined_text = f"{body_lower} {response_lower}"
+            
+            # Buscar palabras clave en el texto combinado
+            for keyword, code in problem_keywords.items():
+                if keyword in combined_text:
+                    save_user_answer(from_number, "selection1", code)
+                    save_user_answer(from_number, "selection4", f"Problema reportado: {keyword}")
+                    logger.critical(f"💾 [AUTO-SAVE] Tipo detectado: '{keyword}' → código {code}")
+                    break
+            
+            # 3. DETECTAR INFORMACIÓN DE UBICACIÓN
+            import re
+            
+            # DETECTAR CALLE
+            calle_patterns = [
+                r"(?i)(?:en\s+la\s+)?(?:calle|ave|avenida)\s+([a-záéíóúñ\s\d]+?)(?:\s+(?:número|#|\d)|,|$)",
+                r"(?i)en\s+([a-záéíóúñ\s]+?)(?:\s+(?:número|#|\d)|,|$)",
+                r"(?i)ubicad[oa]?\s+en\s+([a-záéíóúñ\s]+?)(?:\s+(?:número|#|\d)|,|$)"
+            ]
+            
+            for pattern in calle_patterns:
+                match = re.search(pattern, combined_text)
+                if match:
+                    calle = match.group(1).strip()
+                    # Filtrar palabras comunes que no son calles
+                    excluded_words = ["la", "el", "una", "un", "esta", "está", "esa", "ese", "problema", "reporte"]
+                    if len(calle) > 2 and not any(word in calle.lower() for word in excluded_words):
+                        save_user_answer(from_number, "selection5", calle)
+                        logger.critical(f"💾 [AUTO-SAVE] Calle detectada: {calle}")
+                        break
+            
+            # DETECTAR NÚMERO
+            numero_patterns = [
+                r"(?i)n[uú]mero\s+(\d+)",
+                r"(?i)#\s*(\d+)",
+                r"(?i)(?:calle|ave|avenida)\s+[a-záéíóúñ\s]+\s+(\d{1,5})\b"
+            ]
+            
+            for pattern in numero_patterns:
+                match = re.search(pattern, combined_text)
+                if match:
+                    numero = match.group(1)
+                    if 1 <= int(numero) <= 99999:  # Validar rango razonable
+                        save_user_answer(from_number, "selection6", numero)
+                        logger.critical(f"💾 [AUTO-SAVE] Número detectado: {numero}")
+                        break
+            
+            # DETECTAR COLONIA
+            colonia_patterns = [
+                r"(?i)(?:de\s+la\s+)?colonia\s+([a-záéíóúñ\s]+?)(?:\s|,|$)",
+                r"(?i)col\.\s+([a-záéíóúñ\s]+?)(?:\s|,|$)",
+                r"(?i)(?:en\s+)?(?:la\s+)?([a-záéíóúñ\s]{4,}?)(?:\s+colonia|$)"
+            ]
+            
+            for pattern in colonia_patterns:
+                match = re.search(pattern, combined_text)
+                if match:
+                    colonia = match.group(1).strip()
+                    # Filtrar palabras comunes
+                    excluded_words = ["misma", "zona", "área", "lugar", "sitio", "parte", "lado"]
+                    if len(colonia) > 3 and not any(word in colonia.lower() for word in excluded_words):
+                        save_user_answer(from_number, "selection7", colonia)
+                        logger.critical(f"💾 [AUTO-SAVE] Colonia detectada: {colonia}")
+                        break
+
+        # 4. USAR DATOS DEL CONTEXTO SI ESTÁN DISPONIBLES
+        if 'address' in locals() and address and address != "No he recibido ubicación":
+            logger.critical(f"💾 [AUTO-SAVE] Procesando address del contexto: {address}")
+            # Separar dirección en componentes
+            if ',' in address:
+                parts = [part.strip() for part in address.split(',')]
+                if len(parts) >= 2:
+                    save_user_answer(from_number, "selection5", parts[0])  # Calle
+                    save_user_answer(from_number, "selection7", parts[1])  # Colonia
+                    logger.critical(f"💾 [AUTO-SAVE] Dirección separada: '{parts[0]}' / '{parts[1]}'")
+            else:
+                # Si no hay coma, asumir que es solo calle
+                save_user_answer(from_number, "selection5", address)
+                logger.critical(f"💾 [AUTO-SAVE] Calle del contexto: '{address}'")
+
+        # 5. LOG DE RESUMEN DE DATOS GUARDADOS
+        logger.critical(f"💾 [RESUMEN FINAL] Datos guardados para {from_number}:")
+        datos_guardados = 0
+        for i in range(1, 8):
+            saved_value = get_user_answer(from_number, f"selection{i}")
+            if saved_value:
+                logger.critical(f"💾   selection{i}: '{saved_value}'")
+                datos_guardados += 1
+
+        logger.critical(f"💾 [TOTAL] {datos_guardados} campos guardados para {from_number}")
+
+    # ============================================================================
+    # FIN DEL CÓDIGO DE AUTO-DETECCIÓN
+    # ============================================================================
+
         logger.debug(f"Guardando respuesta del asistente en BD: {response_content[:30]}...")
         db.Insert(assistant_message)
         await manage_message_history(db, from_number)
@@ -2647,5 +3016,5 @@ async def health():
 # ---------------------
 # Definición de la aplicación FastAPI
 # ---------------------
-app = FastAPI(lifespan=lifespan)
-app.include_router(router)
+# app = FastAPI(lifespan=lifespan)
+# app.include_router(router)

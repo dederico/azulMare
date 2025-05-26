@@ -105,6 +105,65 @@ user_answers = {}
 
 import re
 
+async def complete_cleanup_after_report(phone_number, delay_seconds=5):
+    """
+    🧹 LIMPIEZA COMPLETA después de crear un reporte exitoso.
+    Elimina TODAS las estructuras de datos relacionadas.
+    
+    Args:
+        phone_number (str): Número de teléfono del usuario
+        delay_seconds (int): Segundos a esperar para asegurar que el mensaje se envió
+    """
+    try:
+        await asyncio.sleep(delay_seconds)
+        
+        logger.critical(f"🧹 [COMPLETE CLEANUP] Iniciando limpieza completa para {phone_number}")
+        
+        # 1. Limpiar report_sessions
+        with report_sessions_lock:
+            if phone_number in report_sessions:
+                del report_sessions[phone_number]
+                logger.critical(f"🧹 [DELETED] report_sessions[{phone_number}]")
+        
+        # 2. Limpiar user_answers
+        if phone_number in user_answers:
+            del user_answers[phone_number]
+            logger.critical(f"🧹 [DELETED] user_answers[{phone_number}]")
+        
+        # 3. Limpiar reports_in_progress
+        with reports_lock:
+            if phone_number in reports_in_progress:
+                del reports_in_progress[phone_number]
+                logger.critical(f"🧹 [DELETED] reports_in_progress[{phone_number}]")
+        
+        # 4. Verificar completed_reports (mantener por un tiempo para evitar duplicados)
+        if phone_number in completed_reports:
+            logger.critical(f"🧹 [KEPT] completed_reports[{phone_number}] (mantener para evitar duplicados)")
+        
+        logger.critical(f"🧹 [COMPLETE CLEANUP] ✅ Limpieza completa terminada para {phone_number}")
+        
+    except Exception as e:
+        logger.error(f"🧹 [ERROR] Error en limpieza completa para {phone_number}: {str(e)}")
+
+async def delayed_cleanup_report_session(phone_number, delay_seconds=30):
+    """
+    Limpia la sesión de reporte después de un delay para evitar reportes duplicados por timeout.
+    
+    Args:
+        phone_number (str): Número de teléfono del usuario
+        delay_seconds (int): Segundos a esperar antes de limpiar (default: 30)
+    """
+    try:
+        await asyncio.sleep(delay_seconds)
+        
+        with report_sessions_lock:
+            if phone_number in report_sessions:
+                del report_sessions[phone_number]
+                logger.info(f"Sesión de reporte limpiada para {phone_number} después de {delay_seconds} segundos (evitar duplicados)")
+                
+    except Exception as e:
+        logger.error(f"Error al limpiar sesión de reporte para {phone_number}: {str(e)}")
+
 def create_or_update_report_session(from_number):
     """
     Crea o actualiza la sesión de reporte cuando se detecta actividad de reporte.
@@ -138,6 +197,37 @@ def detect_report_intent(body, response_content):
     
     return any(keyword in combined_text for keyword in report_keywords)
 
+def should_create_report_session(body, response_content):
+    """
+    Determina si una conversación justifica crear una sesión de reporte.
+    MUY RESTRICTIVO - solo para casos obvios de reportes.
+    """
+    combined_text = f"{body.lower()} {response_content.lower()}"
+    
+    # 🎯 PALABRAS CLAVE SUPER ESPECÍFICAS PARA REPORTES
+    report_indicators = [
+        "quiero reportar", "hacer un reporte", "levantar reporte", 
+        "tengo un problema con", "reportar un bache", "reportar basura",
+        "reportar luminaria", "hay un bache", "luz apagada", 
+        "basura acumulada", "fuga de agua", "semáforo descompuesto",
+        "reporte de", "problema en la calle", "hacer reporte"
+    ]
+    
+    # 🎯 PALABRAS QUE INDICAN QUE NO ES REPORTE
+    non_report_indicators = [
+        "calidad del aire", "información sobre", "horarios", 
+        "qué puedes hacer", "ayuda", "hola", "buenos días",
+        "pregunta", "cuándo", "dónde está", "cómo funciona",
+        "oficina", "trámite", "registro civil"
+    ]
+    
+    # Si hay indicadores de NO-reporte, definitivamente NO crear sesión
+    if any(indicator in combined_text for indicator in non_report_indicators):
+        return False
+    
+    # Solo crear sesión si hay indicadores claros de reporte
+    return any(indicator in combined_text for indicator in report_indicators)
+
 def save_user_answer(from_number, question_number, selection_text):
     """Guarda respuesta del usuario para una pregunta específica"""
     if from_number not in user_answers:
@@ -146,7 +236,7 @@ def save_user_answer(from_number, question_number, selection_text):
     logger.debug(f"💾 [SAVE] {from_number} - {question_number}: {selection_text}")
     
     # 🎯 NUEVA LÍNEA: Crear sesión de reporte automáticamente
-    create_or_update_report_session(from_number)
+    #create_or_update_report_session(from_number)
 
 def get_user_answer(from_number, question_number):
     """Obtiene respuesta guardada del usuario para una pregunta específica"""
@@ -271,7 +361,7 @@ def detect_and_store_user_data(from_number: str, body: str):
     else:
         logger.debug(f"[{from_number}] No se detectó ningún campo en: {body.strip()}")
 
-def has_recent_report(phone_number, max_age_minutes=10):
+def has_recent_report(phone_number, max_age_minutes=15):
     """
     Verifica si un número tiene un reporte creado recientemente.
     
@@ -498,9 +588,7 @@ async def manage_message_history(db, number, max_messages=20):
 
 async def check_report_timeouts():
     """
-    Revisa cada minuto si hay sesiones inactivas por más de 5 minutos.
-    USA LOS DATOS REALES guardados con save_user_answer().
-    VERSIÓN MEJORADA: Crea reportes CON o SIN imágenes.
+    🎯 VERSIÓN MEJORADA: Con limpieza completa inmediata después de crear reportes.
     """
     while True:
         await asyncio.sleep(60)  # Revisar cada minuto
@@ -515,40 +603,48 @@ async def check_report_timeouts():
                 elapsed = (now - session["timestamp"]).total_seconds()
                 images_count = len(session.get("images", []))
                 
-                # 🎯 VERIFICAR SI TIENE DATOS COMPLETOS (con o sin imágenes)
+                # Verificar si tiene datos completos
                 has_complete_data = has_complete_report_data_flexible(number)
                 
                 logger.critical(f"🔍 [TIMEOUT] {number}: {elapsed:.1f}s inactivo, {images_count} imágenes, datos_completos={has_complete_data}")
                 
-                # 🎯 NUEVA LÓGICA: Procesar si timeout Y (tiene imágenes O datos completos)
-                if elapsed > 300:  # 5 minutos
-                    if images_count > 0:
-                        # Caso 1: Tiene imágenes (comportamiento original)
-                        logger.critical(f"⏰ [5MIN TIMEOUT] {number} será procesado (CON imágenes)")
-                        numbers_to_process.append(number)
-                    elif has_complete_data:
-                        # Caso 2: NO tiene imágenes pero SÍ datos completos
-                        logger.critical(f"⏰ [5MIN TIMEOUT] {number} será procesado (SIN imágenes, CON datos)")
+                # Procesar si cumple timeout Y tiene datos suficientes
+                if elapsed > 420:  # 7 minutos
+                    if images_count > 0 or has_complete_data:
+                        logger.critical(f"⏰ [7MIN TIMEOUT] {number} será procesado")
                         numbers_to_process.append(number)
                     else:
-                        # Caso 3: NO tiene imágenes NI datos completos
-                        logger.critical(f"🗑️ [CLEANUP] {number} sin imágenes ni datos suficientes, eliminando sesión")
+                        # Sin datos suficientes, solo limpiar
+                        logger.critical(f"🗑️ [CLEANUP] {number} sin datos suficientes, eliminando sesión")
                         del report_sessions[number]
+                        if number in user_answers:
+                            del user_answers[number]
         
-        # Procesar los que cumplieron 5 minutos Y tienen datos suficientes
+        # Procesar cada número que cumplió timeout
         for number in numbers_to_process:
             try:
+                logger.critical(f"⏰ [EJECUTANDO] Creando reporte automático para {number}")
+
+                # 🚫 VERIFICAR DUPLICADOS PRIMERO
+                recent_report = has_recent_report(number, max_age_minutes=15)
+                if recent_report:
+                    logger.critical(f"🚫 [DUPLICATE PREVENTION] {number} ya tiene reporte reciente: {recent_report['folio']}")
+                    
+                    # 🧹 LIMPIEZA INMEDIATA de duplicado detectado
+                    asyncio.create_task(complete_cleanup_after_report(number, 1))
+                    continue  # Saltar al siguiente número
+                
+                # Verificar que la sesión aún exista
                 with report_sessions_lock:
                     if number not in report_sessions:
+                        logger.warning(f"⏰ [SKIP] Sesión {number} ya no existe")
                         continue
                     
                     session = report_sessions[number]
                     images = session.get("images", [])
                     descriptions = session.get("image_descriptions", [])
 
-                logger.critical(f"⏰ [EJECUTANDO] Creando reporte automático para {number}")
-                
-                # 🎯 RECUPERAR DATOS REALES GUARDADOS
+                # Recuperar datos guardados
                 saved_selection1 = get_user_answer(number, "selection1") or "984"
                 saved_selection2 = get_user_answer(number, "selection2") or "Ciudadano"
                 saved_selection4 = get_user_answer(number, "selection4") or "Reporte automático por timeout"
@@ -556,15 +652,9 @@ async def check_report_timeouts():
                 saved_selection6 = get_user_answer(number, "selection6") or "100"
                 saved_selection7 = get_user_answer(number, "selection7") or "Sin especificar"
                 
-                logger.critical(f"⏰ [DATOS RECUPERADOS] Para {number}:")
-                logger.critical(f"  - selection1 (tipo): {saved_selection1}")
-                logger.critical(f"  - selection2 (nombre): {saved_selection2}")
-                logger.critical(f"  - selection4 (descripción): {saved_selection4}")
-                logger.critical(f"  - selection5 (calle): {saved_selection5}")
-                logger.critical(f"  - selection6 (número): {saved_selection6}")
-                logger.critical(f"  - selection7 (colonia): {saved_selection7}")
-                logger.critical(f"  - imágenes: {len(images)}")
+                logger.critical(f"⏰ [DATOS] {number}: tipo={saved_selection1}, nombre={saved_selection2}, desc={saved_selection4}")
                 
+                # Crear el reporte
                 folio = await save_client_selection2(
                     yoga_number=number,
                     selection1=saved_selection1,
@@ -579,27 +669,30 @@ async def check_report_timeouts():
                     descriptions_list=descriptions
                 )
                 
-                logger.critical(f"✅ [SUCCESS] Reporte automático creado: {folio} para {number}")
+                # 💾 Registrar en completed_reports para evitar duplicados futuros
+                completed_reports[number] = {
+                    'timestamp': datetime.now().timestamp(),
+                    'folio': folio
+                }
+                logger.critical(f"💾 [REGISTER] Reporte registrado en completed_reports: {folio}")
                 
-                # Notificar al usuario
+                logger.critical(f"✅ [SUCCESS] Reporte automático creado: {folio} para {number}")
+
+                asyncio.create_task(complete_cleanup_after_report(number, 5))
+
+                
+                # 📤 Notificar al usuario
                 await notify_user_timeout_flexible(number, folio, len(images))
                 
-                # Limpiar sesión Y datos guardados
-                with report_sessions_lock:
-                    if number in report_sessions:
-                        del report_sessions[number]
+                # 🧹 LIMPIEZA COMPLETA INMEDIATA (nuevo)
+                asyncio.create_task(complete_cleanup_after_report(number, 5))
                 
-                if number in user_answers:
-                    del user_answers[number]
-                    logger.critical(f"🧹 [CLEANUP] Datos eliminados para {number}")
+                logger.critical(f"✅ [TIMEOUT COMPLETE] Proceso completo para {number}")
                 
             except Exception as e:
                 logger.error(f"💥 [ERROR] Error creando reporte para {number}: {str(e)}")
-                with report_sessions_lock:
-                    if number in report_sessions:
-                        del report_sessions[number]
-                if number in user_answers:
-                    del user_answers[number]
+                # En caso de error, también hacer limpieza
+                asyncio.create_task(complete_cleanup_after_report(number, 1))
 
 def has_complete_report_data_flexible(from_number):
     """
@@ -691,9 +784,13 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 folio_clean = folio.replace("Folio: ", "") if folio.startswith("Folio: ") else folio
                 
                 if image_count > 0:
-                    message = f"Se creó automáticamente tu reporte con folio {folio_clean} (con {image_count} imágenes)"
+                    message = f"""🚀 ¡Tu reporte ya está listo!
+                ✅ Folio: *{folio_clean}*
+                📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."""
                 else:
-                    message = f"Se creó automáticamente tu reporte con folio {folio_clean} (sin imágenes)"
+                    message = f"""🚀 ¡Tu reporte ya está listo!
+                ✅ Folio: *{folio_clean}*
+                📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."""
                 
                 message_data = {
                     "client_id": client_id,
@@ -1202,6 +1299,69 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text):
         logger.error(f"Exception while sending Chat2Desk message: {str(e)}")
         return False
 
+# Modificar la función process_and_save_report para que también haga limpieza completa
+async def process_and_save_report_with_cleanup(from_number, location, images=None, descriptions=None):
+    """
+    Versión mejorada que incluye limpieza completa después de crear reporte exitoso.
+    """
+    # Ejecutar la función original
+    result = await process_and_save_report(from_number, location, images, descriptions)
+    
+    # Si fue exitoso, hacer limpieza completa
+    if result['status'] == 'success':
+        logger.critical(f"🧹 [MANUAL SUCCESS] Programando limpieza completa para {from_number}")
+        asyncio.create_task(complete_cleanup_after_report(from_number, 10))
+    
+    return result
+
+def should_ignore_message(message_text, message_type, from_number=None):
+    """
+    Determina si un mensaje debe ser ignorado (echo del bot, etc.)
+    """
+    # 1. Ignorar mensajes salientes
+    if message_type == 'to_client':
+        return True, "Mensaje saliente ignorado"
+    
+    # 2. Ignorar mensajes que no son del cliente
+    if message_type != 'from_client':
+        return True, f"Mensaje tipo {message_type} ignorado"
+    
+    # 3. Ignorar echos de notificaciones de timeout
+    if is_timeout_notification_echo(message_text):
+        logger.critical(f"🚫 [ECHO DETECTED] Ignorando echo de timeout para {from_number}: '{message_text[:50]}...'")
+        return True, "Echo de timeout ignorado"
+    
+    # 4. Verificar si viene de un número que acaba de crear reporte
+    if (from_number and from_number in completed_reports and 
+        message_text and len(message_text.strip()) > 10):
+        
+        recent_report = completed_reports[from_number]
+        elapsed_seconds = datetime.now().timestamp() - recent_report['timestamp']
+        
+        # Si el reporte fue creado en los últimos 30 segundos
+        if elapsed_seconds < 30:
+            logger.critical(f"🚫 [POST-REPORT] Ignorando mensaje post-reporte para {from_number} (hace {elapsed_seconds:.1f}s): '{message_text[:30]}...'")
+            return True, "Mensaje post-reporte ignorado"
+    
+    return False, "Mensaje válido para procesar"
+
+def is_timeout_notification_echo(message_text):
+    """
+    Detecta si un mensaje es un echo de nuestra notificación de timeout.
+    """
+    timeout_indicators = [
+        "🚀 ¡tu reporte ya está listo!",
+        "✅ folio:",
+        "debido a la inactividad",
+        "hemos generado tu folio automáticamente",
+        "para que puedas continuar reportando"
+    ]
+    
+    if not message_text:
+        return False
+    
+    text_lower = message_text.lower()
+    return any(indicator in text_lower for indicator in timeout_indicators)
 
 # Modify the process_and_save_report function
 async def process_and_save_report(from_number, location, images=None, descriptions=None):
@@ -1290,13 +1450,13 @@ async def process_and_save_report(from_number, location, images=None, descriptio
 
         # Record successful report
         current_time = datetime.now().timestamp()
-        completed_reports[from_number] = {
-            'timestamp': current_time,
-            'folio': folio,
-        }
+        # completed_reports[from_number] = {
+        #     'timestamp': current_time,
+        #     'folio': folio,
+        # }
         
         # Schedule cleanup
-        asyncio.create_task(remove_from_completed_reports(from_number, 1800))
+        # asyncio.create_task(remove_from_completed_reports(from_number, 1800))
         
         logger.info(f"Report successfully created for {from_number}, folio: {folio}")
         
@@ -1485,38 +1645,55 @@ async def whatsapp(request: Request):
         # LOG EXPLÍCITO para verificar mensajes con el texto detonante
         if message_text and BOT_RETURN_MESSAGE in message_text:
             logger.critical(f"MENSAJE CON TEXTO DETONANTE DETECTADO - Type: {message_type}, Operator: {operator_id}, Text: {message_text[:50]}")
+
+        # 🎯 PRIMERO: Verificar mensajes de takeover ANTES de filtrar
+        if message_type == 'to_client' and message_text and message_text.startswith(HUMAN_TAKEOVER_MESSAGE):
+            logger.info(f"Human agent takeover detected for {from_number}")
             
-        # Verificar si es un mensaje de despedida del agente humano
+            expiration_time = datetime.now().timestamp() + (30 * 60)
+            transferred_numbers[from_number] = expiration_time
+            
+            try:
+                system_notification = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="System",
+                    message=f"[SYSTEM] Conversation transferred to human agent until {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
+                    number=from_number,
+                    uid=f"takeover-{datetime.now().timestamp()}",
+                    direction="system",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(system_notification)
+            except Exception as e:
+                logger.error(f"Error recording human takeover: {str(e)}")
+            
+            return JSONResponse(content={"status": True, "message": "Human agent takeover registered"})
+
+        # 🎯 SEGUNDO: Verificar return to AI
         if message_type == 'to_client' and message_text and BOT_RETURN_MESSAGE in message_text:
-            # This is a goodbye message from human agent, return control to AI
             logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Returning control to AI for {from_number}")
             
             if from_number in transferred_numbers:
                 del transferred_numbers[from_number]
                 logger.debug(f"Removed {from_number} from transferred_numbers dictionary")
                 
-            # Marcar como recientemente devuelto al bot con tiempo actual
             recently_returned_to_bot[from_number] = datetime.now().timestamp()
             logger.info(f"Added {from_number} to recently_returned_to_bot with grace period of {BOT_GRACE_PERIOD} seconds")
             
-            # Programar eliminación de la lista después del período de gracia
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
 
-            # Send a confirmation message from the AI
             ai_greeting = "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n" + \
             "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
             "¿En qué puedo ayudarte hoy?"
             
-            # Store the message in conversation history
             if from_number in user_sessions:
                 conversation_history = user_sessions[from_number].history
                 conversation_history.add_ai_message(ai_greeting)
             else:
-                # Create new session if needed
                 user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
                 user_sessions[from_number].history.add_ai_message(ai_greeting)
                 
-            # AÑADIR ESTO - Enviar el mensaje a través de Chat2Desk
             try:
                 api_token = os.getenv("CHAT2DESK_API_TOKEN")
                 chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
@@ -1536,7 +1713,6 @@ async def whatsapp(request: Request):
                 async with httpx.AsyncClient() as client:
                     response = await client.post(chat2desk_url, json=data, headers=headers)
                 
-                # Store the message in the database
                 assistant_message = Message(
                     time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     senderName="Assistant",
@@ -1550,63 +1726,23 @@ async def whatsapp(request: Request):
                 db.Insert(assistant_message)
                 await manage_message_history(db, from_number)
                 
-                # IMPORTANTE - Retornar para evitar el procesamiento posterior
                 return JSONResponse(content={"status": True, "message": "Control returned to AI"})
             
             except Exception as e:
                 logger.error(f"Error sending AI greeting after return from human agent: {str(e)}")
-        
-        
-        # PRIMERO - Verificar mensajes especiales de agentes
-        if message_type == 'to_client' and message_text and message_text.startswith(HUMAN_TAKEOVER_MESSAGE):
-            #Human agent is taking over - mark number as transferred with extended timeout
-            logger.info(f"Human agent takeover detected for {from_number}")
-            
-            #Set a longer timeout (30 minutes) for explicit human takeover
-            expiration_time = datetime.now().timestamp() + (30 * 60)
-            transferred_numbers[from_number] = expiration_time
-            
-            # Store log message in database
-            try:
-                system_notification = Message(
-                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    senderName="System",
-                    message=f"[SYSTEM] Conversation transferred to human agent until {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
-                    number=from_number,
-                    uid=f"takeover-{datetime.now().timestamp()}",
-                    direction="system",
-                    mtype="text",
-                    source="whatsapp"
-                )
-                db.Insert(system_notification)
-            except Exception as e:
-                logger.error(f"Error recording human takeover: {str(e)}")
-            
-            return JSONResponse(content={"status": True, "message": "Human agent takeover registered"})
-        
-        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
-            # This number has been transferred to a human agent and the transfer hasn't expired
-            logger.info(f"Ignoring message from {from_number} as it's being handled by a human agent (expires in {int(transferred_numbers[from_number] - current_time)} seconds)")
-            return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
-        elif from_number in transferred_numbers:
-            # Transfer has expired, remove it from the dictionary
-            logger.info(f"Transfer for {from_number} has expired, bot is now responding again")
-            del transferred_numbers[from_number]
 
-        # Detección automática de intervención humana
+        # 🎯 TERCERO: Detección automática por operator_id
         if (message_type == 'to_client' and 
             payload.get('operator_id') and 
             payload.get('operator_id') != BOT_OPERATOR_ID and 
             from_number not in transferred_numbers and
             from_number not in recently_returned_to_bot):
-            # Si es la primera vez que un humano responde a esta conversación
+            
             logger.info(f"Detección automática: Agente humano (ID {payload.get('operator_id')}) tomó la conversación con {from_number}")
             
-            # Todo dentro del mismo bloque condicional
             expiration_time = datetime.now().timestamp() + (30 * 60)
             transferred_numbers[from_number] = expiration_time
             
-            # Registro también dentro del bloque
             try:
                 system_notification = Message(
                     time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1627,11 +1763,23 @@ async def whatsapp(request: Request):
             from_number not in transferred_numbers and
             from_number in recently_returned_to_bot):
 
-            # Existe en recently_returned_to_bot, respetamos el período de gracia
             grace_time = int(BOT_GRACE_PERIOD - (datetime.now().timestamp() - recently_returned_to_bot[from_number]))
             logger.info(f"Ignorando detección automática para {from_number} - en período de gracia ({grace_time} segundos restantes)")
 
+        # 🎯 CUARTO: Verificar si ya está transferido
+        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
+            logger.info(f"Ignoring message from {from_number} as it's being handled by a human agent (expires in {int(transferred_numbers[from_number] - current_time)} seconds)")
+            return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
+        elif from_number in transferred_numbers:
+            logger.info(f"Transfer for {from_number} has expired, bot is now responding again")
+            del transferred_numbers[from_number]
 
+        # 🎯 QUINTO: Aplicar filtros generales (DESPUÉS de detecciones de takeover)
+        should_ignore, ignore_reason = should_ignore_message(body, message_type, from_number)
+        if should_ignore:
+            logger.debug(f"🚫 [FILTER] {ignore_reason} para {from_number}")
+            return JSONResponse(content={"status": True, "message": ignore_reason})
+        
         # Ahora procesar las imágenes cuando ya tenemos from_number
         fotos_urls = get_images_from_payload(payload)
 
@@ -2140,6 +2288,9 @@ async def whatsapp(request: Request):
                     logger.info(f"Successfully created report with folio {folio} for request {request_id}")
 
                     mark_report_as_completed(from_number)
+
+                    asyncio.create_task(delayed_cleanup_report_session(from_number, 30))
+
                     # Limpiar la sesión de reporte después de finalizar
                     if from_number in report_sessions:
                         del report_sessions[from_number]
@@ -2406,8 +2557,10 @@ async def whatsapp(request: Request):
         # ============================================================================
         # 🎯 AUTO-GUARDAR INFORMACIÓN DETECTADA EN LA CONVERSACIÓN
         # ============================================================================
-        if from_number and body:
+        if from_number and body and should_create_report_session(body, response_content):
             logger.critical(f"💾 [AUTO-SAVE] Iniciando detección automática para {from_number}")
+
+            create_or_update_report_session(from_number)
             
             # 1. DETECTAR NOMBRE DEL USUARIO
             if sender_name and sender_name != "Usuario" and sender_name.strip():
@@ -2542,6 +2695,9 @@ async def whatsapp(request: Request):
                         save_user_answer(from_number, "selection7", colonia)
                         logger.critical(f"💾 [AUTO-SAVE] Colonia detectada: {colonia}")
                         break
+        else:
+            logger.critical(f"💾 [SKIP] Conversación normal para {from_number}, no se crea sesión de reporte")
+
 
         # 4. USAR DATOS DEL CONTEXTO SI ESTÁN DISPONIBLES
         if 'address' in locals() and address and address != "No he recibido ubicación":

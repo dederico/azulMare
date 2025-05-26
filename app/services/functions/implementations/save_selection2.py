@@ -212,7 +212,55 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
         # Si está vacío por alguna razón, usar un valor por defecto
         if not folio_number:
             folio_number = "Generado"
-        
+            
+        # 🧹 NUEVA LÍNEA: PROGRAMAR LIMPIEZA COMPLETA DESPUÉS DE REPORTE EXITOSO
+        try:
+            import asyncio
+            from app.util.logger import logger
+            
+            async def cleanup_after_manual_report():
+                """Limpieza específica para reportes manuales desde save_client_selection2"""
+                try:
+                    await asyncio.sleep(10)  # Esperar 10 segundos para que el LLM responda
+                    
+                    logger.critical(f"🧹 [MANUAL CLEANUP] Iniciando limpieza después de reporte manual para {yoga_number}")
+                    
+                    # Importar las estructuras globales necesarias
+                    try:
+                        from app.api.original_routes import report_sessions, user_answers, reports_in_progress, report_sessions_lock, reports_lock
+                        
+                        # Limpiar report_sessions
+                        with report_sessions_lock:
+                            if yoga_number in report_sessions:
+                                del report_sessions[yoga_number]
+                                logger.critical(f"🧹 [MANUAL] Eliminado report_sessions[{yoga_number}]")
+                        
+                        # Limpiar user_answers
+                        if yoga_number in user_answers:
+                            del user_answers[yoga_number]
+                            logger.critical(f"🧹 [MANUAL] Eliminado user_answers[{yoga_number}]")
+                        
+                        # Limpiar reports_in_progress
+                        with reports_lock:
+                            if yoga_number in reports_in_progress:
+                                del reports_in_progress[yoga_number]
+                                logger.critical(f"🧹 [MANUAL] Eliminado reports_in_progress[{yoga_number}]")
+                        
+                        logger.critical(f"🧹 [MANUAL CLEANUP] ✅ Limpieza manual terminada para {yoga_number}")
+                        
+                    except ImportError as e:
+                        logger.error(f"🧹 [MANUAL CLEANUP ERROR] No se pudieron importar las estructuras: {str(e)}")
+                        
+                except Exception as e:
+                    logger.error(f"🧹 [MANUAL CLEANUP ERROR] Error en limpieza manual: {str(e)}")
+            
+            # Programar la limpieza asíncrona
+            asyncio.create_task(cleanup_after_manual_report())
+            logger.critical(f"🧹 [MANUAL] Limpieza programada para {yoga_number} después de reporte manual exitoso")
+            
+        except Exception as e:
+            logger.error(f"🧹 [MANUAL] Error programando limpieza: {str(e)}")
+            
         # IMPORTANTE: Devolver una cadena formateada que incluya la palabra "Folio"
         # para evitar problemas con chat2desk
         return f"Folio: {folio_number}"

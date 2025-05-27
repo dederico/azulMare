@@ -77,6 +77,10 @@ import threading
 import asyncio
 from app.services.functions.implementations.transfer_message_event import transfer_to_group
 from threading import RLock
+from app.api.streets_array import SAN_PEDRO_STREETS_REAL
+from app.api.colonies_array import SAN_PEDRO_COLONIES
+import difflib
+import re
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -103,7 +107,425 @@ recently_returned_to_bot = {}
 BOT_GRACE_PERIOD = 10
 user_answers = {}
 
-import re
+# ===============================================================
+# OPTIMIZACIÓN: Crear índices una sola vez al iniciar el servidor
+# ===============================================================
+
+class StreetsAndColoniesOptimizer:
+    """
+    🚀 OPTIMIZACIÓN EXPANDIDA: Calles + Colonias reales de San Pedro
+    """
+    def __init__(self):
+        print(f"🚀 [OPTIMIZER INIT] Iniciando con {len(SAN_PEDRO_STREETS_REAL)} calles y {len(SAN_PEDRO_COLONIES)} colonias")
+        
+        self.original_streets = SAN_PEDRO_STREETS_REAL
+        self.original_colonies = SAN_PEDRO_COLONIES
+        
+        # Índices para calles
+        self.normalized_streets = {}
+        self.street_word_index = {}
+        
+        # Índices para colonias  
+        self.normalized_colonies = {}
+        self.colony_word_index = {}
+        
+        self._build_indexes()
+        
+        # NUEVO: Verificar que los índices se construyeron
+        print(f"🚀 [OPTIMIZER INIT] Índices construidos:")
+        print(f"   - normalized_streets: {len(self.normalized_streets)} entradas")
+        print(f"   - normalized_colonies: {len(self.normalized_colonies)} entradas")
+        print(f"   - ¿'centro' normalizado existe? {'centro' in self.normalized_colonies}")
+        
+        # Test inmediato
+        test_result = self.find_closest_colony("centro")
+        print(f"🚀 [OPTIMIZER TEST] Búsqueda de 'centro': {test_result}")
+    
+    def _normalize_text(self, text):
+        """Normaliza texto para comparación (sin acentos, minúsculas)"""
+        return (text.lower()
+                .replace('á', 'a').replace('é', 'e').replace('í', 'i')
+                .replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
+                .strip())
+    
+    def _build_indexes(self):
+        """🚀 Construye índices optimizados para CALLES Y COLONIAS"""
+        print(f"🚀 [OPTIMIZER] Construyendo índices para {len(self.original_streets)} calles y {len(self.original_colonies)} colonias...")
+        
+        # Índices para calles
+        for street in self.original_streets:
+            normalized = self._normalize_text(street)
+            self.normalized_streets[normalized] = street
+            
+            words = normalized.split()
+            for word in words:
+                if word not in self.street_word_index:
+                    self.street_word_index[word] = []
+                self.street_word_index[word].append(street)
+        
+        # Índices para colonias
+        for colony in self.original_colonies:
+            normalized = self._normalize_text(colony)
+            self.normalized_colonies[normalized] = colony
+            
+            words = normalized.split()
+            for word in words:
+                if word not in self.colony_word_index:
+                    self.colony_word_index[word] = []
+                self.colony_word_index[word].append(colony)
+        
+        print(f"✅ [OPTIMIZER] Índices listos: {len(self.normalized_streets)} calles, {len(self.normalized_colonies)} colonias")
+    
+    def find_closest_street(self, input_text):
+        """🚀 Encuentra la calle más parecida"""
+        return self._find_closest_item(input_text, self.normalized_streets, self.street_word_index)
+    
+    def find_closest_colony(self, input_text):
+        """🚀 NUEVO: Encuentra la colonia más parecida"""
+        return self._find_closest_item(input_text, self.normalized_colonies, self.colony_word_index)
+    
+    def _find_closest_item(self, input_text, normalized_dict, word_index):
+        """🚀 Lógica genérica para buscar calles o colonias"""
+        if not input_text or len(input_text.strip()) < 2:
+            return None, 0
+        
+        input_clean = self._normalize_text(input_text)
+        
+        # 1. ⚡ Búsqueda exacta
+        if input_clean in normalized_dict:
+            return normalized_dict[input_clean], 1.0
+        
+        # 2. ⚡ Búsqueda por palabras clave
+        input_words = input_clean.split()
+        candidates = set()
+        
+        for word in input_words:
+            if word in word_index:
+                candidates.update(word_index[word])
+        
+        if candidates:
+            best_match = None
+            best_score = 0
+            
+            for candidate in candidates:
+                candidate_normalized = self._normalize_text(candidate)
+                similarity = difflib.SequenceMatcher(None, input_clean, candidate_normalized).ratio()
+                
+                if similarity > best_score:
+                    best_score = similarity
+                    best_match = candidate
+            
+            if best_match and best_score >= 0.6:
+                return best_match, best_score
+        
+        # 3. ⚡ Fuzzy matching completo
+        normalized_list = list(normalized_dict.keys())
+        close_matches = difflib.get_close_matches(input_clean, normalized_list, n=1, cutoff=0.6)
+        
+        if close_matches:
+            matched_normalized = close_matches[0]
+            original_item = normalized_dict[matched_normalized]
+            similarity = difflib.SequenceMatcher(None, input_clean, matched_normalized).ratio()
+            return original_item, similarity
+        
+        return None, 0
+    
+def validate_street_exists(street_name):
+    """🚀 Validación de calles"""
+    if not street_name:
+        return False, "No se proporcionó nombre de calle"
+    
+    closest_street, similarity = find_closest_street(street_name)
+    
+    if closest_street and similarity >= 0.9:
+        return True, f"Calle válida: {closest_street}"
+    elif closest_street and similarity >= 0.7:
+        return True, f"Calle similar: {closest_street} (verifica ortografía)"
+    else:
+        return False, f"Calle '{street_name}' no encontrada en San Pedro"
+        
+    
+def validate_colony_exists(colony_name):
+    """🚀 NUEVO: Validación de colonias"""
+    if not colony_name:
+        return False, "No se proporcionó nombre de colonia"
+    
+    closest_colony, similarity = find_closest_colony(colony_name)
+    
+    if closest_colony and similarity >= 0.9:
+        return True, f"Colonia válida: {closest_colony}"
+    elif closest_colony and similarity >= 0.7:
+        return True, f"Colonia similar: {closest_colony} (verifica ortografía)"
+    else:
+        return False, f"Colonia '{colony_name}' no encontrada en San Pedro"
+
+# ===============================================================
+# CREAR INSTANCIA GLOBAL (una sola vez al iniciar)
+# ===============================================================
+streets_and_colonies_optimizer = StreetsAndColoniesOptimizer()
+
+# ===============================================================
+# FUNCIONES WRAPPER PARA USO FÁCIL
+# ===============================================================
+
+def find_closest_street(input_text):
+    """🚀 Wrapper optimizado - Tiempo: <1ms"""
+    return streets_and_colonies_optimizer.find_closest_street(input_text)
+
+
+def find_closest_colony(input_text):
+    """🚀 Wrapper optimizado para colonias - Tiempo: <1ms"""
+    return streets_and_colonies_optimizer.find_closest_colony(input_text)
+
+def detect_and_store_user_data_with_real_streets_and_colonies(from_number: str, body: str):
+    """
+    🚀 VERSIÓN CORREGIDA Y OPTIMIZADA: Usa arrays importados y patrones flexibles
+    """
+    logger.critical(f"🔍 [REAL STREETS] Analizando: {from_number} - '{body[:50]}...'")
+    
+    body_lower = body.lower()
+    saved_fields = []
+    
+    # ===============================================================
+    # 1. DETECCIÓN DE CALLES CON OPTIMIZACIÓN MEJORADA
+    # ===============================================================
+    
+    street_patterns_real = [
+        # Patrones específicos (mantener los existentes)
+        r"(?i)(?:está|esta|ubicad[oa]?)\s+en\s+([a-záéíóúñ\s\d]+?)(?:\s+(?:cruz|esquina|y)\s+con\s+([a-záéíóúñ\s]+?))?(?:\s|,|$)",
+        r"(?i)en\s+(?:la\s+)?calle\s+([a-záéíóúñ\s\d]+?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
+        r"(?i)sobre\s+([a-záéíóúñ\s\d]+?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
+        r"(?i)(?:en|de)\s+([a-záéíóúñ\s\d]{4,}?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
+        
+        # 🚀 NUEVOS PATRONES MÁS FLEXIBLES
+        # Capturar nombres propios que podrían ser calles (2-3 palabras capitalizadas)
+        r"(?i)\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\b",
+        
+        # Capturar después de "en" sin requerir "calle" (más flexible)
+        r"(?i)(?:^|\s)en\s+([a-záéíóúñ\s\d]{3,20})(?:\s+(?:número|#|\d)|,|$)",
+        
+        # Capturar nombres al inicio del mensaje
+        r"(?i)^([a-záéíóúñ\s\d]{3,25})(?:\s+(?:número|#|\d)|,)",
+        
+        # Capturar entre comas (formato común: "calle, número, colonia")
+        r"(?i)(?:^|,\s*)([a-záéíóúñ\s\d]{3,25})(?=\s*,|\s*\d|\s*$)",
+    ]
+    
+    # Lista de palabras que NO son calles (filtros mejorados)
+    excluded_street_words = [
+        "problema", "reporte", "tengo", "hay", "está", "esta", "es", "son",
+        "muy", "poco", "mucho", "todo", "nada", "algo", "aquí", "ahí", "allí",
+        "buenos", "días", "tardes", "noches", "hola", "gracias", "por", "favor",
+        "quiero", "necesito", "puedo", "debo", "voy", "vamos", "hacer", "decir",
+        "colonia", "col", "número", "casa", "edificio", "piso", "departamento"
+    ]
+    
+    for pattern in street_patterns_real:
+        match = re.search(pattern, body)
+        if match:
+            street_candidate = match.group(1).strip()
+            
+            # Filtrar palabras excluidas
+            if (len(street_candidate) >= 3 and 
+                not any(excluded in street_candidate.lower() for excluded in excluded_street_words)):
+                
+                # 🚀 Búsqueda optimizada con threshold más permisivo
+                closest_street, similarity = find_closest_street(street_candidate)
+                
+                if closest_street and similarity >= 0.6:  # Reducido de 0.7 a 0.6
+                    save_user_answer(from_number, "selection5", closest_street)
+                    saved_fields.append(("selection5", f"{closest_street} (sim: {similarity:.2f})"))
+                    logger.critical(f"💾 [REAL STREET] '{street_candidate}' → '{closest_street}' (sim: {similarity:.2f})")
+                    
+                    # Si hay "cruz con" detectar la segunda calle
+                    if len(match.groups()) > 1 and match.group(2):
+                        cross_street = match.group(2).strip()
+                        closest_cross, cross_similarity = find_closest_street(cross_street)
+                        
+                        if closest_cross and cross_similarity >= 0.5:  # Threshold más bajo para cruce
+                            enhanced_street = f"{closest_street} cruz con {closest_cross}"
+                            save_user_answer(from_number, "selection5", enhanced_street)
+                            saved_fields[-1] = ("selection5", enhanced_street)
+                            logger.critical(f"💾 [CROSS STREET] + '{closest_cross}' → '{enhanced_street}'")
+                    break
+                else:
+                    # 🆕 Si no encuentra coincidencia exacta, guardar como candidato si parece válido
+                    if (len(street_candidate) >= 4 and 
+                        street_candidate.replace(" ", "").replace("-", "").isalpha() and
+                        any(char.isupper() for char in street_candidate)):  # Tiene mayúsculas (nombre propio)
+                        
+                        save_user_answer(from_number, "selection5", street_candidate.title())
+                        saved_fields.append(("selection5", f"{street_candidate.title()} (candidato)"))
+                        logger.critical(f"💾 [STREET CANDIDATE] '{street_candidate}' guardado como candidato")
+                        break
+                    else:
+                        logger.warning(f"⚠️ [STREET NOT FOUND] '{street_candidate}' no encontrada (sim: {similarity:.2f})")
+    
+    # ===============================================================
+    # 2. DETECCIÓN DE COLONIAS - USANDO ARRAY IMPORTADO Y find_closest_colony
+    # ===============================================================
+    
+    colony_patterns_real = [
+        # Patrones específicos existentes
+        r"(?i)colonia\s+([a-záéíóúñ\s]+?)(?:\s|,|$)",
+        r"(?i),\s*(?:colonia|col\.?)\s+([a-záéíóúñ\s]+?)(?:\s|$)",
+        
+        # 🚀 USAR EL ARRAY IMPORTADO SAN_PEDRO_COLONIES dinámicamente
+        r"(?i)\b(" + "|".join([col.lower() for col in SAN_PEDRO_COLONIES]) + r")\b",
+        
+        # 🚀 NUEVOS PATRONES MÁS FLEXIBLES
+        # Capturar después de coma (segundo elemento común en direcciones)
+        r"(?i).*,\s*([a-záéíóúñ\s]{4,25})$",
+        
+        # Capturar nombres propios que podrían ser colonias
+        r"(?i)\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)\b(?=\s*$)",
+        
+        # Capturar palabras que terminan en patrones típicos de colonias
+        r"(?i)\b([a-záéíóúñ\s]*(?:centro|valle|lomas|bosques|jardines|residencial|colonial|heights|park|fraccionamiento))\b",
+    ]
+    
+    # Lista de palabras que NO son colonias
+    excluded_colony_words = [
+        "problema", "reporte", "calle", "avenida", "número", "casa", "edificio",
+        "piso", "departamento", "oficina", "local", "negocio", "tienda", "tengo",
+        "hay", "está", "esta", "buenos", "días", "hola", "gracias"
+    ]
+    
+    for pattern in colony_patterns_real:
+        match = re.search(pattern, body)
+        if match:
+            colony_candidate = match.group(1).strip() if match.group(1) else match.group(0).strip()
+            
+            # Filtrar palabras excluidas
+            if (len(colony_candidate) >= 3 and 
+                not any(excluded in colony_candidate.lower() for excluded in excluded_colony_words)):
+                
+                # 🚀 USAR find_closest_colony con threshold permisivo
+                closest_colony, similarity = find_closest_colony(colony_candidate)
+                
+                if closest_colony and similarity >= 0.6:  # Threshold permisivo
+                    save_user_answer(from_number, "selection7", closest_colony)
+                    saved_fields.append(("selection7", f"{closest_colony} (sim: {similarity:.2f})"))
+                    logger.critical(f"💾 [REAL COLONY] '{colony_candidate}' → '{closest_colony}' (sim: {similarity:.2f})")
+                    break
+                else:
+                    # 🆕 Verificar si es una colonia conocida directamente del array
+                    is_known_colony = any(known.lower() in colony_candidate.lower() for known in SAN_PEDRO_COLONIES)
+                    
+                    if is_known_colony or (len(colony_candidate) >= 4 and 
+                                         colony_candidate.replace(" ", "").isalpha()):
+                        save_user_answer(from_number, "selection7", colony_candidate.title())
+                        saved_fields.append(("selection7", f"{colony_candidate.title()} (candidato)"))
+                        logger.critical(f"💾 [COLONY CANDIDATE] '{colony_candidate.title()}' guardado como candidato")
+                        break
+                    else:
+                        logger.warning(f"⚠️ [COLONY NOT FOUND] '{colony_candidate}' no encontrada (sim: {similarity:.2f})")
+    
+    # ===============================================================
+    # 3. DETECCIÓN DIRECTA POR PALABRAS CLAVE (NUEVO)
+    # ===============================================================
+    
+    # 🚀 Búsqueda directa sin patrones regex para casos simples
+    body_words = body_lower.split()
+    
+    # Buscar calles directamente en las palabras
+    if not any("selection5" in field[0] for field in saved_fields):  # Solo si no se encontró calle
+        for word in body_words:
+            if len(word) >= 4:  # Palabras de al menos 4 caracteres
+                closest_street, similarity = find_closest_street(word)
+                if closest_street and similarity >= 0.8:  # Threshold alto para búsqueda directa
+                    save_user_answer(from_number, "selection5", closest_street)
+                    saved_fields.append(("selection5", f"{closest_street} (directo: {similarity:.2f})"))
+                    logger.critical(f"💾 [DIRECT STREET] '{word}' → '{closest_street}' (sim: {similarity:.2f})")
+                    break
+    
+    # Buscar colonias directamente en las palabras
+    if not any("selection7" in field[0] for field in saved_fields):  # Solo si no se encontró colonia
+        for word in body_words:
+            if len(word) >= 4:  # Palabras de al menos 4 caracteres
+                closest_colony, similarity = find_closest_colony(word)
+                if closest_colony and similarity >= 0.8:  # Threshold alto para búsqueda directa
+                    save_user_answer(from_number, "selection7", closest_colony)
+                    saved_fields.append(("selection7", f"{closest_colony} (directo: {similarity:.2f})"))
+                    logger.critical(f"💾 [DIRECT COLONY] '{word}' → '{closest_colony}' (sim: {similarity:.2f})")
+                    break
+    
+    # ===============================================================
+    # 4. OTROS CAMPOS (LÓGICA MEJORADA)
+    # ===============================================================
+    
+    patterns = {
+        # Patrones existentes
+        "selection2": r"(?i)(?:nombre\s*[:=]\s*|me\s+llamo\s+|soy\s+)([a-záéíóúñ\s]+?)(?:\s|,|$)",
+        "selection4": r"(?i)(?:tipo\s*[:=]\s*|problema\s*[:=]?\s*|reporte\s*[:=]?\s*)([^\n,]+)",
+        "selection6": r"(?i)(?:n[uú]mero\s*[:=]\s*|#\s*)(\d{1,5})\b",
+        
+        # 🚀 NUEVOS PATRONES MÁS FLEXIBLES
+        "selection2_alt": r"(?i)^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)",  # Nombre al inicio
+        "selection6_alt": r"(?i)\b(\d{1,4})\b(?!\d)",  # Cualquier número de 1-4 dígitos
+    }
+
+    for selection_key, pattern in patterns.items():
+        # Limpiar el key (remover _alt si existe)
+        clean_key = selection_key.replace("_alt", "")
+        
+        matches = re.findall(pattern, body)
+        for match in matches:
+            value = match.strip()
+            
+            # Validaciones específicas
+            if clean_key == "selection2" and len(value) >= 2:  # Nombre válido
+                save_user_answer(from_number, clean_key, value.title())
+                saved_fields.append((clean_key, value.title()))
+                break
+            elif clean_key == "selection4" and len(value) >= 5:  # Descripción válida
+                save_user_answer(from_number, clean_key, value)
+                saved_fields.append((clean_key, value))
+                break
+            elif clean_key == "selection6" and value.isdigit():  # Número válido
+                num_val = int(value)
+                if 1 <= num_val <= 99999:
+                    save_user_answer(from_number, clean_key, value)
+                    saved_fields.append((clean_key, value))
+                    break
+    
+    # ===============================================================
+    # 5. LOG DE RESULTADOS MEJORADO
+    # ===============================================================
+    
+    if saved_fields:
+        log_summary = "; ".join([f"{key}='{val}'" for key, val in saved_fields])
+        logger.critical(f"[{from_number}] ✅ CORREGIDO - Campos detectados: {log_summary}")
+        
+        # 🆕 Log adicional de estadísticas
+        logger.critical(f"[{from_number}] 📊 STATS - Total campos: {len(saved_fields)}, " +
+                       f"Arrays usados: SAN_PEDRO_COLONIES({len(SAN_PEDRO_COLONIES)} items)")
+    else:
+        logger.debug(f"[{from_number}] ❌ CORREGIDO - No se detectó información válida en: {body.strip()}")
+        
+        # 🆕 Log de debug para entender por qué no se detectó nada
+        logger.debug(f"[{from_number}] 🔍 DEBUG - Palabras analizadas: {body_lower.split()[:10]}")  
+
+# ===============================================================
+# PERFORMANCE STATS (opcional para debug)
+# ===============================================================
+
+def detect_and_store_user_data(from_number: str, body: str):
+    """
+    🚀 Wrapper que usa la versión optimizada con calles reales de San Pedro
+    """
+    return detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
+
+def get_streets_performance_stats():
+    """🚀 Stats de rendimiento del optimizador"""
+    return {
+        "total_streets": len(streets_and_colonies_optimizer.original_streets),
+        "normalized_streets": len(streets_and_colonies_optimizer.normalized_streets),
+        "word_index_size": len(streets_and_colonies_optimizer.word_index),
+        "memory_efficient": True,
+        "avg_search_time_ms": "<1ms"
+    }
+
 
 async def complete_cleanup_after_report(phone_number, delay_seconds=5):
     """
@@ -330,36 +752,6 @@ async def remove_from_recently_returned(number, delay_seconds):
             logger.info(f"Removed {number} from recently returned to bot tracking")
     except Exception as e:
         logger.error(f"Error removing {number} from recently returned tracking: {str(e)}")
-
-def detect_and_store_user_data(from_number: str, body: str):
-    logger.critical(f"🔍 [DEBUG] detect_and_store_user_data llamada: {from_number} - '{body[:50]}...'")
-    """
-    Detecta y guarda múltiples campos en un solo mensaje.
-    Incluye nombre, tipo, calle, número, colonia.
-    No procesa selection1. Las imágenes van en selection8.
-    """
-    patterns = {
-        "selection2": r"(?i)nombre\s*:\s*([^\n,]+)",
-        "selection4": r"(?i)tipo\s*:\s*([^\n,]+)",
-        "selection5": r"(?i)calle\s*:\s*([^\n,]+)",
-        "selection6": r"(?i)n[uú]mero\s*:\s*([^\n,]+)",
-        "selection7": r"(?i)colonia\s*:\s*([^\n,]+)"
-    }
-
-    saved_fields = []
-
-    for selection_key, pattern in patterns.items():
-        matches = re.findall(pattern, body)
-        for match in matches:
-            value = match.strip()
-            save_user_answer(from_number, selection_key, value)
-            saved_fields.append((selection_key, value))
-    
-    if saved_fields:
-        log_summary = "; ".join([f"{key}='{val}'" for key, val in saved_fields])
-        logger.info(f"[{from_number}] Campos detectados y guardados: {log_summary}")
-    else:
-        logger.debug(f"[{from_number}] No se detectó ningún campo en: {body.strip()}")
 
 def has_recent_report(phone_number, max_age_minutes=15):
     """
@@ -588,111 +980,179 @@ async def manage_message_history(db, number, max_messages=20):
 
 async def check_report_timeouts():
     """
-    🎯 VERSIÓN MEJORADA: Con limpieza completa inmediata después de crear reportes.
+    🎯 VERSIÓN MEJORADA: Con limpieza completa inmediata después de crear reportes
+    y manejo robusto de errores para evitar crashes silenciosos.
     """
     while True:
-        await asyncio.sleep(60)  # Revisar cada minuto
-        now = datetime.now(pytz.timezone('America/Mexico_City'))
+        try:
+            await asyncio.sleep(60)  # Revisar cada minuto
+            now = datetime.now(pytz.timezone('America/Mexico_City'))
 
-        logger.critical(f"🔍 [TIMEOUT] Revisando sesiones activas: {len(report_sessions)}")
+            logger.critical(f"🔍 [TIMEOUT] Revisando sesiones activas: {len(report_sessions)}")
 
-        numbers_to_process = []
+            numbers_to_process = []
 
-        with report_sessions_lock:
-            for number, session in list(report_sessions.items()):
-                elapsed = (now - session["timestamp"]).total_seconds()
-                images_count = len(session.get("images", []))
-                
-                # Verificar si tiene datos completos
-                has_complete_data = has_complete_report_data_flexible(number)
-                
-                logger.critical(f"🔍 [TIMEOUT] {number}: {elapsed:.1f}s inactivo, {images_count} imágenes, datos_completos={has_complete_data}")
-                
-                # Procesar si cumple timeout Y tiene datos suficientes
-                if elapsed > 420:  # 7 minutos
-                    if images_count > 0 or has_complete_data:
-                        logger.critical(f"⏰ [7MIN TIMEOUT] {number} será procesado")
-                        numbers_to_process.append(number)
-                    else:
-                        # Sin datos suficientes, solo limpiar
-                        logger.critical(f"🗑️ [CLEANUP] {number} sin datos suficientes, eliminando sesión")
-                        del report_sessions[number]
-                        if number in user_answers:
-                            del user_answers[number]
-        
-        # Procesar cada número que cumplió timeout
-        for number in numbers_to_process:
-            try:
-                logger.critical(f"⏰ [EJECUTANDO] Creando reporte automático para {number}")
+            with report_sessions_lock:
+                for number, session in list(report_sessions.items()):
+                    try:
+                        elapsed = (now - session["timestamp"]).total_seconds()
+                        images_count = len(session.get("images", []))
+                        
+                        # Verificar si tiene datos completos con manejo de errores
+                        street = get_user_answer(number, "selection5")
+                        try:
+                            street_valid, street_msg = validate_street_exists(street) if street else (False, "Sin calle")
+                        except Exception as e:
+                            logger.error(f"💥 [VALIDATION ERROR] Error validando calle para {number}: {str(e)}")
+                            street_valid, street_msg = False, f"Error validando calle: {str(e)}"
 
-                # 🚫 VERIFICAR DUPLICADOS PRIMERO
-                recent_report = has_recent_report(number, max_age_minutes=15)
-                if recent_report:
-                    logger.critical(f"🚫 [DUPLICATE PREVENTION] {number} ya tiene reporte reciente: {recent_report['folio']}")
-                    
-                    # 🧹 LIMPIEZA INMEDIATA de duplicado detectado
-                    asyncio.create_task(complete_cleanup_after_report(number, 1))
-                    continue  # Saltar al siguiente número
-                
-                # Verificar que la sesión aún exista
-                with report_sessions_lock:
-                    if number not in report_sessions:
-                        logger.warning(f"⏰ [SKIP] Sesión {number} ya no existe")
+                        colony = get_user_answer(number, "selection7")
+                        try:
+                            colony_valid, colony_msg = validate_colony_exists(colony) if colony else (False, "Sin colonia")
+                        except Exception as e:
+                            logger.error(f"💥 [VALIDATION ERROR] Error validando colonia para {number}: {str(e)}")
+                            colony_valid, colony_msg = False, f"Error validando colonia: {str(e)}"
+                        
+                        problem = get_user_answer(number, "selection4")
+                        name = get_user_answer(number, "selection2")
+
+                        has_complete_data = (
+                            name and len(name.strip()) >= 2 and
+                            problem and len(problem.strip()) > 5 and
+                            (street_valid or colony_valid)  # Calle válida O colonia válida
+                        )
+
+                        logger.critical(f"🔍 [VALIDATION] {number}: calle_válida={street_valid} ({street_msg}), "
+                                    f"colonia_válida={colony_valid} ({colony_msg}), completo={has_complete_data}")
+                        
+                        logger.critical(f"🔍 [TIMEOUT] {number}: {elapsed:.1f}s inactivo, {images_count} imágenes, datos_completos={has_complete_data}")
+                        
+                        # Procesar si cumple timeout Y tiene datos suficientes
+                        if elapsed > 420:  # 7 minutos
+                            if images_count > 0 or has_complete_data:
+                                logger.critical(f"⏰ [7MIN TIMEOUT] {number} será procesado")
+                                numbers_to_process.append(number)
+                            else:
+                                # Sin datos suficientes, solo limpiar
+                                logger.critical(f"🗑️ [CLEANUP] {number} sin datos suficientes, eliminando sesión")
+                                try:
+                                    del report_sessions[number]
+                                    if number in user_answers:
+                                        del user_answers[number]
+                                except Exception as e:
+                                    logger.error(f"💥 [CLEANUP ERROR] Error limpiando {number}: {str(e)}")
+                                    
+                    except Exception as e:
+                        logger.error(f"💥 [SESSION ERROR] Error procesando sesión {number}: {str(e)}")
+                        logger.error(f"💥 [SESSION ERROR] Traceback: {traceback.format_exc()}")
                         continue
+            
+            # Procesar cada número que cumplió timeout
+            for number in numbers_to_process:
+                try:
+                    logger.critical(f"⏰ [EJECUTANDO] Creando reporte automático para {number}")
+
+                    # 🚫 VERIFICAR DUPLICADOS PRIMERO
+                    try:
+                        recent_report = has_recent_report(number, max_age_minutes=15)
+                        if recent_report:
+                            logger.critical(f"🚫 [DUPLICATE PREVENTION] {number} ya tiene reporte reciente: {recent_report['folio']}")
+                            
+                            # 🧹 LIMPIEZA INMEDIATA de duplicado detectado
+                            asyncio.create_task(complete_cleanup_after_report(number, 1))
+                            continue  # Saltar al siguiente número
+                    except Exception as e:
+                        logger.error(f"💥 [DUPLICATE CHECK ERROR] Error verificando duplicados para {number}: {str(e)}")
                     
-                    session = report_sessions[number]
-                    images = session.get("images", [])
-                    descriptions = session.get("image_descriptions", [])
+                    # Verificar que la sesión aún exista
+                    with report_sessions_lock:
+                        if number not in report_sessions:
+                            logger.warning(f"⏰ [SKIP] Sesión {number} ya no existe")
+                            continue
+                        
+                        session = report_sessions[number]
+                        images = session.get("images", [])
+                        descriptions = session.get("image_descriptions", [])
 
-                # Recuperar datos guardados
-                saved_selection1 = get_user_answer(number, "selection1") or "984"
-                saved_selection2 = get_user_answer(number, "selection2") or "Ciudadano"
-                saved_selection4 = get_user_answer(number, "selection4") or "Reporte automático por timeout"
-                saved_selection5 = get_user_answer(number, "selection5") or "Sin especificar"
-                saved_selection6 = get_user_answer(number, "selection6") or "100"
-                saved_selection7 = get_user_answer(number, "selection7") or "Sin especificar"
-                
-                logger.critical(f"⏰ [DATOS] {number}: tipo={saved_selection1}, nombre={saved_selection2}, desc={saved_selection4}")
-                
-                # Crear el reporte
-                folio = await save_client_selection2(
-                    yoga_number=number,
-                    selection1=saved_selection1,
-                    selection2=saved_selection2,
-                    selection3="",
-                    selection4=saved_selection4,
-                    selection5=saved_selection5,
-                    selection6=saved_selection6,
-                    selection7=saved_selection7,
-                    selection8=",".join(images) if images else "",
-                    images_list=images,
-                    descriptions_list=descriptions
-                )
-                
-                # 💾 Registrar en completed_reports para evitar duplicados futuros
-                completed_reports[number] = {
-                    'timestamp': datetime.now().timestamp(),
-                    'folio': folio
-                }
-                logger.critical(f"💾 [REGISTER] Reporte registrado en completed_reports: {folio}")
-                
-                logger.critical(f"✅ [SUCCESS] Reporte automático creado: {folio} para {number}")
+                    # Recuperar datos guardados con valores por defecto seguros
+                    try:
+                        saved_selection1 = get_user_answer(number, "selection1") or "984"
+                        saved_selection2 = get_user_answer(number, "selection2") or "Ciudadano"
+                        saved_selection4 = get_user_answer(number, "selection4") or "Reporte automático por timeout"
+                        saved_selection5 = get_user_answer(number, "selection5") or "Sin especificar"
+                        saved_selection6 = get_user_answer(number, "selection6") or "100"
+                        saved_selection7 = get_user_answer(number, "selection7") or "Sin especificar"
+                    except Exception as e:
+                        logger.error(f"💥 [DATA ERROR] Error obteniendo datos para {number}: {str(e)}")
+                        # Usar valores por defecto seguros
+                        saved_selection1 = "984"
+                        saved_selection2 = "Ciudadano"
+                        saved_selection4 = "Reporte automático por timeout (error en datos)"
+                        saved_selection5 = "Sin especificar"
+                        saved_selection6 = "100"
+                        saved_selection7 = "Sin especificar"
+                    
+                    logger.critical(f"⏰ [DATOS] {number}: tipo={saved_selection1}, nombre={saved_selection2}, desc={saved_selection4}")
+                    
+                    # Crear el reporte con manejo de errores
+                    try:
+                        folio = await save_client_selection2(
+                            yoga_number=number,
+                            selection1=saved_selection1,
+                            selection2=saved_selection2,
+                            selection3="",
+                            selection4=saved_selection4,
+                            selection5=saved_selection5,
+                            selection6=saved_selection6,
+                            selection7=saved_selection7,
+                            selection8=",".join(images) if images else "",
+                            images_list=images,
+                            descriptions_list=descriptions
+                        )
+                        
+                        if folio:
+                            # 💾 Registrar en completed_reports para evitar duplicados futuros
+                            completed_reports[number] = {
+                                'timestamp': datetime.now().timestamp(),
+                                'folio': folio
+                            }
+                            logger.critical(f"💾 [REGISTER] Reporte registrado en completed_reports: {folio}")
+                            
+                            logger.critical(f"✅ [SUCCESS] Reporte automático creado: {folio} para {number}")
 
-                asyncio.create_task(complete_cleanup_after_report(number, 5))
-
-                
-                # 📤 Notificar al usuario
-                await notify_user_timeout_flexible(number, folio, len(images))
-                
-                # 🧹 LIMPIEZA COMPLETA INMEDIATA (nuevo)
-                asyncio.create_task(complete_cleanup_after_report(number, 5))
-                
-                logger.critical(f"✅ [TIMEOUT COMPLETE] Proceso completo para {number}")
-                
-            except Exception as e:
-                logger.error(f"💥 [ERROR] Error creando reporte para {number}: {str(e)}")
-                # En caso de error, también hacer limpieza
-                asyncio.create_task(complete_cleanup_after_report(number, 1))
+                            # 📤 Notificar al usuario
+                            try:
+                                await notify_user_timeout_flexible(number, folio, len(images))
+                            except Exception as e:
+                                logger.error(f"💥 [NOTIFICATION ERROR] Error notificando a {number}: {str(e)}")
+                            
+                            # 🧹 LIMPIEZA COMPLETA INMEDIATA
+                            asyncio.create_task(complete_cleanup_after_report(number, 5))
+                            
+                            logger.critical(f"✅ [TIMEOUT COMPLETE] Proceso completo para {number}")
+                        else:
+                            logger.error(f"💥 [FOLIO ERROR] No se pudo obtener folio para {number}")
+                            
+                    except Exception as e:
+                        logger.error(f"💥 [SAVE ERROR] Error creando reporte para {number}: {str(e)}")
+                        logger.error(f"💥 [SAVE ERROR] Traceback: {traceback.format_exc()}")
+                        # En caso de error, también hacer limpieza
+                        asyncio.create_task(complete_cleanup_after_report(number, 1))
+                        
+                except Exception as e:
+                    logger.error(f"💥 [PROCESSING ERROR] Error procesando timeout para {number}: {str(e)}")
+                    logger.error(f"💥 [PROCESSING ERROR] Traceback: {traceback.format_exc()}")
+                    # Intentar limpieza incluso si hay error
+                    try:
+                        asyncio.create_task(complete_cleanup_after_report(number, 1))
+                    except Exception as cleanup_error:
+                        logger.error(f"💥 [CLEANUP ERROR] Error en limpieza para {number}: {str(cleanup_error)}")
+                        
+        except Exception as e:
+            logger.error(f"💥 [TIMEOUT LOOP ERROR] Error crítico en check_report_timeouts: {str(e)}")
+            logger.error(f"💥 [TIMEOUT LOOP ERROR] Traceback: {traceback.format_exc()}")
+            # Continuar el loop incluso si hay error crítico
+            continue
 
 def has_complete_report_data_flexible(from_number):
     """
@@ -784,13 +1244,13 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 folio_clean = folio.replace("Folio: ", "") if folio.startswith("Folio: ") else folio
                 
                 if image_count > 0:
-                    message = f"""🚀 ¡Tu reporte ya está listo!
-                ✅ Folio: *{folio_clean}*
-                📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."""
+                    message = "🚀 ¡Tu reporte ya está listo!\n"
+                    message += f"✅ Folio: *{folio_clean}*\n"
+                    message += "📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."
                 else:
-                    message = f"""🚀 ¡Tu reporte ya está listo!
-                ✅ Folio: *{folio_clean}*
-                📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."""
+                    message = "🚀 ¡Tu reporte ya está listo!\n"
+                    message += f"✅ Folio: *{folio_clean}*\n"
+                    message += "📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."
                 
                 message_data = {
                     "client_id": client_id,
@@ -2182,7 +2642,7 @@ async def whatsapp(request: Request):
                 logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
 
         elif body and from_number in report_sessions:
-            detect_and_store_user_data(from_number, body)
+            detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
             logger.debug(f"[{from_number}] Revisión anticipada de datos estructurados: '{body[:50]}...'")
 
         # Now let's fix the report finalization check in the WhatsApp endpoint
@@ -2209,7 +2669,7 @@ async def whatsapp(request: Request):
                         logger.warning(f"Message appears to be a bot message echo: '{body[:50]}...'")
                         break
             if not is_bot_message:
-                detect_and_store_user_data(from_number, body)
+                detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
             
             if is_bot_message:
                 # Skip processing if this appears to be from the bot

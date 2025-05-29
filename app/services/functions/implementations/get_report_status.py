@@ -58,7 +58,7 @@ async def get_report_status(report_id: str):
                 location = report_data.get("localizacion", "No especificada")
                 description = report_data.get("reporte", "Sin descripción")
                 
-                return {
+                result = {
                     "success": True,
                     "report_id": report_id_clean,
                     "status": status,
@@ -66,6 +66,13 @@ async def get_report_status(report_id: str):
                     "description": description,
                     "message": f"El reporte con folio {report_id_clean} tiene un estado: {status}."
                 }
+                
+                # 🧹 NUEVA FUNCIONALIDAD: Limpiar sesiones después de consulta exitosa
+                cleanup_user_session_after_status_check()
+                logger.critical(f"🧹 [STATUS QUERY] Limpieza ejecutada después de consultar folio {report_id_clean}")
+                
+                return result
+                
             except json.JSONDecodeError:
                 logger.error(f"Error al decodificar la respuesta JSON: {response.text}")
                 return {
@@ -101,3 +108,38 @@ async def get_report_status(report_id: str):
             "error": f"Error inesperado: {str(e)}",
             "message": "Ocurrió un error inesperado al consultar el estado del reporte. Por favor intenta más tarde."
         }
+
+def cleanup_user_session_after_status_check():
+    """
+    🧹 Limpia sesiones de reporte activas después de consultar status.
+    Versión simple que busca y limpia todas las sesiones activas.
+    """
+    try:
+        from app.util.logger import logger
+        
+        # Intentar importar y limpiar report_sessions
+        try:
+            from app.api.original_routes import report_sessions, report_sessions_lock
+            
+            # Si hay sesiones activas, limpiarlas todas
+            with report_sessions_lock:
+                if report_sessions:
+                    cleared_numbers = list(report_sessions.keys())
+                    report_sessions.clear()
+                    logger.critical(f"🧹 [SIMPLE CLEANUP] Limpiadas {len(cleared_numbers)} sesiones de reporte después de consultar status")
+                    
+                    # También limpiar user_answers para esos números
+                    try:
+                        from app.api.original_routes import user_answers
+                        for number in cleared_numbers:
+                            if number in user_answers:
+                                del user_answers[number]
+                        logger.critical(f"🧹 [SIMPLE CLEANUP] Limpiados user_answers para {len(cleared_numbers)} números")
+                    except ImportError:
+                        pass
+                        
+        except ImportError:
+            logger.debug("🔍 [SIMPLE CLEANUP] No se pudieron importar variables de sesión")
+            
+    except Exception as e:
+        logger.error(f"💥 [SIMPLE CLEANUP ERROR] Error en limpieza simple: {str(e)}")

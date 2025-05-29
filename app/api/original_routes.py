@@ -526,6 +526,295 @@ def get_streets_performance_stats():
         "avg_search_time_ms": "<1ms"
     }
 
+def extract_reply_context(payload):
+    """
+    Extrae el contexto de respuesta (reply) O mensaje citado de WhatsApp.
+    Versión mejorada que maneja tanto replies como quoted messages.
+    
+    Args:
+        payload (dict): El payload recibido de Chat2Desk
+        
+    Returns:
+        dict: Información sobre la respuesta, incluyendo el mensaje original
+    """
+    reply_info = {
+        'is_reply': False,
+        'original_message': None,
+        'reply_to_id': None,
+        'is_quoted': False,
+        'user_response': None
+    }
+    
+    try:
+        text = payload.get('text', '')
+        
+        # NUEVO: Primero verificar si es un mensaje citado
+        quoted_info = extract_quoted_message_content(text)
+        if quoted_info['is_quoted']:
+            reply_info.update({
+                'is_reply': True,  # Tratamos quoted como reply para propósitos de procesamiento
+                'is_quoted': True,
+                'original_message': quoted_info['quoted_text'],
+                'user_response': quoted_info['user_response'],
+                'reply_to_id': 'quoted_message'
+            })
+            logger.debug(f"Quoted message detected: {reply_info}")
+            return reply_info
+        
+        # Continuar con detección de replies normales
+        # Opción 1: Campo 'reply_to' directo
+        if payload.get('reply_to'):
+            reply_info['is_reply'] = True
+            reply_info['reply_to_id'] = payload.get('reply_to')
+            reply_info['original_message'] = payload.get('reply_to_text', '')
+            
+        # Opción 2: Campo 'quoted_message' o similar
+        elif payload.get('quoted_message'):
+            reply_info['is_reply'] = True
+            quoted = payload.get('quoted_message', {})
+            reply_info['original_message'] = quoted.get('text', '')
+            reply_info['reply_to_id'] = quoted.get('id')
+            
+        # Opción 3: En el campo 'context' que a veces usa Chat2Desk
+        elif payload.get('context', {}).get('quoted_message'):
+            reply_info['is_reply'] = True
+            quoted = payload['context']['quoted_message']
+            reply_info['original_message'] = quoted.get('text', '')
+            reply_info['reply_to_id'] = quoted.get('id')
+            
+        # Opción 4: Buscar en metadata adicional
+        elif payload.get('metadata', {}).get('reply'):
+            reply_info['is_reply'] = True
+            reply_data = payload['metadata']['reply']
+            reply_info['original_message'] = reply_data.get('text', '')
+            reply_info['reply_to_id'] = reply_data.get('id')
+            
+        logger.debug(f"Reply context extracted: {reply_info}")
+        
+    except Exception as e:
+        logger.error(f"Error extracting reply context: {str(e)}")
+        
+    return reply_info
+
+def process_reply_message(from_number, body, reply_context):
+    """
+    Procesa un mensaje que es respuesta a otro mensaje específico.
+    
+    Args:
+        from_number (str): Número del remitente
+        body (str): Contenido del mensaje de respuesta
+        reply_context (dict): Contexto de la respuesta extraído
+        
+    Returns:
+        str: Mensaje enriquecido con contexto
+    """
+    try:
+        if not reply_context['is_reply']:
+            return body
+            
+        original_message = reply_context.get('original_message', '')
+        
+        # Crear un mensaje contextualizado
+        contextualized_message = f"[Respondiendo a: '{original_message[:50]}...'] {body}"
+        
+        logger.critical(f"🔗 [REPLY DETECTED] {from_number} respondió '{body}' a '{original_message[:30]}...'")
+        
+        # Si el mensaje original era una pregunta específica, intentar categorizar la respuesta
+        original_lower = original_message.lower()
+        
+        # Detectar si es respuesta a pregunta sobre número/dirección
+        if any(keyword in original_lower for keyword in ['número', 'numero', 'dirección', 'direccion', 'calle']):
+            # Si la respuesta es un número, probablemente es un número de casa
+            if body.strip().isdigit():
+                save_user_answer(from_number, "selection6", body.strip())
+                logger.critical(f"💾 [REPLY AUTO-SAVE] Número guardado por respuesta: {body}")
+                
+        # Detectar si es respuesta a pregunta sobre colonia
+        elif any(keyword in original_lower for keyword in ['colonia', 'col.', 'barrio', 'zona']):
+            save_user_answer(from_number, "selection7", body.strip())
+            logger.critical(f"💾 [REPLY AUTO-SAVE] Colonia guardada por respuesta: {body}")
+            
+        # Detectar si es respuesta a pregunta sobre tipo de problema
+        elif any(keyword in original_lower for keyword in ['tipo', 'problema', 'reporte', 'motivo']):
+            save_user_answer(from_number, "selection4", body.strip())
+            logger.critical(f"💾 [REPLY AUTO-SAVE] Problema guardado por respuesta: {body}")
+            
+        return contextualized_message
+        
+    except Exception as e:
+        logger.error(f"Error processing reply message: {str(e)}")
+        return body
+
+def update_user_activity_on_reply(from_number):
+    """
+    Actualiza la actividad del usuario cuando responde, evitando timeouts incorrectos.
+    
+    Args:
+        from_number (str): Número del usuario
+    """
+    try:
+        # Actualizar sesión de usuario si existe
+        if from_number in user_sessions:
+            user_sessions[from_number].update_activity()
+            logger.debug(f"🔄 [ACTIVITY] Actividad actualizada por reply para {from_number}")
+            
+        # Actualizar sesión de reporte si existe
+        if from_number in report_sessions:
+            with report_sessions_lock:
+                report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                logger.debug(f"🔄 [REPORT ACTIVITY] Reporte actualizado por reply para {from_number}")
+                
+        # Actualizar tiempo de última respuesta
+        last_response_time[from_number] = datetime.now().timestamp()
+        
+    except Exception as e:
+        logger.error(f"Error updating activity on reply: {str(e)}")
+
+async def monitor_reply_detection():
+    """
+    Tarea de background para monitorear la detección de respuestas.
+    """
+    while True:
+        try:
+            await asyncio.sleep(300)  # Cada 5 minutos
+            
+            total_sessions = len(user_sessions)
+            report_sessions_count = len(report_sessions)
+            
+            logger.info(f"📊 [REPLY STATS] Sesiones activas: {total_sessions}, Reportes en progreso: {report_sessions_count}")
+            
+            # Contar cuántas sesiones tienen actividad reciente
+            now = datetime.now(pytz.timezone('America/Mexico_City'))
+            recent_activity = 0
+            
+            for number, session in user_sessions.items():
+                if (now - session.last_active).total_seconds() < 300:  # Últimos 5 minutos
+                    recent_activity += 1
+                    
+            logger.info(f"📊 [REPLY STATS] Sesiones con actividad reciente (5 min): {recent_activity}")
+            
+        except Exception as e:
+            logger.error(f"Error in reply detection monitor: {str(e)}")
+
+def extract_quoted_message_content(text):
+    """
+    Extrae el contenido de un mensaje citado de WhatsApp.
+    SOLO detecta el patrón específico: « texto citado » \n respuesta
+    
+    Args:
+        text (str): Texto completo del mensaje
+        
+    Returns:
+        dict: Información del mensaje citado y respuesta del usuario
+    """
+    import re
+    
+    result = {
+        'is_quoted': False,
+        'quoted_text': None,
+        'user_response': None,
+        'original_text': text
+    }
+    
+    try:
+        # ÚNICO PATRÓN: « texto citado » \n respuesta_usuario
+        pattern = r'«\s*(.*?)\s*»\s*\n\s*(.*)'
+        match = re.search(pattern, text, re.DOTALL)
+        
+        if match:
+            quoted_text = match.group(1).strip()
+            user_response = match.group(2).strip()
+            
+            # Validaciones adicionales para evitar falsos positivos
+            if (quoted_text and user_response and 
+                len(user_response) > 0 and 
+                len(user_response) < len(quoted_text)):  # La respuesta debe ser más corta que lo citado
+                
+                result.update({
+                    'is_quoted': True,
+                    'quoted_text': quoted_text,
+                    'user_response': user_response
+                })
+                
+                logger.debug(f"✅ QUOTED MATCH: Citado='{quoted_text[:30]}...', Respuesta='{user_response}'")
+                return result
+            else:
+                logger.debug(f"❌ QUOTED REJECTED: Citado='{quoted_text[:30]}...', Respuesta='{user_response}' (no cumple validaciones)")
+                        
+    except Exception as e:
+        logger.error(f"Error extracting quoted content: {str(e)}")
+    
+    return result
+
+def process_quoted_message(from_number, text, quoted_info):
+    """
+    Procesa un mensaje que contiene texto citado y extrae la respuesta del usuario.
+    
+    Args:
+        from_number (str): Número del usuario
+        text (str): Texto completo del mensaje
+        quoted_info (dict): Información del mensaje citado
+        
+    Returns:
+        str: Solo la respuesta del usuario
+    """
+    try:
+        if not quoted_info['is_quoted']:
+            return text
+            
+        user_response = quoted_info['user_response']
+        quoted_text = quoted_info['quoted_text']
+        
+        logger.critical(f"📝 [QUOTED PROCESSING] Usuario {from_number}: '{user_response}' (citó: '{quoted_text[:30]}...')")
+        
+        # Actualizar actividad del usuario
+        update_user_activity_on_reply(from_number)
+        
+        # Intentar detectar el tipo de respuesta basándose en el texto citado
+        if quoted_text:
+            quoted_lower = quoted_text.lower()
+            
+            # Detectar preguntas sobre ubicación/dirección
+            if any(keyword in quoted_lower for keyword in ['calle', 'dirección', 'direccion', 'donde', 'dónde', 'ubicación', 'ubicacion']):
+                if len(user_response) > 2 and not user_response.isdigit():
+                    save_user_answer(from_number, "selection5", user_response)
+                    logger.critical(f"💾 [QUOTED SAVE] Calle guardada: {user_response}")
+                elif user_response.isdigit():
+                    save_user_answer(from_number, "selection6", user_response) 
+                    logger.critical(f"💾 [QUOTED SAVE] Número guardado: {user_response}")
+                    
+            # Detectar preguntas sobre número
+            elif any(keyword in quoted_lower for keyword in ['número', 'numero']):
+                if user_response.isdigit():
+                    save_user_answer(from_number, "selection6", user_response)
+                    logger.critical(f"💾 [QUOTED SAVE] Número guardado: {user_response}")
+                    
+            # Detectar preguntas sobre colonia
+            elif any(keyword in quoted_lower for keyword in ['colonia', 'col.', 'barrio']):
+                save_user_answer(from_number, "selection7", user_response)
+                logger.critical(f"💾 [QUOTED SAVE] Colonia guardada: {user_response}")
+                
+            # Detectar preguntas sobre nombre
+            elif any(keyword in quoted_lower for keyword in ['nombre', 'llamas', 'llama']):
+                save_user_answer(from_number, "selection2", user_response)
+                logger.critical(f"💾 [QUOTED SAVE] Nombre guardado: {user_response}")
+                
+            # Detectar preguntas sobre problema/tipo
+            elif any(keyword in quoted_lower for keyword in ['problema', 'tipo', 'motivo', 'reporte']):
+                save_user_answer(from_number, "selection4", user_response)
+                logger.critical(f"💾 [QUOTED SAVE] Problema guardado: {user_response}")
+        
+        # Crear o actualizar sesión de reporte si es necesario
+        if from_number not in report_sessions:
+            create_or_update_report_session(from_number)
+            logger.critical(f"🎯 [QUOTED SESSION] Sesión creada por mensaje citado")
+        
+        return user_response
+        
+    except Exception as e:
+        logger.error(f"Error processing quoted message: {str(e)}")
+        return text
+
 
 async def complete_cleanup_after_report(phone_number, delay_seconds=5):
     """
@@ -1520,7 +1809,7 @@ async def check_inactivity():
                                 "client_id": client_id,
                                 "channel_id": channel_id,
                                 "transport": "wa_direct",
-                                "text": "Se ha desconectado la sesión por inactividad. Para iniciar una nueva conversación, envía un mensaje."
+                                "text": "Parece que te ausentaste. La conversación se cerró por inactividad. Mándanos un mensaje para comenzar de nuevo. ¡Aquí estaremos!😊"
                             }
                             
                             async with httpx.AsyncClient() as client:
@@ -1960,6 +2249,7 @@ async def lifespan(app: FastAPI):
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
     asyncio.create_task(check_report_timeouts())
+    asyncio.create_task(monitor_reply_detection())
     yield
     # Shutdown: se puede agregar lógica de limpieza si se requiere
 app = FastAPI(lifespan=lifespan)
@@ -1974,24 +2264,31 @@ processed_message_ids = TTLCache(max_size=1000, ttl_seconds=3600)
 #Add this function to identify and filter out bot-originated messages
 def is_bot_generated_message(message_text, recent_ai_messages=None):
     """
-    Determines if a message was likely generated by our bot and echoed back.
+    Versión mejorada que maneja mensajes citados y no los confunde con ecos del bot.
     
     Args:
-        message_text (str): The message text to analyze
-        recent_ai_messages (list): Optional list of recent AI messages for comparison
+        message_text (str): El mensaje a analizar
+        recent_ai_messages (list): Mensajes recientes del AI
         
     Returns:
-        bool: True if the message appears to be from the bot, False otherwise
+        bool: True si es un mensaje del bot, False si es del usuario
     """
-
     if not message_text:
-        False
+        return False
 
-    # Check for specific bot message patterns
+    # NUEVO: Primero verificar si es un mensaje citado
+    quoted_info = extract_quoted_message_content(message_text)
+    
+    if quoted_info['is_quoted']:
+        logger.critical(f"🔤 [QUOTED DETECTED] Texto citado: '{quoted_info['quoted_text'][:30]}...', Respuesta usuario: '{quoted_info['user_response']}'")
+        # Si es un mensaje citado, NO es un echo del bot - es una respuesta legítima del usuario
+        return False
+    
+    # Continuar con la lógica original para mensajes no citados
     exact_bot_patterns = [
         "he recibido tu imagen",
-        "he recibido otra imagen",
-        "tienes * en total", 
+        "he recibido otra imagen", 
+        "tienes * en total",
         "puedes enviar más imágenes",
         "puedes seguir enviando imágenes",
         "[image_received]",
@@ -2013,17 +2310,6 @@ def is_bot_generated_message(message_text, recent_ai_messages=None):
                 (ai_message in message_text or message_text in ai_message)
             ):
                 return True
-            
-            # # Check similarity ratio for longer messages
-            # if len(message_text) > 15 and len(ai_message) > 15:
-            #     # Simple similarity check - shared words
-            #     msg_words = set(message_text.lower().split())
-            #     ai_words = set(ai_message.lower().split())
-            #     common_words = msg_words.intersection(ai_words)
-                
-            #     # If they share more than 70% of words, likely an echo
-            #     if len(common_words) / max(len(msg_words), len(ai_words)) > 0.7:
-            #         return True
     
     return False
 
@@ -2079,6 +2365,7 @@ async def whatsapp(request: Request):
     try:
         payload = await request.json()  # Recibimos el payload como JSON
         print(f"Payload recibido: {payload}")
+        reply_context = extract_reply_context(payload)
 
         # IMPORTANTE: Verificar si es un mensaje de un cliente o una respuesta del sistema
         # Extraer información del payload de Chat2Desk
@@ -2094,6 +2381,26 @@ async def whatsapp(request: Request):
         hook_type = payload.get('hook_type', '')
         operator_id = payload.get('operator_id', '')
 
+        # 🆕 PROCESAR RESPUESTA SI ES DETECTADA
+        if reply_context['is_reply']:
+            if reply_context.get('is_quoted', False):
+                logger.critical(f"📨 [QUOTED DETECTED] Usuario {from_number} citó: '{reply_context['original_message'][:30]}...' y respondió: '{reply_context['user_response']}'")
+                # Para mensajes citados, procesar de manera especial
+                body = process_quoted_message(from_number, body, reply_context)
+            else:
+                logger.critical(f"📨 [REPLY DETECTED] Usuario {from_number} respondió: '{body}' a '{reply_context['original_message'][:30] if reply_context['original_message'] else 'mensaje'}...'")
+                # Actualizar actividad inmediatamente para evitar timeout
+                update_user_activity_on_reply(from_number)
+                # Enriquecer el mensaje con contexto
+                body = process_reply_message(from_number, body, reply_context)
+            
+            # Si no hay sesión de reporte pero la respuesta sugiere actividad de reporte, crearla
+            if (from_number not in report_sessions and 
+                (should_create_report_session(body, "") or 
+                any(keyword in reply_context.get('original_message', '').lower() 
+                    for keyword in ['reporte', 'problema', 'bache', 'luminaria', 'basura', 'número', 'numero', 'calle', 'colonia']))):
+                create_or_update_report_session(from_number)
+                logger.critical(f"🎯 [REPLY SESSION] Sesión de reporte creada por contexto de reply")
         # ADD THIS CHECK RIGHT HERE - AFTER extracting from_number but BEFORE any message processing
         current_time = datetime.now().timestamp()
         
@@ -3017,8 +3324,41 @@ async def whatsapp(request: Request):
         # ============================================================================
         # 🎯 AUTO-GUARDAR INFORMACIÓN DETECTADA EN LA CONVERSACIÓN
         # ============================================================================
-        if from_number and body and should_create_report_session(body, response_content):
-            logger.critical(f"💾 [AUTO-SAVE] Iniciando detección automática para {from_number}")
+        if from_number and body and (should_create_report_session(body, response_content) or reply_context.get('is_reply', False)):
+            logger.critical(f"💾 [AUTO-SAVE] Iniciando detección automática para {from_number} (reply: {reply_context.get('is_reply', False)})")
+
+            # Si es una respuesta, darle mayor prioridad a la detección automática
+            if reply_context.get('is_reply', False):
+                create_or_update_report_session(from_number)
+                
+                # Intentar detectar qué tipo de dato es basado en el contexto
+                original_message = reply_context.get('original_message', '').lower()
+                user_response = body.strip()
+                
+                # Detección contextual mejorada
+                if any(keyword in original_message for keyword in ['número', 'numero']):
+                    if user_response.isdigit() and 1 <= int(user_response) <= 99999:
+                        save_user_answer(from_number, "selection6", user_response)
+                        logger.critical(f"💾 [CONTEXT SAVE] Número guardado por contexto: {user_response}")
+                        
+                elif any(keyword in original_message for keyword in ['calle', 'dirección', 'direccion']):
+                    if len(user_response) > 2:
+                        save_user_answer(from_number, "selection5", user_response)
+                        logger.critical(f"💾 [CONTEXT SAVE] Calle guardada por contexto: {user_response}")
+                        
+                elif any(keyword in original_message for keyword in ['colonia', 'col.', 'barrio']):
+                    if len(user_response) > 2:
+                        save_user_answer(from_number, "selection7", user_response)
+                        logger.critical(f"💾 [CONTEXT SAVE] Colonia guardada por contexto: {user_response}")
+                        
+                elif any(keyword in original_message for keyword in ['problema', 'tipo', 'asunto']):
+                    save_user_answer(from_number, "selection4", user_response)
+                    logger.critical(f"💾 [CONTEXT SAVE] Problema guardado por contexto: {user_response}")
+                        
+                elif any(keyword in original_message for keyword in ['nombre', 'como te llamas']):
+                    if len(user_response) > 1:
+                        save_user_answer(from_number, "selection2", user_response)
+                        logger.critical(f"💾 [CONTEXT SAVE] Nombre guardado por contexto: {user_response}")
 
             create_or_update_report_session(from_number)
             

@@ -47,6 +47,8 @@ from .implementations.get_rutas_reciclaje import get_rutas_reciclaje
 from .implementations.get_instituto_control_vehicular import get_icvnl
 from .implementations.get_report_status import get_report_status
 from .implementations.get_calidad_aire import get_calidad_aire
+from .implementations.get_eventos_especiales import get_eventos_especiales
+
 
 
 
@@ -98,5 +100,6 @@ registered_functions = [
     get_rutas_reciclaje,
     get_icvnl,
     get_report_status,
-    get_calidad_aire
+    get_calidad_aire,
+    get_eventos_especiales
 ]

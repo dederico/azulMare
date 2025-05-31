@@ -92,7 +92,7 @@ Carta médica con diagnóstico y medicamentos.
 Análisis clínico de tipo de sangre.
 Comprobante de domicilio.
 
-Centro de Atención Psicológica
+Centro de Atención Psicológica - CAP
 ¿En qué consiste este servicio?
 Brinda atención psicológica a personas en situación de vulnerabilidad emocional.
 ¿Dónde se ubica?

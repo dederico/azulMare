@@ -1,3 +1,9 @@
+import re
+import httpx
+import requests
+import json
+from datetime import datetime
+import traceback
 import base64
 import aiohttp
 import logging
@@ -15,7 +21,6 @@ import requests
 from openai import OpenAI
 import asyncio
 from contextlib import asynccontextmanager
-import httpx
 import os
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -1083,7 +1088,7 @@ async def save_client_selection_with_deduplication(yoga_number, selection1, sele
         selection3 (str): Always empty string ""
         selection4 (str): Report description
         selection5 (str): Street name
-        selection6 (str): Street number (default "100")
+        selection6 (str): Street number (default"0000")
         selection7 (str): Neighborhood name
         selection8 (str, optional): Legacy parameter (not used)
         images_list (list, optional): List of image URLs
@@ -1369,7 +1374,7 @@ async def check_report_timeouts():
                         saved_selection2 = get_user_answer(number, "selection2") or "Ciudadano"
                         saved_selection4 = get_user_answer(number, "selection4") or "Reporte automático por timeout"
                         saved_selection5 = get_user_answer(number, "selection5") or "Sin especificar"
-                        saved_selection6 = get_user_answer(number, "selection6") or "100"
+                        saved_selection6 = get_user_answer(number, "selection6") or "0000"
                         saved_selection7 = get_user_answer(number, "selection7") or "Sin especificar"
                     except Exception as e:
                         logger.error(f"💥 [DATA ERROR] Error obteniendo datos para {number}: {str(e)}")
@@ -1378,7 +1383,7 @@ async def check_report_timeouts():
                         saved_selection2 = "Ciudadano"
                         saved_selection4 = "Reporte automático por timeout (error en datos)"
                         saved_selection5 = "Sin especificar"
-                        saved_selection6 = "100"
+                        saved_selection6 = "0000"
                         saved_selection7 = "Sin especificar"
                     
                     logger.critical(f"⏰ [DATOS] {number}: tipo={saved_selection1}, nombre={saved_selection2}, desc={saved_selection4}")
@@ -1884,6 +1889,8 @@ def is_finalization_message(text, from_number=None):
     It also considers conversation context to avoid treating post-report thank you messages
     as new finalization requests.
     
+    VERSIÓN CORREGIDA: Unifica diccionarios y extiende tiempo de protección
+    
     Args:
         text (str): The message text to analyze
         from_number (str, optional): The phone number of the sender for context checking
@@ -1897,31 +1904,48 @@ def is_finalization_message(text, from_number=None):
     # Convert to lowercase for case-insensitive matching
     text_lower = text.lower()
     
-    # Check if this number just completed a report
-    if from_number and from_number in recently_completed_reports:
-        completion_info = recently_completed_reports[from_number]
+    # ✅ CORRECCIÓN: Verificar en AMBOS diccionarios (recently_completed_reports Y completed_reports)
+    if from_number:
         current_time = datetime.now().timestamp()
-        elapsed_seconds = current_time - completion_info['timestamp']
+        recently_completed = from_number in recently_completed_reports
+        completed_recently = from_number in completed_reports
         
-        # If report was completed in the last 60 seconds and this is one of the first 2 messages after
-        if elapsed_seconds < 60 and completion_info['message_count'] < 2:
-            # Increment the message counter
-            completion_info['message_count'] += 1
+        # Verificar en CUALQUIERA de los dos diccionarios
+        if recently_completed or completed_recently:
+            elapsed_seconds = None
+            message_count = 0
             
-            # Common thank you and farewell phrases in Spanish
-            post_report_phrases = [
-                "gracias", "mil gracias", "muchas gracias", "excelente", "perfecto",
-                "genial", "que bueno", "qué bueno", "estupendo", "magnífico",
-                "es todo", "eso es todo", "eso era todo", "es todo por ahora",
-                "es todo lo que necesitaba", "era todo", "no necesito nada más",
-                "así está bien", "así esta bien", "está bien", "esta bien", 
-                "ok", "okay", "bien", "bueno", "de acuerdo", "entendido"
-            ]
+            # Obtener información de cualquier diccionario disponible
+            if recently_completed:
+                completion_info = recently_completed_reports[from_number]
+                elapsed_seconds = current_time - completion_info['timestamp']
+                message_count = completion_info.get('message_count', 0)
+                
+            elif completed_recently:
+                completion_info = completed_reports[from_number]
+                elapsed_seconds = current_time - completion_info['timestamp']
+                message_count = 0  # completed_reports no tiene message_count
             
-            # If the message looks like a thank you after report completion
-            if any(phrase in text_lower for phrase in post_report_phrases):
-                logger.debug(f"Detected post-report thank you message, not treating as finalization: '{text}'")
-                return False
+            # ✅ CORRECCIÓN: Extender tiempo de 60 a 180 segundos (3 minutos)
+            if elapsed_seconds is not None and elapsed_seconds < 180:
+                # ✅ CORRECCIÓN: Incrementar contador solo si recently_completed existe y es < 3
+                if recently_completed and message_count < 3:
+                    recently_completed_reports[from_number]['message_count'] += 1
+                
+                # Common thank you and farewell phrases in Spanish
+                post_report_phrases = [
+                    "gracias", "mil gracias", "muchas gracias", "excelente", "perfecto",
+                    "genial", "que bueno", "qué bueno", "estupendo", "magnífico",
+                    "es todo", "eso es todo", "eso era todo", "es todo por ahora",
+                    "es todo lo que necesitada", "era todo", "no necesito nada más",
+                    "así está bien", "así esta bien", "está bien", "esta bien", 
+                    "ok", "okay", "bien", "bueno", "de acuerdo", "entendido"
+                ]
+                
+                # If the message looks like a thank you after report completion
+                if any(phrase in text_lower for phrase in post_report_phrases):
+                    logger.critical(f"🚫 [POST-REPORT BLOCKED] '{text}' ignorado para {from_number} (hace {elapsed_seconds:.1f}s)")
+                    return False
     
     # 1. Direct finalization keywords
     direct_keywords = [
@@ -2005,6 +2029,92 @@ def is_finalization_message(text, from_number=None):
             return True
     
     # If none of the above conditions match, it's not a finalization message
+    return False
+
+async def save_client_selection2_with_auto_marking(yoga_number: str, selection1: str, selection2: str, selection3: str,
+                                                  selection4: str, selection5: str, selection6: str, selection7: str, 
+                                                  selection8: str = None, images_list: list = None, descriptions_list: list = None):
+    """
+    Wrapper que llama a save_client_selection2 y hace auto-marking DESPUÉS del éxito.
+    EVITA importaciones circulares manteniendo el marking en original_routes.py
+    """
+    try:
+        # Llamar a la función original
+        folio = await save_client_selection2(
+            yoga_number, selection1, selection2, selection3,
+            selection4, selection5, selection6, selection7,
+            selection8, images_list, descriptions_list
+        )
+        
+        # ✅ AUTO-MARKING después del éxito (SIN imports circulares)
+        if folio and "Folio:" in folio and folio != "Folio: Generado":
+            logger.critical(f"✅ [AUTO-MARKING] Marcando {yoga_number} como completado con {folio}")
+            
+            # Marcar en recently_completed_reports
+            try:
+                mark_report_as_completed(yoga_number)
+                logger.critical(f"✅ [MARKED] recently_completed_reports actualizado para {yoga_number}")
+            except Exception as e:
+                logger.error(f"❌ [MARK ERROR] Error en recently_completed_reports: {str(e)}")
+                # Fallback manual
+                recently_completed_reports[yoga_number] = {
+                    'timestamp': datetime.now().timestamp(),
+                    'message_count': 0
+                }
+                logger.critical(f"✅ [MANUAL MARKED] recently_completed_reports actualizado manualmente")
+            
+            # TAMBIÉN marcar en completed_reports
+            try:
+                completed_reports[yoga_number] = {
+                    'timestamp': datetime.now().timestamp(),
+                    'folio': folio
+                }
+                logger.critical(f"✅ [DUAL MARKED] {yoga_number} marcado en completed_reports también")
+            except Exception as e:
+                logger.error(f"❌ [DUAL MARK ERROR] Error marcando en completed_reports: {str(e)}")
+        
+        return folio
+        
+    except Exception as e:
+        logger.error(f"❌ Error en save_client_selection2_with_auto_marking: {str(e)}")
+        raise
+
+async def should_block_gratitude_message(text, from_number):
+    """
+    Verificación ADICIONAL para bloquear mensajes de gratitud
+    """
+    if not text or not from_number:
+        return False
+    
+    text_lower = text.lower().strip()
+    
+    # Verificar en AMBOS diccionarios
+    in_recently = from_number in recently_completed_reports
+    in_completed = from_number in completed_reports
+    
+    if not (in_recently or in_completed):
+        return False
+    
+    current_time = datetime.now().timestamp()
+    
+    # Obtener timestamp de cualquier diccionario
+    if in_recently:
+        elapsed = current_time - recently_completed_reports[from_number]['timestamp']
+    elif in_completed:
+        elapsed = current_time - completed_reports[from_number]['timestamp']
+    
+    # Si fue hace menos de 3 minutos
+    if elapsed < 180:
+        gratitude_words = [
+            "gracias", "excelente", "perfecto", "genial", "ok", "bueno", 
+            "está bien", "de acuerdo", "mil gracias", "muchas gracias"
+        ]
+        
+        # Si es SOLO una palabra de gratitud (mensaje corto)
+        if any(word == text_lower or text_lower.startswith(word) for word in gratitude_words):
+            logger.critical(f"🚫 [GRATITUDE BLOCKED] '{text}' bloqueado para {from_number} (hace {elapsed:.1f}s)")
+            return True
+    
     return False
 
 async def remove_from_completed_reports(number, delay_seconds):
@@ -3591,56 +3701,55 @@ async def whatsapp(request: Request):
         if is_function_call:
             logger.warning(f"Detected function call in response: {response_content}")
             
-            # En el código de procesamiento de WhatsApp donde se detecta "transfer_to_group"
-        if "transfer_to_group" in response_content:
-            # Marcar como transferido
-            expiration_time = datetime.now().timestamp() + transfer_timeout
-            transferred_numbers[from_number] = expiration_time
+            # Detectar y manejar transfer_to_group específicamente
+            if "transfer_to_group" in response_content:
+                # Limpiar la respuesta de código literal
+                response_content = response_content.replace("transfer_to_group", "conectar con agente")
+                response_content = re.sub(r'transfer_to_group\s*\([^)]*\)', "Te voy a conectar con un agente humano", response_content)
+                
+                # Marcar como transferido
+                expiration_time = datetime.now().timestamp() + transfer_timeout
+                transferred_numbers[from_number] = expiration_time
+                
+                try:
+                    # Ejecutar la transferencia de forma segura
+                    result = await transfer_to_group(
+                        phone_number=from_number, 
+                        group_id=1772,  # Usar valor fijo seguro
+                        reason="Transferencia automática por código detectado",
+                        send_notification=True
+                    )
+                    
+                    # Registrar nota para el sistema
+                    transfer_note = Message(
+                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        senderName="System",
+                        message=f"[SYSTEM] Transferencia iniciada por código literal detectado",
+                        number=from_number,
+                        uid=f"transfer-fix-{datetime.now().timestamp()}",
+                        direction="system",
+                        mtype="text",
+                        source="whatsapp"
+                    )
+                    db.Insert(transfer_note)
+                    
+                    # ¡IMPORTANTE! Interrumpir el flujo normal para evitar mensajes adicionales
+                    return JSONResponse(content={"status": True, "message": "Transferencia iniciada"})
+                    
+                except Exception as e:
+                    logger.error(f"Error executing transfer fix: {str(e)}")
+                    if from_number in transferred_numbers:
+                        del transferred_numbers[from_number]
+                    # Continuar con respuesta limpia
+                    response_content = "Te voy a conectar con un agente humano que podrá ayudarte mejor."
             
-            try:
-                # Extraer group_id si está especificado
-                group_id = 1772  # Valor predeterminado
-                group_match = re.search(r'transfer_to_group\(.*?(\d+).*?\)', response_content)
-                if group_match:
-                    group_id = int(group_match.group(1))
-                
-                # Ejecutar la transferencia enviando un único mensaje desde la función
-                result = await transfer_to_group(
-                    phone_number=from_number, 
-                    group_id=group_id, 
-                    reason="Transferencia automática",
-                    send_notification=True  # La función enviará el único mensaje
-                )
-                
-                # Registrar nota para el sistema, pero no enviar al usuario
-                transfer_note = Message(
-                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    senderName="System",
-                    message=f"[SYSTEM] Se ha iniciado transferencia a agente humano. Se recomienda enviar: '{HUMAN_TAKEOVER_MESSAGE}'",
-                    number=from_number,
-                    uid=f"transfer-note-{datetime.now().timestamp()}",
-                    direction="system",
-                    mtype="text",
-                    source="whatsapp"
-                )
-                db.Insert(transfer_note)
-                
-                # ¡IMPORTANTE! Interrumpir el flujo normal para evitar mensajes adicionales
-                return JSONResponse(content={"status": True, "message": "Transferencia iniciada"})
-                
-            except Exception as e:
-                logger.error(f"Error executing transfer: {str(e)}")
-                if from_number in transferred_numbers:
-                    del transferred_numbers[from_number]
+            # Check if it's a hangup or farewell
+            elif any(p in response_content for p in ["functions.hangup", "call_sid ="]):
+                response_content = "¡Entendido! Que tengas un excelente día. ¡Hasta pronto!"
 
-            
-                # Check if it's a hangup or farewell
-                elif any(p in response_content for p in ["functions.hangup", "call_sid ="]):
-                    response_content = "¡Entendido! Que tengas un excelente día. ¡Hasta pronto!"
-
-                # Generic fallback for other function calls
-                else:
-                    response_content = "Estoy procesando tu solicitud. Dame un momento por favor."
+            # Generic fallback for other function calls
+            else:
+                response_content = "Estoy procesando tu solicitud. Dame un momento por favor."
 
         data = {
             "client_id": client_id,
@@ -3649,14 +3758,62 @@ async def whatsapp(request: Request):
             "text": response_content
         }
         
-        response = requests.post(chat2desk_url, json=data, headers=headers)
-        
-        if response.status_code == 200:
-            logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
-            content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
-        else:
-            logger.error(f"Error al enviar mensaje a Chat2Desk: {response.status_code} - {response.text}")
-            content = {"status": False, "error": f"Error al enviar mensaje: {response.status_code}"}
+        # Envío robusto con manejo de errores específicos
+        try:
+            response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                if response_data.get("status") == "success":
+                    logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
+                    content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
+                else:
+                    logger.error(f"Error en respuesta Chat2Desk: {response_data}")
+                    content = {"status": False, "error": "Error en la respuesta de Chat2Desk"}
+                    
+            elif response.status_code == 400:
+                # Manejar errores específicos de cliente
+                try:
+                    error_data = response.json()
+                    errors = error_data.get("errors", {})
+                    client_errors = errors.get("client_id", [])
+                    
+                    # Cliente bloqueado
+                    if any("blocked" in str(error).lower() for error in client_errors):
+                        logger.warning(f"Cliente {from_number} está bloqueado en Chat2Desk")
+                        content = {"status": True, "message": "Cliente bloqueado - no se envió mensaje"}
+                        
+                    # Cliente no existe  
+                    elif any("does not exist" in str(error) for error in client_errors):
+                        logger.warning(f"Cliente {from_number} no existe en Chat2Desk")
+                        content = {"status": False, "error": "Cliente no existe"}
+                    else:
+                        logger.error(f"Error 400 no manejado: {error_data}")
+                        content = {"status": False, "error": f"Error 400: {str(error_data)[:100]}"}
+                        
+                except json.JSONDecodeError:
+                    logger.error(f"Error 400 - respuesta no JSON: {response.text}")
+                    content = {"status": False, "error": "Error 400 - respuesta inválida"}
+                    
+            elif response.status_code == 429:
+                logger.warning(f"Rate limit en Chat2Desk para {from_number}")
+                content = {"status": False, "error": "Rate limit - reintenta más tarde"}
+                
+            else:
+                logger.error(f"Error HTTP {response.status_code}: {response.text}")
+                content = {"status": False, "error": f"Error HTTP {response.status_code}"}
+                
+        except requests.Timeout:
+            logger.error(f"Timeout enviando mensaje a {from_number}")
+            content = {"status": False, "error": "Timeout en Chat2Desk"}
+            
+        except requests.ConnectionError:
+            logger.error(f"Error de conexión con Chat2Desk para {from_number}")
+            content = {"status": False, "error": "Error de conexión con Chat2Desk"}
+            
+        except Exception as inner_error:
+            logger.error(f"Error inesperado enviando mensaje: {str(inner_error)}")
+            content = {"status": False, "error": f"Error inesperado: {str(inner_error)}"}
 
     except requests.RequestException as e:
         logger.error(f"Error de conexión con Chat2Desk: {str(e)}")

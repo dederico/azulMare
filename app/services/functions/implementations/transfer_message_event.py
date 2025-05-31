@@ -5,6 +5,7 @@ from app.models.Message import Message
 from datetime import datetime
 import pytz
 from app.util.logger import logger
+import re
 
 # Obtener token de API de Chat2Desk
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")

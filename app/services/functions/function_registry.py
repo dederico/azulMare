@@ -48,6 +48,8 @@ from .implementations.get_instituto_control_vehicular import get_icvnl
 from .implementations.get_report_status import get_report_status
 from .implementations.get_calidad_aire import get_calidad_aire
 from .implementations.get_eventos_especiales import get_eventos_especiales
+from .implementations.get_info_museo import get_info_museos
+
 
 
 
@@ -101,5 +103,6 @@ registered_functions = [
     get_icvnl,
     get_report_status,
     get_calidad_aire,
-    get_eventos_especiales
+    get_eventos_especiales,
+    get_info_museos
 ]

@@ -86,6 +86,8 @@ from app.api.streets_array import SAN_PEDRO_STREETS_REAL
 from app.api.colonies_array import SAN_PEDRO_COLONIES
 import difflib
 import re
+from app.services.deduplication import dedup_manager, dedup_cleanup_task
+
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -960,6 +962,78 @@ def get_user_answer(from_number, question_number):
     logger.debug(f"💾 [GET] {from_number} - {question_number}: {answer}")
     return answer
 
+async def save_client_selection2_protected(yoga_number: str, selection1: str, selection2: str, 
+                                          selection3: str, selection4: str, selection5: str, 
+                                          selection6: str, selection7: str, selection8: str = None, 
+                                          images_list: list = None, descriptions_list: list = None):
+    """
+    Versión protegida contra duplicados de save_client_selection2
+    """
+    
+    # Preparar datos para verificación
+    selection_data = {
+        'selection1': selection1 or "984",
+        'selection2': selection2 or "Ciudadano", 
+        'selection3': selection3 or "",
+        'selection4': selection4 or "Sin descripción",
+        'selection5': selection5 or "Sin especificar",
+        'selection6': selection6 or "0000",
+        'selection7': selection7 or "Sin especificar"
+    }
+    
+    # VERIFICAR SI SE PUEDE CREAR EL REPORTE
+    can_create, reason, existing_folio = dedup_manager.can_create_report(
+        yoga_number, selection_data, images_list
+    )
+    
+    if not can_create:
+        logger.warning(f"🚫 [BLOCKED] Reporte bloqueado para {yoga_number}: {reason}")
+        if existing_folio:
+            return f"Folio: {existing_folio}"
+        else:
+            return f"Error: {reason}"
+    
+    # MARCAR INICIO DE CREACIÓN
+    request_id = dedup_manager.mark_report_creation_start(yoga_number)
+    
+    try:
+        logger.critical(f"🚀 [CREATING] Iniciando reporte {request_id}")
+        
+        # LLAMAR A LA FUNCIÓN ORIGINAL
+        folio = await save_client_selection2(
+            yoga_number=yoga_number,
+            selection1=selection1,
+            selection2=selection2,
+            selection3=selection3,
+            selection4=selection4,
+            selection5=selection5,
+            selection6=selection6,
+            selection7=selection7,
+            selection8=selection8,
+            images_list=images_list,
+            descriptions_list=descriptions_list
+        )
+        
+        if folio and "Folio:" in folio:
+            # MARCAR COMO EXITOSO
+            dedup_manager.mark_report_creation_success(
+                yoga_number, folio, selection_data, images_list
+            )
+            
+            logger.critical(f"✅ [SUCCESS] Reporte creado: {folio} para {yoga_number}")
+            return folio
+        else:
+            # MARCAR COMO FALLIDO
+            dedup_manager.mark_report_creation_failure(yoga_number)
+            logger.error(f"❌ [FAILED] Fallo al crear reporte para {yoga_number}: {folio}")
+            return folio
+            
+    except Exception as e:
+        # MARCAR COMO FALLIDO
+        dedup_manager.mark_report_creation_failure(yoga_number)
+        logger.error(f"💥 [ERROR] Error creando reporte para {yoga_number}: {str(e)}")
+        raise
+
 def clear_user_answers(from_number):
     """Limpia todas las respuestas guardadas de un usuario"""
     if from_number in user_answers:
@@ -1390,7 +1464,7 @@ async def check_report_timeouts():
                     
                     # Crear el reporte con manejo de errores
                     try:
-                        folio = await save_client_selection2(
+                        folio = await save_client_selection2_protected(
                             yoga_number=number,
                             selection1=saved_selection1,
                             selection2=saved_selection2,
@@ -2035,43 +2109,26 @@ async def save_client_selection2_with_auto_marking(yoga_number: str, selection1:
                                                   selection4: str, selection5: str, selection6: str, selection7: str, 
                                                   selection8: str = None, images_list: list = None, descriptions_list: list = None):
     """
-    Wrapper que llama a save_client_selection2 y hace auto-marking DESPUÉS del éxito.
-    EVITA importaciones circulares manteniendo el marking en original_routes.py
+    🛡️ VERSIÓN PROTEGIDA: Usa el sistema anti-duplicación
     """
     try:
-        # Llamar a la función original
-        folio = await save_client_selection2(
+        # USAR LA FUNCIÓN PROTEGIDA
+        folio = await save_client_selection2_protected(
             yoga_number, selection1, selection2, selection3,
             selection4, selection5, selection6, selection7,
             selection8, images_list, descriptions_list
         )
         
-        # ✅ AUTO-MARKING después del éxito (SIN imports circulares)
+        # Si fue exitoso, hacer auto-marking
         if folio and "Folio:" in folio and folio != "Folio: Generado":
             logger.critical(f"✅ [AUTO-MARKING] Marcando {yoga_number} como completado con {folio}")
             
-            # Marcar en recently_completed_reports
-            try:
-                mark_report_as_completed(yoga_number)
-                logger.critical(f"✅ [MARKED] recently_completed_reports actualizado para {yoga_number}")
-            except Exception as e:
-                logger.error(f"❌ [MARK ERROR] Error en recently_completed_reports: {str(e)}")
-                # Fallback manual
-                recently_completed_reports[yoga_number] = {
-                    'timestamp': datetime.now().timestamp(),
-                    'message_count': 0
-                }
-                logger.critical(f"✅ [MANUAL MARKED] recently_completed_reports actualizado manualmente")
-            
-            # TAMBIÉN marcar en completed_reports
-            try:
-                completed_reports[yoga_number] = {
-                    'timestamp': datetime.now().timestamp(),
-                    'folio': folio
-                }
-                logger.critical(f"✅ [DUAL MARKED] {yoga_number} marcado en completed_reports también")
-            except Exception as e:
-                logger.error(f"❌ [DUAL MARK ERROR] Error marcando en completed_reports: {str(e)}")
+            # El dedup_manager ya maneja la protección post-reporte
+            # Solo necesitamos mantener recently_completed_reports para compatibilidad
+            recently_completed_reports[yoga_number] = {
+                'timestamp': datetime.now().timestamp(),
+                'message_count': 0
+            }
         
         return folio
         
@@ -2295,12 +2352,12 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             "selection7": get_user_answer(from_number, 7),
         }
 
-        logger.critical(f"PASANDO {len(images)} IMÁGENES A save_client_selection_with_deduplication")
+        logger.critical(f"PASANDO {len(images)} IMÁGENES A save_client_selection2_protected")
         for i, img in enumerate(images):
             logger.critical(f"  Imagen {i+1}: {img[:50]}...")
 
         # Create the report
-        folio = await save_client_selection_with_deduplication(
+        folio = await save_client_selection2_protected(
             yoga_number=from_number,
             images_list=images,
             descriptions_list=descriptions,
@@ -2360,7 +2417,14 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(check_inactivity())
     asyncio.create_task(check_report_timeouts())
     asyncio.create_task(monitor_reply_detection())
+    
+    # 🆕 NUEVA TAREA: Limpieza del gestor anti-duplicación
+    asyncio.create_task(dedup_cleanup_task(dedup_manager))
+    logger.critical("🛡️ [DEDUP] Tarea de limpieza anti-duplicación iniciada")
+    
     yield
+    # Shutdown: se puede agregar lógica de limpieza si se requiere
+    print("🛑 CERRANDO SERVIDOR...")
     # Shutdown: se puede agregar lógica de limpieza si se requiere
 app = FastAPI(lifespan=lifespan)
 
@@ -3670,6 +3734,7 @@ async def whatsapp(request: Request):
             "Authorization": api_token,
             "Content-Type": "application/json"
         }
+        
         # Check if the response contains phrases that could trigger finalization
         blocked_phrases = [
                 "ya terminé", "ya termine", "listo", "finalizar reporte", 
@@ -3694,6 +3759,7 @@ async def whatsapp(request: Request):
             "await save_client_selection",
             "save_client_selection"
         ]
+        
         # Check if the response looks like a function call or system instruction
         is_function_call = any(pattern in response_content for pattern in function_call_patterns)
 
@@ -3701,47 +3767,70 @@ async def whatsapp(request: Request):
         if is_function_call:
             logger.warning(f"Detected function call in response: {response_content}")
             
-            # Detectar y manejar transfer_to_group específicamente
+            # Detectar y EJECUTAR transferencias (no solo limpiar)
             if "transfer_to_group" in response_content:
-                # Limpiar la respuesta de código literal
-                response_content = response_content.replace("transfer_to_group", "conectar con agente")
-                response_content = re.sub(r'transfer_to_group\s*\([^)]*\)', "Te voy a conectar con un agente humano", response_content)
-                
-                # Marcar como transferido
+                logger.warning(f"🔄 TRANSFERENCIA DETECTADA EN RESPUESTA: {response_content[:100]}")
+
+                # 1. EXTRAER EL NÚMERO DE TELÉFONO del código literal
+                phone_to_transfer = from_number  # Por defecto, usar el número del usuario actual
+
+                # Intentar extraer el número del código literal
+                import re as regex_module
+                transfer_match = regex_module.search(r'transfer_to_group\s*\(\s*(["\']?)(\d+)\1\s*\)', response_content)
+                if transfer_match:
+                    extracted_phone = transfer_match.group(2)
+                    logger.critical(f"📞 NÚMERO EXTRAÍDO DEL CÓDIGO: {extracted_phone}")
+                    phone_to_transfer = extracted_phone
+
+                # 2. LIMPIAR el mensaje para el usuario (quitar código literal)
+                clean_message = regex_module.sub(r'transfer_to_group\s*\([^)]*\)', "", response_content)
+                clean_message = clean_message.replace("transfer_to_group", "")
+                clean_message = clean_message.strip()
+
+                # Si el mensaje queda vacío, usar uno genérico
+                if not clean_message or len(clean_message.strip()) < 10:
+                    clean_message = "Te voy a conectar con un agente humano que podrá ayudarte mejor. Un momento por favor."
+
+                response_content = clean_message
+                logger.critical(f"🧹 MENSAJE LIMPIADO PARA USUARIO: {response_content}")
+
+                # 3. MARCAR COMO TRANSFERIDO
                 expiration_time = datetime.now().timestamp() + transfer_timeout
                 transferred_numbers[from_number] = expiration_time
-                
+                logger.critical(f"📝 NÚMERO MARCADO COMO TRANSFERIDO: {from_number}")
+
+                # 4. EJECUTAR LA TRANSFERENCIA REAL
                 try:
-                    # Ejecutar la transferencia de forma segura
+                    logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA PARA: {phone_to_transfer}")
                     result = await transfer_to_group(
-                        phone_number=from_number, 
-                        group_id=1772,  # Usar valor fijo seguro
-                        reason="Transferencia automática por código detectado",
+                        phone_number=phone_to_transfer,
+                        group_id=1772,  # Grupo fijo
+                        reason="Transferencia automática por solicitud del LLM",
                         send_notification=True
                     )
-                    
-                    # Registrar nota para el sistema
+
+                    logger.critical(f"✅ TRANSFERENCIA EJECUTADA: {result}")
+
+                    # Registrar en base de datos
                     transfer_note = Message(
                         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         senderName="System",
-                        message=f"[SYSTEM] Transferencia iniciada por código literal detectado",
+                        message=f"[SYSTEM] Transferencia ejecutada para {phone_to_transfer} a grupo 1772",
                         number=from_number,
-                        uid=f"transfer-fix-{datetime.now().timestamp()}",
+                        uid=f"transfer-exec-{datetime.now().timestamp()}",
                         direction="system",
                         mtype="text",
                         source="whatsapp"
                     )
                     db.Insert(transfer_note)
-                    
-                    # ¡IMPORTANTE! Interrumpir el flujo normal para evitar mensajes adicionales
-                    return JSONResponse(content={"status": True, "message": "Transferencia iniciada"})
-                    
-                except Exception as e:
-                    logger.error(f"Error executing transfer fix: {str(e)}")
+
+                except Exception as transfer_error:
+                    logger.error(f"❌ ERROR EJECUTANDO TRANSFERENCIA: {str(transfer_error)}")
+                    # Si falla la transferencia, quitar de la lista de transferidos
                     if from_number in transferred_numbers:
                         del transferred_numbers[from_number]
-                    # Continuar con respuesta limpia
-                    response_content = "Te voy a conectar con un agente humano que podrá ayudarte mejor."
+                    # Cambiar mensaje para indicar error
+                    response_content = "Estoy teniendo problemas técnicos para conectarte. Por favor, intenta contactar directamente a atención ciudadana."
             
             # Check if it's a hangup or farewell
             elif any(p in response_content for p in ["functions.hangup", "call_sid ="]):
@@ -3759,65 +3848,61 @@ async def whatsapp(request: Request):
         }
         
         # Envío robusto con manejo de errores específicos
-        try:
-            response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                if response_data.get("status") == "success":
-                    logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
-                    content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
-                else:
-                    logger.error(f"Error en respuesta Chat2Desk: {response_data}")
-                    content = {"status": False, "error": "Error en la respuesta de Chat2Desk"}
-                    
-            elif response.status_code == 400:
-                # Manejar errores específicos de cliente
-                try:
-                    error_data = response.json()
-                    errors = error_data.get("errors", {})
-                    client_errors = errors.get("client_id", [])
-                    
-                    # Cliente bloqueado
-                    if any("blocked" in str(error).lower() for error in client_errors):
-                        logger.warning(f"Cliente {from_number} está bloqueado en Chat2Desk")
-                        content = {"status": True, "message": "Cliente bloqueado - no se envió mensaje"}
-                        
-                    # Cliente no existe  
-                    elif any("does not exist" in str(error) for error in client_errors):
-                        logger.warning(f"Cliente {from_number} no existe en Chat2Desk")
-                        content = {"status": False, "error": "Cliente no existe"}
-                    else:
-                        logger.error(f"Error 400 no manejado: {error_data}")
-                        content = {"status": False, "error": f"Error 400: {str(error_data)[:100]}"}
-                        
-                except json.JSONDecodeError:
-                    logger.error(f"Error 400 - respuesta no JSON: {response.text}")
-                    content = {"status": False, "error": "Error 400 - respuesta inválida"}
-                    
-            elif response.status_code == 429:
-                logger.warning(f"Rate limit en Chat2Desk para {from_number}")
-                content = {"status": False, "error": "Rate limit - reintenta más tarde"}
-                
+        response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            if response_data.get("status") == "success":
+                logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
+                content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
             else:
-                logger.error(f"Error HTTP {response.status_code}: {response.text}")
-                content = {"status": False, "error": f"Error HTTP {response.status_code}"}
+                logger.error(f"Error en respuesta Chat2Desk: {response_data}")
+                content = {"status": False, "error": "Error en la respuesta de Chat2Desk"}
                 
-        except requests.Timeout:
-            logger.error(f"Timeout enviando mensaje a {from_number}")
-            content = {"status": False, "error": "Timeout en Chat2Desk"}
+        elif response.status_code == 400:
+            # Manejar errores específicos de cliente
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", {})
+                client_errors = errors.get("client_id", [])
+                
+                # Cliente bloqueado
+                if any("blocked" in str(error).lower() for error in client_errors):
+                    logger.warning(f"Cliente {from_number} está bloqueado en Chat2Desk")
+                    content = {"status": True, "message": "Cliente bloqueado - no se envió mensaje"}
+                    
+                # Cliente no existe  
+                elif any("does not exist" in str(error) for error in client_errors):
+                    logger.warning(f"Cliente {from_number} no existe en Chat2Desk")
+                    content = {"status": False, "error": "Cliente no existe"}
+                else:
+                    logger.error(f"Error 400 no manejado: {error_data}")
+                    content = {"status": False, "error": f"Error 400: {str(error_data)[:100]}"}
+                    
+            except json.JSONDecodeError:
+                logger.error(f"Error 400 - respuesta no JSON: {response.text}")
+                content = {"status": False, "error": "Error 400 - respuesta inválida"}
+                
+        elif response.status_code == 429:
+            logger.warning(f"Rate limit en Chat2Desk para {from_number}")
+            content = {"status": False, "error": "Rate limit - reintenta más tarde"}
             
-        except requests.ConnectionError:
-            logger.error(f"Error de conexión con Chat2Desk para {from_number}")
-            content = {"status": False, "error": "Error de conexión con Chat2Desk"}
+        else:
+            logger.error(f"Error HTTP {response.status_code}: {response.text}")
+            content = {"status": False, "error": f"Error HTTP {response.status_code}"}
             
-        except Exception as inner_error:
-            logger.error(f"Error inesperado enviando mensaje: {str(inner_error)}")
-            content = {"status": False, "error": f"Error inesperado: {str(inner_error)}"}
-
+    except requests.Timeout:
+        logger.error(f"Timeout enviando mensaje a {from_number}")
+        content = {"status": False, "error": "Timeout en Chat2Desk"}
+        
+    except requests.ConnectionError:
+        logger.error(f"Error de conexión con Chat2Desk para {from_number}")
+        content = {"status": False, "error": "Error de conexión con Chat2Desk"}
+        
     except requests.RequestException as e:
         logger.error(f"Error de conexión con Chat2Desk: {str(e)}")
         content = {"status": False, "error": f"Error de conexión: {str(e)}"}
+        
     except Exception as e:
         logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
         content = {"status": False, "error": f"Error inesperado: {str(e)}"}
@@ -4126,6 +4211,72 @@ async def health():
     return metrics
 
 
+# ===============================================
+# 🆕 ENDPOINTS ADMINISTRATIVOS ANTI-DUPLICACIÓN
+# ===============================================
+
+@router.post("/admin/clear-protection/{phone_number}")
+async def clear_protection(phone_number: str):
+    """
+    Endpoint administrativo para limpiar protecciones de un número específico.
+    Usar solo en casos de emergencia cuando un usuario legítimo no puede crear reportes.
+    """
+    try:
+        items_cleared = dedup_manager.force_clear_protection(phone_number)
+        
+        return {
+            "status": "success",
+            "message": f"Protecciones eliminadas para {phone_number}",
+            "phone": phone_number,
+            "items_cleared": items_cleared,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error clearing protection for {phone_number}: {str(e)}")
+        return {
+            "status": "error", 
+            "message": str(e),
+            "phone": phone_number
+        }
+
+@router.get("/admin/dedup-status")
+async def dedup_status():
+    """
+    Endpoint para ver el estado general del sistema anti-duplicación.
+    """
+    try:
+        general_status = dedup_manager.get_status()
+        return {
+            "status": "success",
+            "data": general_status,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting dedup status: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@router.get("/admin/dedup-status/{phone_number}")
+async def dedup_status_phone(phone_number: str):
+    """
+    Endpoint para ver el estado específico de un número de teléfono.
+    """
+    try:
+        phone_status = dedup_manager.get_status(phone_number)
+        return {
+            "status": "success",
+            "data": phone_status,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting dedup status for {phone_number}: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "phone": phone_number
+        }
 # ---------------------
 # Definición de la aplicación FastAPI
 # ---------------------

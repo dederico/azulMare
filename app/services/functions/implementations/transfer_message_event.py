@@ -130,8 +130,8 @@ async def transfer_to_group(phone_number, group_id=None, reason=None, send_notif
 
         transfer_message = "Claro, En breve uno de nuestros agentes te atenderá." if send_notification else "..."
         
-        if reason and send_notification:
-            transfer_message += f"\n\nMotivo: {reason}"
+        # if reason and send_notification:
+        #     transfer_message += f"\n\nMotivo: {reason}"
 
         # Solo enviar el mensaje si send_notification es True
         message_data = {

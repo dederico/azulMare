@@ -2129,6 +2129,9 @@ async def save_client_selection2_with_auto_marking(yoga_number: str, selection1:
                 'timestamp': datetime.now().timestamp(),
                 'message_count': 0
             }
+            # 🆕 AGREGAR LIMPIEZA INMEDIATA (ESTO FALTABA)
+            logger.critical(f"🧹 [IMMEDIATE CLEANUP] Programando limpieza inmediata para {yoga_number}")
+            asyncio.create_task(complete_cleanup_after_report(yoga_number, 1))  # 1 segundo
         
         return folio
         

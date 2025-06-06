@@ -20,9 +20,9 @@ Deberá acudir el beneficiario activo.
 """
 
 async def get_apoyo_alimentario():
-    """Obtener Información de los requisistos para tramitar el apoyo alimentario en caso de ser necesario.
+    """Obtener Información sobre los requisitos para el trámite de becas por parte del municipio de San Pedro Garza García.
 
     Returns:
-        string: Informacion requisistos para tramitar apoyo alimentario.
+        string: Información sobre los requisitos para el trámite de becas.
     """
     return TC

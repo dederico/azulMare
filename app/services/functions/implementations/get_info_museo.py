@@ -9,10 +9,10 @@ Pregunta: ¿Dónde se encuentra el Museo Antiguos Mexicanos?
 Respuesta: Libertad 116 Ote, Centro de San Pedro
 
 Pregunta: ¿Cuál es el costo del Museo Antiguos Mexicanos?
-Respuesta: El acceso es gratuito, solo se requiere reservación en: museoarqueologico.sanpedro.gob.mx
+Respuesta: El acceso es gratuito, solo se requiere reservación en: https://museoarqueologico.sanpedro.gob.mx/
 
 Pregunta: ¿Cuál es el horario del Museo Antiguos Mexicanos?
-Respuesta: Martes a Domingo de 10:00 am a 6:00 pm
+Respuesta: Martes a Domingo de 10:00 am a 7:00 pm
 
 Otros museos
 
@@ -25,6 +25,7 @@ Horario:
 Martes a viernes de 2:00 pm a 7:00 pm
 Sábados y domingos de 10:00 am a 8:00 pm
 Costo: Para consultar costos te recomendamos consultarlo directamente en la página web del museo
+
 
 """
 

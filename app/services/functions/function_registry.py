@@ -49,6 +49,10 @@ from .implementations.get_report_status import get_report_status
 from .implementations.get_calidad_aire import get_calidad_aire
 from .implementations.get_eventos_especiales import get_eventos_especiales
 from .implementations.get_info_museo import get_info_museos
+from .implementations.get_basura_domestica import get_basura_domestica
+from .implementations.get_becas import get_becas
+from .implementations.get_consultorio_movil import get_consultorio_movil
+
 
 
 
@@ -104,5 +108,8 @@ registered_functions = [
     get_report_status,
     get_calidad_aire,
     get_eventos_especiales,
-    get_info_museos
+    get_info_museos,
+    get_basura_domestica,
+    get_becas,
+    get_consultorio_movil
 ]

@@ -3748,16 +3748,6 @@ async def whatsapp(request: Request):
     if not from_number or not body:
         logger.warning("Mensaje recibido sin número de teléfono o cuerpo del mensaje")
         return JSONResponse(content={"status": False, "error": "Datos incompletos"}, status_code=400)
-    
-    # ✅ VERIFICAR EVALUACIÓN ANTES DE CUALQUIER OTRA LÓGICA
-    if from_number in user_sessions:
-        session = user_sessions[from_number]
-        if hasattr(session, 'evaluation_state') and session.evaluation_state:
-            evaluation_handled = await handle_evaluation_response(
-                from_number, body, client_id, channel_id
-            )
-            if evaluation_handled:
-                return JSONResponse(content={"status": True, "message": "Evaluation response processed"})
             
     # ✅ BLOQUEAR MENSAJES QUE PARECEN RESPUESTAS DE EVALUACIÓN
     if body and body.strip().upper() == "OK" and from_number in user_sessions:

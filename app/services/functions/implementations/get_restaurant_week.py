@@ -6,182 +6,19 @@ Respuesta: San Pedro Restaurant Week es un evento gastronómico en el que varios
 Instagram: @sanpedrorestaurantweek
 
 Pregunta: ¿Cuántos restaurantes participan?
-Respuesta: +150
+Respuesta: +170
 
 Pregunta: ¿Cuáles son las categorías de los restaurantes?
-Respuesta:
-Internacional
-⁠Mexicana
-Burgers&Sandwiches
-⁠Asiática
-⁠Del Mar
-⁠Vegetariana
-⁠Italiana
-Fast Food
-⁠Postres
-
-Pregunta: ¿Cuál es el rango de precios?
-Respuesta: Desde 149 hasta 799
-
-Pregunta: ¿Cuáles son las fechas del SPRW?
-Respuesta: Del 30 de enero al 9 de febrero
+Respuesta: Muy pronto estaremos compartiendo la lista completa de restaurantes participantes. Puedes visitar nuestro Instagram @sanpedrorestaurantweek, donde estaremos publicando toda la información y novedades del evento.
 
 Pregunta: ¿Cuáles son los restaurantes que participan?
-Respuesta:
-El Rincón de Majahuitas
-9 fuegos
-Abisal Seafoods
-Aló Café
-Aloha Sushi Lounge
-Amalay Coffee & Market
-Animal Calzada
-Barbaro
-Bardot
-Beastie Burger
-Bestia
-Black Market
-BLAK
-Bloom Craft Superfoods
-Buckets
-Butchers Universe
-Butcher's Bgr
-Cabron Empanadas y Pizzas Argentinas
-Calle 7
-Casa Benell
-Casa Blasón
- Casa Macro
-Chick n Chak
-Chilaqueria MX
-Choice Grill House
-Clavadito
-Cocina Habibi
-Cofki Kid-Friendly Café 
-Cometa
-Cuerno Calzada
-Daisuke Karaoke Metropolitan Center
-Deep Seafood Joint
-Don Macizo
-Dora Elsa Galería de Paellas
-El Che-Bichero
-El Guayabo
-El lugar de Max
-El Mercadito de la Baja
-Enrique Tomás
-Fidencio Botanero
-Fiships
-Flacos Burgers
-Flama Asador Bar
-Francesco's 
-Frida Chilaquiles
-Frites Artois
-Gagootz  
-Grand Cru
-Half & Half
-Hanaichi
-Hatxa
-Hawaii Cinco Cero
-Higuera
-Hotsie
-House of Toffee
-Ichikani
-Japonika
-Jia Xing Comida China Cantonesa
-John Hams 
-Joker
-Kadoya
-Kampai
-Kampai 401
-Kebabes by Lahm
-La Botiga
-La Bonne
-La Castellana
-La Corriente Cevichería Nais
-La Divina
-La Embajada
-La Mazatleca
-La Reynita
-Aliadas
-Lázaro & Diego
-LeCreepe & LeCream 
-Lemonita
-Liberato Eatery
-Libertad
-Los Arbolitos de Cajeme
-Los Gyros
-Los Hidalgos
-Mahana Pizza
-Maison Croque
-Mala Leche
-Mar del Zur
-Masa Madre Vasconcelos
-Masa Madre Sucursal Centrito
-Melier
-Mercado San Martín
-Milk Pizzería Centrito
-Milk Pizzería Metropolitan
-Mirai
-Mocca Bakery
-Mochomos
-Mon Paris
-Moonwalk Cookies
-Mr Smashie
-Mr. Culichi
-"Nectarworks 
-Aurora, UDEM y Vita "
-Nectarworks+ Arboleda
-Nikkori
-Nikkori UDEM
-Nivem Hawaiian Shave Ice
-Nolita Ice Cream Bakery
-Ommani Holistic Kitchen
-Orfebre Cocina Artesana
-Oriental Grill Chipinque
-Oriental Wok Gomez Morin
-Orson
-Orocanela
-Tierra x Oum 
-Pastelone
-Pan de Cajeta
-Piquina Cocina Mexicana
-Pokeshack
-Pound
-Querida Adela 
-Quincy
-Reina
-Rosta
- Señor Latino
-Ryoshi
-Saxy Jazz Club
-Sr, Bigotes
-Señor Tanaka
-Señora Tanaka
-Será el Sereno
-Sibau
-Signature Room
-Suculenta
-Suculenta Armida
-Sushi Kado
-Sushiitto 
-Tacos Atarantados
-Taller Vegánico
-Tatemate
-Los Tecatacos
-Temakita
-Terrae Trattoria Regia
-Thai Thai
-The Food Box
-The Oven Pizzato
-Tienda de Vinos Pangea
-Tigre
-Tito's Alitas Adictivas
-Tortas Las Sevillanas
-Umami Ramen House
-La Vaca Argentina
-Vasconcelos Paladar Mexicano
-Vasto
-Vino Premier San Pedro
-We Love Burgers
-Zatziki
+Respuesta: ¡Gracias por tu interés! Aún no hemos publicado la lista oficial de restaurantes participantes en esta edición de San Pedro Restaurant Week, pero estará disponible muy pronto. Te invitamos a seguirnos en Instagram @sanpedrorestaurantweek, donde estaremos anunciando el lineup y compartiendo todas las novedades.
+
+Pregunta: ¿Cuál es el rango de precios?
+Respuesta: Desde $149 hasta $799
+
+Pregunta: ¿Cuáles son las fechas del SPRW?
+Respuesta: Del 7 al 17 de agosto
 """
 
 async def get_restaurant_week():

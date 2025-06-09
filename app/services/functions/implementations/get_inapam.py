@@ -18,7 +18,7 @@ Copia de Acta de Nacimiento
 Dos fotografías tamaño infantil a color o blanco y negro con fondo blanco (sin lentes, ni gorra)
 """
 
-def get_inapam():
+async def get_inapam():
     """Obtener Información de los requisistos para tramitar la tarjeta INAPAM en caso de ser necesario.
 
     Returns:

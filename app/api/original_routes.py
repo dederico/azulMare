@@ -79,7 +79,6 @@ from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
 from twilio.base.exceptions import TwilioRestException
 import threading
-import asyncio
 from app.services.functions.implementations.transfer_message_event import transfer_to_group
 from threading import RLock
 from app.api.streets_array import SAN_PEDRO_STREETS_REAL
@@ -96,6 +95,7 @@ from app.services.deduplication import dedup_manager, dedup_cleanup_task
 
 # Estados de evaluación
 EVALUATION_STATES = {
+    "WAITING_OK_CLICK": "evaluacion_esperando_click_ok",  # 🆕 NUEVO
     "WAITING_RESOLUTION_RESPONSE": "evaluacion_esperando_respuesta_resolucion",
     "WAITING_RATING": "evaluacion_esperando_calificacion", 
     "WAITING_REASON": "evaluacion_esperando_motivo"
@@ -104,13 +104,7 @@ EVALUATION_STATES = {
 async def handle_hsm_conclusion_notification(payload, from_number):
     """
     Maneja notificaciones HSM de conclusión de reportes.
-    
-    Args:
-        payload: Payload completo del webhook
-        from_number: Número de teléfono del cliente
-        
-    Returns:
-        dict: Resultado del procesamiento o None si no es HSM
+    SOLO GUARDA LA INFORMACIÓN, NO ENVÍA NADA AUTOMÁTICAMENTE.
     """
     
     # Verificar si es mensaje HSM de conclusión
@@ -140,41 +134,29 @@ async def handle_hsm_conclusion_notification(payload, from_number):
     # Marcar como procesado
     hsm_sent_reports[reporte_id] = current_time
     
-    logger.critical(f"🎯 [HSM CONCLUSIÓN] Reporte {reporte_id} concluido para {from_number}")
+    logger.critical(f"🎯 [HSM RECEIVED] Reporte {reporte_id} listo para evaluación (esperando OK)")
 
-    # 🚫 PREVENIR DUPLICADOS EN EVALUACIÓN
-    current_time = datetime.now().timestamp()
-    if from_number in sent_evaluation_messages:
-        elapsed = current_time - sent_evaluation_messages[from_number]
-        if elapsed < 60:  # No enviar si se envió hace menos de 1 minuto
-            logger.warning(f"🚫 [EVALUATION DUPLICATE] Evaluación ya enviada hace {elapsed:.1f}s para {from_number}")
-            return {"status": True, "message": "Evaluación ya enviada"}
-    
-    # Crear o actualizar sesión de usuario con estado de evaluación
+    # ✅ SOLO GUARDAR INFORMACIÓN, NO ENVIAR NADA AÚN
     if from_number not in user_sessions:
         user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
     
     session = user_sessions[from_number]
-    session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]
+    # 🆕 NUEVO ESTADO: Esperando click de OK
+    session.evaluation_state = "WAITING_OK_CLICK"  # Nuevo estado
     session.evaluation_folio = reporte_id
-    session.last_hsm_time = current_time  # ✅ MARCAR TIEMPO DE HSM
+    session.last_hsm_time = current_time
+    session.evaluation_client_id = client_id  # Guardar para uso posterior
+    session.evaluation_channel_id = channel_id  # Guardar para uso posterior
     session.update_activity()
     
-    # Enviar comentario de conclusión e imagen
-    await send_conclusion_comment_and_image(client_id, channel_id, reporte_id)
+    logger.critical(f"✅ [HSM SAVED] Información guardada, esperando click de OK")
     
-    # Enviar pregunta de validación
-    validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-    await send_chat2desk_message_direct(client_id, channel_id, validation_message)
-    
-    logger.critical(f"✅ [HSM] Flujo de evaluación iniciado para reporte {reporte_id}")
-    sent_evaluation_messages[from_number] = current_time
-
     return {
         "status": True,
-        "message": "Flujo de evaluación iniciado",
+        "message": "HSM recibido, esperando confirmación del usuario",
         "reporte_id": reporte_id
     }
+
 
 async def handle_evaluation_response(from_number, text, client_id, channel_id):
     """
@@ -189,21 +171,93 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
     Returns:
         bool: True si se procesó como evaluación, False si no
     """
+    # 🛡️ FILTRO: No procesar mensajes del bot
+    if not text or len(text.strip()) == 0:
+        return False
+    
+    # Detectar mensajes del bot (formato de conclusión)
+    text_lower = text.lower()
+    bot_indicators = [
+        "reporte #", "concluido", "comentario de conclusión", 
+        "ubicación atendida", "por favor responde"
+    ]
+    
+    # Si contiene indicadores del bot, ignorar
+    if any(indicator in text_lower for indicator in bot_indicators):
+        logger.critical(f"🚫 [EVAL FILTER] Mensaje del bot ignorado: '{text[:30]}...'")
+        return False
     
     if from_number not in user_sessions:
+        logger.critical(f"❌ [EVAL] No hay sesión para {from_number}")
         return False
         
     session = user_sessions[from_number]
     evaluation_state = getattr(session, 'evaluation_state', None)
     
     if not evaluation_state:
+        logger.critical(f"❌ [EVAL] No hay estado de evaluación para {from_number}")
         return False
+    
+    logger.critical(f"🎯 [EVAL] Procesando respuesta '{text}' en estado '{evaluation_state}'")
+    
+    # 🆕 ESTADO 0: Esperando click de OK (se maneja en flujo HSM+OK)
+    if evaluation_state == EVALUATION_STATES["WAITING_OK_CLICK"]:
+        logger.critical(f"🎯 [EVAL] Estado WAITING_OK_CLICK detectado - Se maneja en HSM + OK")
+        return False
+        # CAMBIAR ESTADO A WAITING_RESOLUTION_RESPONSE
+        # session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]
+        # session.update_activity()
+        
+        # # Obtener folio y datos guardados
+        # folio = getattr(session, 'evaluation_folio', 'UNKNOWN')
+        
+        # # Usar los client_id y channel_id guardados
+        # if hasattr(session, 'evaluation_client_id') and hasattr(session, 'evaluation_channel_id'):
+        #     try:
+        #         # Enviar comentario de conclusión
+        #         await send_conclusion_comment_and_image(
+        #             session.evaluation_client_id, 
+        #             session.evaluation_channel_id, 
+        #             folio
+        #         )
+                
+        #         # Esperar un momento
+        #         await asyncio.sleep(2)
+                
+        #         # Enviar pregunta de evaluación
+        #         validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+        #         await send_chat2desk_message_direct(
+        #             session.evaluation_client_id, 
+        #             session.evaluation_channel_id, 
+        #             validation_message
+        #         )
+                
+        #         logger.critical(f"✅ [EVAL] Evaluación activada para folio {folio}")
+        #         return True
+                
+        #     except Exception as e:
+        #         logger.error(f"Error activando evaluación: {str(e)}")
+        #         # Fallback: solo enviar pregunta
+        #         try:
+        #             validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+        #             await send_chat2desk_message_direct(
+        #                 session.evaluation_client_id, 
+        #                 session.evaluation_channel_id, 
+        #                 validation_message
+        #             )
+        #             return True
+        #         except:
+        #             return False
+        # else:
+        #     logger.error(f"❌ [EVAL] Faltan client_id o channel_id para evaluación")
+        #     return False
         
     # Normalizar respuesta del usuario
     respuesta = text.strip().lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace(" ", "")
     
     # ESTADO 1: Esperando respuesta sobre resolución (Sí/No)
     if evaluation_state == EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]:
+        logger.critical(f"🎯 [EVAL] Esperando Sí/No, recibido: '{respuesta}'")
         
         if respuesta in ["si", "s", "sí"]:
             # Usuario está de acuerdo, pedir calificación
@@ -211,13 +265,13 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
             session.update_activity()
             
             rating_message = """¿Qué te pareció la atención de tu reporte?
-1. 😒 Pésimo
-2. 😑 Malo  
-3. 🤔 Bien
-4. 😃 Muy bien
-5. 😍 Excelente
+    1. 😒 Pésimo
+    2. 😑 Malo  
+    3. 🤔 Bien
+    4. 😃 Muy bien
+    5. 😍 Excelente
 
-Escribe el número de la opción que quieres seleccionar."""
+    Escribe el número de la opción que quieres seleccionar."""
             
             await send_chat2desk_message_direct(client_id, channel_id, rating_message)
             logger.critical(f"✅ [EVALUACIÓN] Usuario {from_number} acordó con resolución")
@@ -235,18 +289,22 @@ Escribe el número de la opción que quieres seleccionar."""
             
         else:
             # Respuesta inválida
+            logger.critical(f"❌ [EVAL] Respuesta inválida para Sí/No: '{respuesta}'")
             clarification_message = "Por favor responde *Sí* o *No* para continuar con la evaluación."
             await send_chat2desk_message_direct(client_id, channel_id, clarification_message)
             return True
     
     # ESTADO 2: Esperando calificación (1-5)
     elif evaluation_state == EVALUATION_STATES["WAITING_RATING"]:
+        logger.critical(f"🎯 [EVAL] Esperando calificación, recibido: '{text}'")
         
         rating = text.replace(" ", "")
         
         if rating in ["1", "2", "3", "4", "5"]:
             # Calificación válida
             folio = getattr(session, 'evaluation_folio', '')
+            
+            logger.critical(f"⭐ [EVAL] Calificación recibida: {rating}/5 para folio {folio}")
             
             # Finalizar evaluación
             session.evaluation_state = None
@@ -269,12 +327,14 @@ Escribe el número de la opción que quieres seleccionar."""
             
         else:
             # Calificación inválida
+            logger.critical(f"❌ [EVAL] Calificación inválida: '{text}'")
             invalid_rating_message = "Por favor responde del *1* al *5* para continuar con la evaluación."
             await send_chat2desk_message_direct(client_id, channel_id, invalid_rating_message)
             return True
     
     # ESTADO 3: Esperando motivo de desacuerdo
     elif evaluation_state == EVALUATION_STATES["WAITING_REASON"]:
+        logger.critical(f"🎯 [EVAL] Motivo recibido: '{text[:50]}...'")
         
         folio = getattr(session, 'evaluation_folio', '')
         comentario = text.strip()
@@ -298,6 +358,8 @@ Escribe el número de la opción que quieres seleccionar."""
         logger.critical(f"❌ [EVALUACIÓN COMPLETA] Reporte {folio}: Desacuerdo - '{comentario[:50]}...'")
         return True
     
+    # Estado desconocido
+    logger.critical(f"❌ [EVAL] Estado desconocido: '{evaluation_state}'")
     return False
 
 async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
@@ -305,15 +367,32 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
     Obtiene y envía el comentario de conclusión e imagen del técnico.
     """
     try:
-        api_url = f"https://ciac.sanpedro.gob.mx/apisag/api/Operativo/GetFoto?reporteId={reporte_id}"
+        logger.critical(f"📄 [CONCLUSION] ===== INICIANDO send_conclusion_comment_and_image =====")
+        logger.critical(f"📄 [CONCLUSION] client_id: {client_id}")
+        logger.critical(f"📄 [CONCLUSION] channel_id: {channel_id}")
+        logger.critical(f"📄 [CONCLUSION] reporte_id: {reporte_id}")
+        # 🛠️ LIMPIAR reporte_id de posibles caracteres problemáticos
+        clean_reporte_id = str(reporte_id).strip().replace('\r', '').replace('\n', '')
         
-        async with httpx.AsyncClient() as client:
+        logger.critical(f"📄 [API CALL] Obteniendo conclusión para reporte {clean_reporte_id}")
+
+        api_url = f"https://ciac.sanpedro.gob.mx/apisag/api/Operativo/GetFoto?reporteId={clean_reporte_id}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            logger.critical(f"📄 [CONCLUSION] Haciendo llamada a API...")
             response = await client.get(api_url)
+            logger.critical(f"📄 [CONCLUSION] Response status: {response.status_code}")
             response.raise_for_status()
             data = response.json()
+            logger.critical(f"📄 [CONCLUSION] Data recibida: {data}")
         
         if not data or not isinstance(data, list) or len(data) == 0:
-            logger.warning(f"No se encontró información de conclusión para reporte {reporte_id}")
+            logger.warning(f"No se encontró información de conclusión para reporte {clean_reporte_id}")
+            
+            # Enviar mensaje de fallback
+            fallback_message = f"📋 *Reporte #{clean_reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido satisfactoriamente."
+            await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
+            logger.critical(f"📄 [FALLBACK] Mensaje de conclusión enviado para reporte {clean_reporte_id}")
             return
             
         comentario_data = data[0]
@@ -321,24 +400,58 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
         dir_calle = comentario_data.get("dirCalle", "Dirección no disponible")
         dir_colonia = comentario_data.get("dirColonia", "Colonia no disponible") 
         imagen_url = comentario_data.get("imagen", "0")
+
+        logger.critical(f"📄 [CONCLUSION] ===== DATOS EXTRAÍDOS =====")
+        logger.critical(f"📄 [CONCLUSION] comentario: {comentario}")
+        logger.critical(f"📄 [CONCLUSION] dir_calle: {dir_calle}")
+        logger.critical(f"📄 [CONCLUSION] dir_colonia: {dir_colonia}")
+        logger.critical(f"📄 [CONCLUSION] imagen_url: {repr(imagen_url)}")
+        logger.critical(f"📄 [CONCLUSION] tipo imagen_url: {type(imagen_url)}")
         
         # Enviar comentario de conclusión
-        conclusion_message = (
-            f"Te comparto el *comentario de conclusión* de tu reporte:\n"
-            f"_{comentario}_\n\n"
-            f"La dirección del reporte fue: {dir_calle}, {dir_colonia}."
-        )
+        # Construir mensaje de conclusión detallado
+        conclusion_message = f"📋 *Reporte #{clean_reporte_id} - CONCLUIDO*\n\n"
+        conclusion_message += f"💬 *Comentario de conclusión:*\n_{comentario}_\n\n"
+        conclusion_message += f"📍 *Ubicación atendida:*\n{dir_calle}, {dir_colonia}"
         
+
+        logger.critical(f"📄 [CONCLUSION] Enviando mensaje de conclusión...")
         await send_chat2desk_message_direct(client_id, channel_id, conclusion_message)
+        logger.critical(f"📄 [CONCLUSION] ✅ Mensaje de conclusión enviado")
+        
+        # ✅ SIMPLIFICAR CONDICIÓN PARA IMAGEN (como funcionaba antes)
+        logger.critical(f"📷 [IMAGE] ===== EVALUANDO ENVÍO DE IMAGEN =====")
+        logger.critical(f"📷 [IMAGE] imagen_url: {repr(imagen_url)}")
+        logger.critical(f"📷 [IMAGE] imagen_url != '0': {imagen_url != '0'}")
+        logger.critical(f"📷 [IMAGE] isinstance string: {isinstance(imagen_url, str)}")
+        logger.critical(f"📷 [DEBUG] PUNTO A - Antes del if")
+        logger.critical(f"📷 [DEBUG] Condición: {imagen_url and imagen_url != '0'}")
         
         # Enviar imagen si existe
         if imagen_url and imagen_url != "0":
-            await send_chat2desk_image_direct(client_id, channel_id, imagen_url)
-            
-        logger.critical(f"📄 [CONCLUSIÓN] Comentario e imagen enviados para reporte {reporte_id}")
+            logger.critical(f"📷 [DEBUG] PUNTO B - DENTRO del if")
+            try:
+                logger.critical(f"📷 [DEBUG] PUNTO C - Antes de send_chat2desk_image_direct")
+                await send_chat2desk_image_direct(client_id, channel_id, imagen_url)
+                logger.critical(f"📷 [EVIDENCIA] Imagen de conclusión enviada para reporte {clean_reporte_id}")
+            except Exception as img_error:
+                logger.error(f"Error enviando imagen de conclusión: {str(img_error)}")
+                
+        logger.critical(f"📄 [CONCLUSIÓN] Comentario completo enviado para reporte {clean_reporte_id}")
+        
+    except httpx.TimeoutException:
+        logger.error(f"Timeout obteniendo datos de conclusión para reporte {reporte_id}")
+        fallback_message = f"📋 *Reporte #{reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido. No se pudieron obtener los detalles específicos debido a un problema de conexión."
+        await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
         
     except Exception as e:
         logger.error(f"Error obteniendo comentario de conclusión: {str(e)}")
+        try:
+            fallback_message = f"📋 *Reporte #{reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido satisfactoriamente. Hubo un problema técnico al obtener los detalles específicos."
+            await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
+            logger.critical(f"📄 [FALLBACK] Mensaje de error enviado para reporte {reporte_id}")
+        except Exception as fallback_error:
+            logger.error(f"Error crítico: no se pudo enviar ni mensaje de fallback: {str(fallback_error)}")
 
 async def send_chat2desk_message_direct(client_id, channel_id, text):
     """
@@ -347,7 +460,7 @@ async def send_chat2desk_message_direct(client_id, channel_id, text):
     try:
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 "https://api.chat2desk.com.mx/v1/messages",
                 headers={
@@ -2960,40 +3073,105 @@ async def whatsapp(request: Request):
                     reply_context.get('user_response', '').upper() == 'OK'):
                     
                     try:
-                        # Extraer reporte ID del HSM
-                        hsm_lines = reply_context['original_message'].split('\n')
-                        if len(hsm_lines) >= 4:
-                            reporte_id = hsm_lines[3]
+                        logger.critical(f"🎯 [HSM+OK QUOTED] ===== INICIANDO PROCESAMIENTO =====")
+                        logger.critical(f"🎯 [HSM+OK QUOTED] from_number: {from_number}")
+                        logger.critical(f"🎯 [HSM+OK QUOTED] client_id: {client_id}")
+                        logger.critical(f"🎯 [HSM+OK QUOTED] channel_id: {channel_id}")
+                        
+                        # 🛠️ LIMPIAR Y PROCESAR MENSAJE HSM
+                        original_message = reply_context['original_message']
+                        
+                        # Extraer reporte ID de manera robusta
+                        reporte_id = None
+                        
+                        # Método 1: Buscar líneas que sean solo números (4+ dígitos)
+                        lines = original_message.replace('\r\n', '\n').split('\n')
+                        logger.critical(f"🎯 [HSM+OK] Líneas encontradas: {lines}")
+                        for line in lines:
+                            line_clean = line.strip()
+                            if line_clean.isdigit() and len(line_clean) >= 4:
+                                reporte_id = line_clean
+                                logger.critical(f"🎯 [HSM+OK] ID extraído por líneas: {reporte_id}")
+                                break
+                        
+                        # Método 2: Fallback con regex
+                        if not reporte_id:
+                            import re
+                            match = re.search(r'\b(\d{4,})\b', original_message)
+                            if match:
+                                reporte_id = match.group(1)
+                                logger.critical(f"🎯 [HSM+OK] ID extraído por regex: {reporte_id}")
+                        
+                        if not reporte_id:
+                            logger.error(f"❌ [HSM+OK] No se pudo extraer ID del reporte")
+                            logger.error(f"❌ [HSM+OK] Mensaje original: {original_message[:200]}...")
+                            reporte_id = "UNKNOWN"
+                        
+                        logger.critical(f"🎯 [HSM+OK] Activando evaluación para reporte {reporte_id}")
+                        
+                        # Configurar estado de evaluación
+                        if from_number not in user_sessions:
+                            user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+                        
+                        session = user_sessions[from_number]
+                        session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]  # DIRECTO A ESPERANDO RESPUESTA
+                        session.evaluation_folio = reporte_id
+                        session.evaluation_client_id = client_id
+                        session.evaluation_channel_id = channel_id
+                        session.update_activity()
+
+                        logger.critical(f"🎯 [HSM+OK] ✅ Estado configurado:")
+                        logger.critical(f"🎯 [HSM+OK]   - evaluation_state: {session.evaluation_state}")
+                        logger.critical(f"🎯 [HSM+OK]   - evaluation_folio: {session.evaluation_folio}")
+                        logger.critical(f"🎯 [HSM+OK]   - evaluation_client_id: {session.evaluation_client_id}")
+                        logger.critical(f"🎯 [HSM+OK]   - evaluation_channel_id: {session.evaluation_channel_id}")
+                        
+                        # 📤 ENVIAR COMENTARIO DE CONCLUSIÓN
+                        logger.critical(f"📤 [HSM+OK] ===== LLAMANDO send_conclusion_comment_and_image =====")
+                        logger.critical(f"📤 [HSM+OK] Parámetros:")
+                        logger.critical(f"📤 [HSM+OK]   - client_id: {client_id}")
+                        logger.critical(f"📤 [HSM+OK]   - channel_id: {channel_id}")
+                        logger.critical(f"📤 [HSM+OK]   - reporte_id: {reporte_id}")
+                        
+                        # Enviar comentario de conclusión INMEDIATAMENTE
+                        logger.critical(f"📤 [HSM+OK] Enviando comentario de conclusión para {reporte_id}")
+                        await send_conclusion_comment_and_image(client_id, channel_id, reporte_id)
+                        
+                        # Esperar un momento antes de la pregunta de evaluación
+                        await asyncio.sleep(3)
+                        
+                        # Enviar pregunta de evaluación
+                        logger.critical(f"📤 [HSM+OK] Enviando pregunta de evaluación")
+                        validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+                        await send_chat2desk_message_direct(client_id, channel_id, validation_message)
+                        
+                        logger.critical(f"✅ [HSM+OK] Evaluación iniciada exitosamente para reporte {reporte_id}")
+                        return JSONResponse(content={"status": True, "message": "Evaluación iniciada por OK citado"})
+                        
+                    except Exception as e:
+                        logger.error(f"Error procesando HSM+OK citado: {str(e)}")
+                        logger.error(f"Traceback: {traceback.format_exc()}")
+                        try:
+                            # Fallback mínimo
+                            validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+                            await send_chat2desk_message_direct(client_id, channel_id, validation_message)
                             
-                            logger.critical(f"🎯 [HSM OK] Activando evaluación manual para reporte {reporte_id}")
-                            
-                            # Configurar estado de evaluación manualmente
+                            # Configurar estado básico
                             if from_number not in user_sessions:
                                 user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
                             
                             session = user_sessions[from_number]
                             session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]
-                            session.evaluation_folio = reporte_id
+                            session.evaluation_folio = "UNKNOWN"
+                            session.evaluation_client_id = client_id
+                            session.evaluation_channel_id = channel_id
                             session.update_activity()
                             
-                            # Enviar flujo de evaluación
-                            await send_conclusion_comment_and_image(client_id, channel_id, reporte_id)
-                            validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-                            await send_chat2desk_message_direct(client_id, channel_id, validation_message)
-                            
-                            return JSONResponse(content={"status": True, "message": "Evaluación iniciada por OK citado"})
-                            
-                    except Exception as e:
-                        logger.error(f"Error procesando HSM+OK: {str(e)}")
-                
-                # Para otros mensajes citados, procesar de manera normal
-                body = process_quoted_message(from_number, body, reply_context)
-            else:
-                logger.critical(f"📨 [REPLY DETECTED] Usuario {from_number} respondió: '{body}' a '{reply_context['original_message'][:30] if reply_context['original_message'] else 'mensaje'}...'")
-                # Actualizar actividad inmediatamente para evitar timeout
-                update_user_activity_on_reply(from_number)
-                # Enriquecer el mensaje con contexto
-                body = process_reply_message(from_number, body, reply_context)
+                            return JSONResponse(content={"status": True, "message": "Evaluación iniciada (fallback)"})
+                        except Exception as fallback_error:
+                            logger.error(f"❌ [FALLBACK ERROR] Error crítico: {str(fallback_error)}")
+                            return JSONResponse(content={"status": False, "error": "Error crítico en HSM+OK"})  
+
             
             # Si no hay sesión de reporte pero la respuesta sugiere actividad de reporte, crearla
             if (from_number not in report_sessions and 

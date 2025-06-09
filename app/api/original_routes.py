@@ -90,6 +90,360 @@ from app.services.deduplication import dedup_manager, dedup_cleanup_task
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 
+# ===============================================
+# 🆕 SISTEMA DE EVALUACIÓN POST-RESOLUCIÓN
+# ===============================================
+
+# Estados de evaluación
+EVALUATION_STATES = {
+    "WAITING_RESOLUTION_RESPONSE": "evaluacion_esperando_respuesta_resolucion",
+    "WAITING_RATING": "evaluacion_esperando_calificacion", 
+    "WAITING_REASON": "evaluacion_esperando_motivo"
+}
+
+async def handle_hsm_conclusion_notification(payload, from_number):
+    """
+    Maneja notificaciones HSM de conclusión de reportes.
+    
+    Args:
+        payload: Payload completo del webhook
+        from_number: Número de teléfono del cliente
+        
+    Returns:
+        dict: Resultado del procesamiento o None si no es HSM
+    """
+    
+    # Verificar si es mensaje HSM de conclusión
+    message_type = payload.get("type")
+    text = payload.get("text", "")
+    
+    if message_type != "to_client" or not text.startswith("@HSM@"):
+        return None
+        
+    # Parsear mensaje HSM
+    hsm_parts = text.split("\n")
+    if len(hsm_parts) < 5 or "notifica_conclusion" not in hsm_parts[1]:
+        return None
+        
+    reporte_id = hsm_parts[3]
+    client_id = payload.get("client", {}).get("id")
+    channel_id = payload.get("channel_id")
+    
+    # ✅ PREVENIR DUPLICADOS
+    current_time = datetime.now().timestamp()
+    if reporte_id in hsm_sent_reports:
+        elapsed = current_time - hsm_sent_reports[reporte_id]
+        if elapsed < 300:  # 5 minutos
+            logger.warning(f"🚫 [HSM DUPLICATE] HSM para reporte {reporte_id} ya procesado hace {elapsed:.1f}s")
+            return {"status": True, "message": "HSM ya procesado", "reporte_id": reporte_id}
+    
+    # Marcar como procesado
+    hsm_sent_reports[reporte_id] = current_time
+    
+    logger.critical(f"🎯 [HSM CONCLUSIÓN] Reporte {reporte_id} concluido para {from_number}")
+
+    # 🚫 PREVENIR DUPLICADOS EN EVALUACIÓN
+    current_time = datetime.now().timestamp()
+    if from_number in sent_evaluation_messages:
+        elapsed = current_time - sent_evaluation_messages[from_number]
+        if elapsed < 60:  # No enviar si se envió hace menos de 1 minuto
+            logger.warning(f"🚫 [EVALUATION DUPLICATE] Evaluación ya enviada hace {elapsed:.1f}s para {from_number}")
+            return {"status": True, "message": "Evaluación ya enviada"}
+    
+    # Crear o actualizar sesión de usuario con estado de evaluación
+    if from_number not in user_sessions:
+        user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+    
+    session = user_sessions[from_number]
+    session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]
+    session.evaluation_folio = reporte_id
+    session.last_hsm_time = current_time  # ✅ MARCAR TIEMPO DE HSM
+    session.update_activity()
+    
+    # Enviar comentario de conclusión e imagen
+    await send_conclusion_comment_and_image(client_id, channel_id, reporte_id)
+    
+    # Enviar pregunta de validación
+    validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+    await send_chat2desk_message_direct(client_id, channel_id, validation_message)
+    
+    logger.critical(f"✅ [HSM] Flujo de evaluación iniciado para reporte {reporte_id}")
+    sent_evaluation_messages[from_number] = current_time
+
+    return {
+        "status": True,
+        "message": "Flujo de evaluación iniciado",
+        "reporte_id": reporte_id
+    }
+
+async def handle_evaluation_response(from_number, text, client_id, channel_id):
+    """
+    Maneja respuestas del usuario durante el flujo de evaluación.
+    
+    Args:
+        from_number: Número del usuario
+        text: Texto de la respuesta
+        client_id: ID del cliente en Chat2Desk
+        channel_id: ID del canal
+        
+    Returns:
+        bool: True si se procesó como evaluación, False si no
+    """
+    
+    if from_number not in user_sessions:
+        return False
+        
+    session = user_sessions[from_number]
+    evaluation_state = getattr(session, 'evaluation_state', None)
+    
+    if not evaluation_state:
+        return False
+        
+    # Normalizar respuesta del usuario
+    respuesta = text.strip().lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace(" ", "")
+    
+    # ESTADO 1: Esperando respuesta sobre resolución (Sí/No)
+    if evaluation_state == EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]:
+        
+        if respuesta in ["si", "s", "sí"]:
+            # Usuario está de acuerdo, pedir calificación
+            session.evaluation_state = EVALUATION_STATES["WAITING_RATING"]
+            session.update_activity()
+            
+            rating_message = """¿Qué te pareció la atención de tu reporte?
+1. 😒 Pésimo
+2. 😑 Malo  
+3. 🤔 Bien
+4. 😃 Muy bien
+5. 😍 Excelente
+
+Escribe el número de la opción que quieres seleccionar."""
+            
+            await send_chat2desk_message_direct(client_id, channel_id, rating_message)
+            logger.critical(f"✅ [EVALUACIÓN] Usuario {from_number} acordó con resolución")
+            return True
+            
+        elif respuesta in ["no", "n"]:
+            # Usuario no está de acuerdo, pedir motivo
+            session.evaluation_state = EVALUATION_STATES["WAITING_REASON"]
+            session.update_activity()
+            
+            reason_message = "¿Podrías indicarnos el motivo por el cuál no tuvo resolución?"
+            await send_chat2desk_message_direct(client_id, channel_id, reason_message)
+            logger.critical(f"⚠️ [EVALUACIÓN] Usuario {from_number} NO acordó con resolución")
+            return True
+            
+        else:
+            # Respuesta inválida
+            clarification_message = "Por favor responde *Sí* o *No* para continuar con la evaluación."
+            await send_chat2desk_message_direct(client_id, channel_id, clarification_message)
+            return True
+    
+    # ESTADO 2: Esperando calificación (1-5)
+    elif evaluation_state == EVALUATION_STATES["WAITING_RATING"]:
+        
+        rating = text.replace(" ", "")
+        
+        if rating in ["1", "2", "3", "4", "5"]:
+            # Calificación válida
+            folio = getattr(session, 'evaluation_folio', '')
+            
+            # Finalizar evaluación
+            session.evaluation_state = None
+            session.evaluation_folio = None
+            session.update_activity()
+            
+            # Enviar evaluación al CIAC (CONCLUIDO = 1)
+            await send_auto_evaluation(
+                id_reporte=folio,
+                concluido=1,  # Sí está de acuerdo
+                calificacion=int(rating),
+                comentario=""
+            )
+            
+            thanks_message = "Gracias por tu retroalimentación, tomamos en consideración tus comentarios para mejorar la atención a tus reportes"
+            await send_chat2desk_message_direct(client_id, channel_id, thanks_message)
+            
+            logger.critical(f"⭐ [EVALUACIÓN COMPLETA] Reporte {folio}: Calificación {rating}/5")
+            return True
+            
+        else:
+            # Calificación inválida
+            invalid_rating_message = "Por favor responde del *1* al *5* para continuar con la evaluación."
+            await send_chat2desk_message_direct(client_id, channel_id, invalid_rating_message)
+            return True
+    
+    # ESTADO 3: Esperando motivo de desacuerdo
+    elif evaluation_state == EVALUATION_STATES["WAITING_REASON"]:
+        
+        folio = getattr(session, 'evaluation_folio', '')
+        comentario = text.strip()
+        
+        # Finalizar evaluación
+        session.evaluation_state = None
+        session.evaluation_folio = None
+        session.update_activity()
+        
+        # Enviar evaluación al CIAC (CONCLUIDO = 2)
+        await send_auto_evaluation(
+            id_reporte=folio,
+            concluido=2,  # No está de acuerdo
+            calificacion=0,
+            comentario=comentario
+        )
+        
+        thanks_message = "Gracias por tu retroalimentación, tomamos en consideración tus comentarios para mejorar la atención a tus reportes"
+        await send_chat2desk_message_direct(client_id, channel_id, thanks_message)
+        
+        logger.critical(f"❌ [EVALUACIÓN COMPLETA] Reporte {folio}: Desacuerdo - '{comentario[:50]}...'")
+        return True
+    
+    return False
+
+async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
+    """
+    Obtiene y envía el comentario de conclusión e imagen del técnico.
+    """
+    try:
+        api_url = f"https://ciac.sanpedro.gob.mx/apisag/api/Operativo/GetFoto?reporteId={reporte_id}"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(api_url)
+            response.raise_for_status()
+            data = response.json()
+        
+        if not data or not isinstance(data, list) or len(data) == 0:
+            logger.warning(f"No se encontró información de conclusión para reporte {reporte_id}")
+            return
+            
+        comentario_data = data[0]
+        comentario = comentario_data.get("comentario", "Sin comentario")
+        dir_calle = comentario_data.get("dirCalle", "Dirección no disponible")
+        dir_colonia = comentario_data.get("dirColonia", "Colonia no disponible") 
+        imagen_url = comentario_data.get("imagen", "0")
+        
+        # Enviar comentario de conclusión
+        conclusion_message = (
+            f"Te comparto el *comentario de conclusión* de tu reporte:\n"
+            f"_{comentario}_\n\n"
+            f"La dirección del reporte fue: {dir_calle}, {dir_colonia}."
+        )
+        
+        await send_chat2desk_message_direct(client_id, channel_id, conclusion_message)
+        
+        # Enviar imagen si existe
+        if imagen_url and imagen_url != "0":
+            await send_chat2desk_image_direct(client_id, channel_id, imagen_url)
+            
+        logger.critical(f"📄 [CONCLUSIÓN] Comentario e imagen enviados para reporte {reporte_id}")
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo comentario de conclusión: {str(e)}")
+
+async def send_chat2desk_message_direct(client_id, channel_id, text):
+    """
+    Envía mensaje directamente via Chat2Desk API.
+    """
+    try:
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.chat2desk.com.mx/v1/messages",
+                headers={
+                    "Authorization": api_token,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "client_id": client_id,
+                    "channel_id": channel_id,
+                    "transport": "wa_direct",
+                    "text": text
+                }
+            )
+            
+        if response.status_code == 200:
+            logger.debug(f"✅ Mensaje directo enviado: {text[:50]}...")
+        else:
+            logger.error(f"❌ Error enviando mensaje directo: {response.status_code}")
+            
+    except Exception as e:
+        logger.error(f"Error enviando mensaje directo: {str(e)}")
+
+async def send_chat2desk_image_direct(client_id, channel_id, image_url):
+    """
+    Envía imagen directamente via Chat2Desk API.
+    """
+    try:
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.chat2desk.com.mx/v1/messages",
+                headers={
+                    "Authorization": api_token,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "client_id": client_id,
+                    "channel_id": channel_id,
+                    "transport": "wa_direct", 
+                    "text": "",
+                    "attachment": image_url,
+                    "attachment_filename": "evidencia.jpg"
+                }
+            )
+            
+        if response.status_code == 200:
+            logger.debug(f"✅ Imagen enviada: {image_url}")
+        else:
+            logger.error(f"❌ Error enviando imagen: {response.status_code}")
+            
+    except Exception as e:
+        logger.error(f"Error enviando imagen: {str(e)}")
+
+async def send_auto_evaluation(id_reporte: str, concluido: int, calificacion: int, comentario: str = ""):
+    """
+    Envía la evaluación automática al endpoint del CIAC.
+    
+    Args:
+        id_reporte: ID del reporte
+        concluido: 1 = Sí está de acuerdo, 2 = No está de acuerdo
+        calificacion: 1-5 (solo si concluido=1)
+        comentario: Motivo de desacuerdo (solo si concluido=2)
+    """
+    try:
+        payload = {
+            "idReporte": int(id_reporte),
+            "idValoracionConcluido": concluido,
+            "idValoracionCalificacion": calificacion,
+            "valoracionComentarios": comentario or "Sin comentario"
+        }
+        
+        logger.critical(f"📤 [AUTO-EVALUACIÓN] Enviando: {payload}")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://ciac.sanpedro.gob.mx/apisag/api/AutoEvaluacion/a73a78a5-3a3f-479e-ae11-063c9014f5b7",
+                headers={
+                    "accept": "*/*",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+            
+        if response.status_code == 200:
+            logger.critical(f"✅ [AUTO-EVALUACIÓN] Enviada exitosamente para reporte {id_reporte}")
+        else:
+            logger.error(f"❌ [AUTO-EVALUACIÓN] Error {response.status_code}: {response.text}")
+            
+    except Exception as e:
+        logger.error(f"Error enviando auto-evaluación: {str(e)}")
+
+# ===============================================
+# FIN DEL SISTEMA DE EVALUACIÓN
+# ===============================================
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
@@ -113,6 +467,8 @@ finalized_report_numbers = set()
 recently_returned_to_bot = {}
 BOT_GRACE_PERIOD = 10
 user_answers = {}
+hsm_sent_reports = {}
+sent_evaluation_messages = {} 
 
 # ===============================================================
 # OPTIMIZACIÓN: Crear índices una sola vez al iniciar el servidor
@@ -1842,6 +2198,9 @@ class WhatsAppSession:
     def __init__(self, history):
         self.history = history
         self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
+        self.evaluation_state = None
+        self.evaluation_folio = None
+        self.last_hsm_time = None 
     
     def update_activity(self):
         self.last_active = datetime.now(pytz.timezone('America/Mexico_City'))
@@ -2542,7 +2901,7 @@ async def whatsapp(request: Request):
     try:
         payload = await request.json()  # Recibimos el payload como JSON
         print(f"Payload recibido: {payload}")
-        reply_context = extract_reply_context(payload)
+        #reply_context = extract_reply_context(payload)
 
         # IMPORTANTE: Verificar si es un mensaje de un cliente o una respuesta del sistema
         # Extraer información del payload de Chat2Desk
@@ -2558,11 +2917,76 @@ async def whatsapp(request: Request):
         hook_type = payload.get('hook_type', '')
         operator_id = payload.get('operator_id', '')
 
+        if message_type == 'to_client' and message_text:
+            logger.critical(f"🔍 [FILTER DEBUG] Evaluando mensaje: '{message_text}'")
+            # 🚫 FILTRO ULTRA ROBUSTO - Bloquear CUALQUIER mensaje de evaluación
+            message_lower = message_text.lower()
+            
+            # Si contiene CUALQUIERA de estas palabras, bloquear
+            evaluation_indicators = [
+                "evaluación", "evaluacion", 
+                "sí o no", "si o no",
+                "*sí* o *no*", "*si* o *no*",
+                "está de acuerdo", "esta de acuerdo",
+                "responde", "responda",
+                "continuar con", "del 1 al 5"
+            ]
+            
+            if any(indicator in message_lower for indicator in evaluation_indicators):
+                logger.debug(f"🚫 [EVALUATION BLOCK] Bloqueando: {message_text[:50]}...")
+                return JSONResponse(content={"status": True, "message": "Mensaje de evaluación bloqueado"})
+        
+        hsm_result = await handle_hsm_conclusion_notification(payload, from_number)
+        if hsm_result:
+            return JSONResponse(content=hsm_result)
+
+        reply_context = extract_reply_context(payload)
+        # ✅ VERIFICAR EVALUACIÓN ANTES DE CUALQUIER OTRA LÓGICA
+        if from_number in user_sessions:
+            session = user_sessions[from_number]
+            if hasattr(session, 'evaluation_state') and session.evaluation_state:
+                evaluation_handled = await handle_evaluation_response(
+                    from_number, body, client_id, channel_id
+                )
+                if evaluation_handled:
+                    return JSONResponse(content={"status": True, "message": "Evaluation response processed"})
         # 🆕 PROCESAR RESPUESTA SI ES DETECTADA
         if reply_context['is_reply']:
             if reply_context.get('is_quoted', False):
                 logger.critical(f"📨 [QUOTED DETECTED] Usuario {from_number} citó: '{reply_context['original_message'][:30]}...' y respondió: '{reply_context['user_response']}'")
-                # Para mensajes citados, procesar de manera especial
+                
+                # 🎯 CASO ESPECIAL: HSM + OK = Activar evaluación manualmente
+                if ('@HSM@' in reply_context.get('original_message', '') and 
+                    reply_context.get('user_response', '').upper() == 'OK'):
+                    
+                    try:
+                        # Extraer reporte ID del HSM
+                        hsm_lines = reply_context['original_message'].split('\n')
+                        if len(hsm_lines) >= 4:
+                            reporte_id = hsm_lines[3]
+                            
+                            logger.critical(f"🎯 [HSM OK] Activando evaluación manual para reporte {reporte_id}")
+                            
+                            # Configurar estado de evaluación manualmente
+                            if from_number not in user_sessions:
+                                user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+                            
+                            session = user_sessions[from_number]
+                            session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]
+                            session.evaluation_folio = reporte_id
+                            session.update_activity()
+                            
+                            # Enviar flujo de evaluación
+                            await send_conclusion_comment_and_image(client_id, channel_id, reporte_id)
+                            validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+                            await send_chat2desk_message_direct(client_id, channel_id, validation_message)
+                            
+                            return JSONResponse(content={"status": True, "message": "Evaluación iniciada por OK citado"})
+                            
+                    except Exception as e:
+                        logger.error(f"Error procesando HSM+OK: {str(e)}")
+                
+                # Para otros mensajes citados, procesar de manera normal
                 body = process_quoted_message(from_number, body, reply_context)
             else:
                 logger.critical(f"📨 [REPLY DETECTED] Usuario {from_number} respondió: '{body}' a '{reply_context['original_message'][:30] if reply_context['original_message'] else 'mensaje'}...'")
@@ -3324,7 +3748,26 @@ async def whatsapp(request: Request):
     if not from_number or not body:
         logger.warning("Mensaje recibido sin número de teléfono o cuerpo del mensaje")
         return JSONResponse(content={"status": False, "error": "Datos incompletos"}, status_code=400)
-
+    
+    # ✅ VERIFICAR EVALUACIÓN ANTES DE CUALQUIER OTRA LÓGICA
+    if from_number in user_sessions:
+        session = user_sessions[from_number]
+        if hasattr(session, 'evaluation_state') and session.evaluation_state:
+            evaluation_handled = await handle_evaluation_response(
+                from_number, body, client_id, channel_id
+            )
+            if evaluation_handled:
+                return JSONResponse(content={"status": True, "message": "Evaluation response processed"})
+            
+    # ✅ BLOQUEAR MENSAJES QUE PARECEN RESPUESTAS DE EVALUACIÓN
+    if body and body.strip().upper() == "OK" and from_number in user_sessions:
+        session = user_sessions[from_number]
+        # Si acabamos de enviar un HSM (últimos 2 minutos), ignorar el OK
+        current_time = datetime.now().timestamp()
+        if hasattr(session, 'last_hsm_time') and (current_time - session.last_hsm_time) < 120:
+            logger.critical(f"🚫 [OK BLOCKED] OK ignorado para {from_number} - posible respuesta de evaluación")
+            return JSONResponse(content={"status": True, "message": "OK response ignored during evaluation"})
+        
     # Crear o actualizar la sesión del usuario
     if from_number not in user_sessions:
         logger.debug(f"Creando nueva sesión para el usuario: {from_number}")

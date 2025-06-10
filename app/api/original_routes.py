@@ -88,7 +88,7 @@ import re
 from app.services.deduplication import dedup_manager, dedup_cleanup_task
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
-
+evaluated_reports = {}
 # ===============================================
 # 🆕 SISTEMA DE EVALUACIÓN POST-RESOLUCIÓN
 # ===============================================
@@ -122,17 +122,20 @@ async def handle_hsm_conclusion_notification(payload, from_number):
     reporte_id = hsm_parts[3]
     client_id = payload.get("client", {}).get("id")
     channel_id = payload.get("channel_id")
-    
-    # ✅ PREVENIR DUPLICADOS
+
+    # 🆕 CLAVE ÚNICA MÁS ROBUSTA
+    unique_key = f"{from_number}:{reporte_id}"
+
+    # ✅ PREVENIR DUPLICADOS CON CLAVE ROBUSTA
     current_time = datetime.now().timestamp()
-    if reporte_id in hsm_sent_reports:
-        elapsed = current_time - hsm_sent_reports[reporte_id]
-        if elapsed < 300:  # 5 minutos
-            logger.warning(f"🚫 [HSM DUPLICATE] HSM para reporte {reporte_id} ya procesado hace {elapsed:.1f}s")
+    if unique_key in hsm_sent_reports:
+        elapsed = current_time - hsm_sent_reports[unique_key]
+        if elapsed < 600:  # 10 minutos en lugar de 5
+            logger.warning(f"🚫 [HSM DUPLICATE] HSM para {unique_key} ya procesado hace {elapsed:.1f}s")
             return {"status": True, "message": "HSM ya procesado", "reporte_id": reporte_id}
     
     # Marcar como procesado
-    hsm_sent_reports[reporte_id] = current_time
+    hsm_sent_reports[unique_key] = current_time
     
     logger.critical(f"🎯 [HSM RECEIVED] Reporte {reporte_id} listo para evaluación (esperando OK)")
 
@@ -141,7 +144,6 @@ async def handle_hsm_conclusion_notification(payload, from_number):
         user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
     
     session = user_sessions[from_number]
-    # 🆕 NUEVO ESTADO: Esperando click de OK
     session.evaluation_state = "WAITING_OK_CLICK"  # Nuevo estado
     session.evaluation_folio = reporte_id
     session.last_hsm_time = current_time
@@ -304,6 +306,17 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
             # Calificación válida
             folio = getattr(session, 'evaluation_folio', '')
             
+            # 🆕 MARCAR COMO EVALUADO
+            current_time = datetime.now().timestamp()
+            evaluated_reports[folio] = current_time
+            logger.critical(f"📝 [EVALUATED] Reporte {folio} marcado como evaluado")
+            
+            # Finalizar evaluación
+            session.evaluation_state = None
+            session.evaluation_folio = None
+            session.last_hsm_time = None  # 🆕 LIMPIAR HSM TIME
+            session.update_activity()
+
             logger.critical(f"⭐ [EVAL] Calificación recibida: {rating}/5 para folio {folio}")
             
             # Finalizar evaluación
@@ -337,6 +350,17 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
         logger.critical(f"🎯 [EVAL] Motivo recibido: '{text[:50]}...'")
         
         folio = getattr(session, 'evaluation_folio', '')
+        # 🆕 MARCAR COMO EVALUADO
+        current_time = datetime.now().timestamp()
+        evaluated_reports[folio] = current_time
+        logger.critical(f"📝 [EVALUATED] Reporte {folio} marcado como evaluado")
+        
+        # Finalizar evaluación
+        session.evaluation_state = None
+        session.evaluation_folio = None
+        session.last_hsm_time = None  # 🆕 LIMPIAR HSM TIME
+        session.update_activity()
+
         comentario = text.strip()
         
         # Finalizar evaluación
@@ -364,94 +388,92 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
 
 async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
     """
-    Obtiene y envía el comentario de conclusión e imagen del técnico.
+    VERSIÓN MEJORADA: Obtiene y envía el comentario de conclusión e imagen del técnico.
     """
     try:
         logger.critical(f"📄 [CONCLUSION] ===== INICIANDO send_conclusion_comment_and_image =====")
         logger.critical(f"📄 [CONCLUSION] client_id: {client_id}")
         logger.critical(f"📄 [CONCLUSION] channel_id: {channel_id}")
         logger.critical(f"📄 [CONCLUSION] reporte_id: {reporte_id}")
-        # 🛠️ LIMPIAR reporte_id de posibles caracteres problemáticos
-        clean_reporte_id = str(reporte_id).strip().replace('\r', '').replace('\n', '')
-        
-        logger.critical(f"📄 [API CALL] Obteniendo conclusión para reporte {clean_reporte_id}")
 
+        # Limpiar reporte_id
+        clean_reporte_id = str(reporte_id).strip().replace('\r', '').replace('\n', '')
         api_url = f"https://ciac.sanpedro.gob.mx/apisag/api/Operativo/GetFoto?reporteId={clean_reporte_id}"
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            logger.critical(f"📄 [CONCLUSION] Haciendo llamada a API...")
-            response = await client.get(api_url)
-            logger.critical(f"📄 [CONCLUSION] Response status: {response.status_code}")
+        logger.critical(f"📄 [API CALL] Llamando a: {api_url}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client_http:
+            response = await client_http.get(api_url)
+            logger.critical(f"📄 [API] Response status: {response.status_code}")
             response.raise_for_status()
             data = response.json()
-            logger.critical(f"📄 [CONCLUSION] Data recibida: {data}")
+            logger.critical(f"📄 [API] Data recibida: {data}")
         
         if not data or not isinstance(data, list) or len(data) == 0:
-            logger.warning(f"No se encontró información de conclusión para reporte {clean_reporte_id}")
-            
-            # Enviar mensaje de fallback
+            logger.warning(f"📄 [NO DATA] No hay información para reporte {clean_reporte_id}")
             fallback_message = f"📋 *Reporte #{clean_reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido satisfactoriamente."
             await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
-            logger.critical(f"📄 [FALLBACK] Mensaje de conclusión enviado para reporte {clean_reporte_id}")
             return
             
         comentario_data = data[0]
         comentario = comentario_data.get("comentario", "Sin comentario")
         dir_calle = comentario_data.get("dirCalle", "Dirección no disponible")
         dir_colonia = comentario_data.get("dirColonia", "Colonia no disponible") 
-        imagen_url = comentario_data.get("imagen", "0")
+        imagen_url = comentario_data.get("imagen", "")
 
-        logger.critical(f"📄 [CONCLUSION] ===== DATOS EXTRAÍDOS =====")
-        logger.critical(f"📄 [CONCLUSION] comentario: {comentario}")
-        logger.critical(f"📄 [CONCLUSION] dir_calle: {dir_calle}")
-        logger.critical(f"📄 [CONCLUSION] dir_colonia: {dir_colonia}")
-        logger.critical(f"📄 [CONCLUSION] imagen_url: {repr(imagen_url)}")
-        logger.critical(f"📄 [CONCLUSION] tipo imagen_url: {type(imagen_url)}")
+        logger.critical(f"📄 [DATOS] ===== DATOS EXTRAÍDOS =====")
+        logger.critical(f"📄 [DATOS] comentario: {comentario}")
+        logger.critical(f"📄 [DATOS] dir_calle: {dir_calle}")
+        logger.critical(f"📄 [DATOS] dir_colonia: {dir_colonia}")
+        logger.critical(f"📄 [DATOS] imagen_url: '{imagen_url}' (tipo: {type(imagen_url)})")
         
         # Enviar comentario de conclusión
-        # Construir mensaje de conclusión detallado
         conclusion_message = f"📋 *Reporte #{clean_reporte_id} - CONCLUIDO*\n\n"
         conclusion_message += f"💬 *Comentario de conclusión:*\n_{comentario}_\n\n"
         conclusion_message += f"📍 *Ubicación atendida:*\n{dir_calle}, {dir_colonia}"
         
-
-        logger.critical(f"📄 [CONCLUSION] Enviando mensaje de conclusión...")
+        logger.critical(f"📄 [MENSAJE] Enviando conclusión...")
         await send_chat2desk_message_direct(client_id, channel_id, conclusion_message)
-        logger.critical(f"📄 [CONCLUSION] ✅ Mensaje de conclusión enviado")
+        logger.critical(f"📄 [MENSAJE] ✅ Mensaje de conclusión enviado")
         
-        # ✅ SIMPLIFICAR CONDICIÓN PARA IMAGEN (como funcionaba antes)
-        logger.critical(f"📷 [IMAGE] ===== EVALUANDO ENVÍO DE IMAGEN =====")
-        logger.critical(f"📷 [IMAGE] imagen_url: {repr(imagen_url)}")
-        logger.critical(f"📷 [IMAGE] imagen_url != '0': {imagen_url != '0'}")
-        logger.critical(f"📷 [IMAGE] isinstance string: {isinstance(imagen_url, str)}")
-        logger.critical(f"📷 [DEBUG] PUNTO A - Antes del if")
-        logger.critical(f"📷 [DEBUG] Condición: {imagen_url and imagen_url != '0'}")
+        # ✅ ENVIAR IMAGEN CON LOGS DETALLADOS
+        logger.critical(f"📷 [IMAGE CHECK] ===== EVALUANDO IMAGEN =====")
+        logger.critical(f"📷 [IMAGE CHECK] imagen_url: '{imagen_url}'")
+        logger.critical(f"📷 [IMAGE CHECK] str(imagen_url): '{str(imagen_url)}'")
+        logger.critical(f"📷 [IMAGE CHECK] .strip(): '{str(imagen_url).strip()}'")
+        logger.critical(f"📷 [IMAGE CHECK] != '0': {str(imagen_url).strip() != '0'}")
+        logger.critical(f"📷 [IMAGE CHECK] bool: {bool(str(imagen_url).strip())}")
         
-        # Enviar imagen si existe
-        if imagen_url and imagen_url != "0":
-            logger.critical(f"📷 [DEBUG] PUNTO B - DENTRO del if")
+        if imagen_url and str(imagen_url).strip() and str(imagen_url).strip() != "0":
             try:
-                logger.critical(f"📷 [DEBUG] PUNTO C - Antes de send_chat2desk_image_direct")
-                await send_chat2desk_image_direct(client_id, channel_id, imagen_url)
-                logger.critical(f"📷 [EVIDENCIA] Imagen de conclusión enviada para reporte {clean_reporte_id}")
-            except Exception as img_error:
-                logger.error(f"Error enviando imagen de conclusión: {str(img_error)}")
+                clean_image_url = str(imagen_url).strip()
+                logger.critical(f"📷 [SENDING] ===== ENVIANDO IMAGEN =====")
+                logger.critical(f"📷 [SENDING] URL limpia: {clean_image_url}")
+
+                image_sent = await send_chat2desk_image_direct(client_id, channel_id, clean_image_url)
                 
-        logger.critical(f"📄 [CONCLUSIÓN] Comentario completo enviado para reporte {clean_reporte_id}")
+                if image_sent:
+                    logger.critical(f"📷 [SUCCESS] ✅ Imagen enviada exitosamente")
+                else:
+                    logger.error(f"📷 [FAILED] ❌ No se pudo enviar la imagen")
+                
+            except Exception as img_error:
+                logger.error(f"📷 [ERROR] ❌ Error enviando imagen: {str(img_error)}")
+                logger.error(f"📷 [ERROR] Traceback: {traceback.format_exc()}")
+        else:
+            logger.critical(f"📷 [SKIP] ❌ No hay imagen válida para enviar")
+            logger.critical(f"📷 [SKIP] Razón: imagen_url='{imagen_url}', strip='{str(imagen_url).strip() if imagen_url else 'None'}'")
         
-    except httpx.TimeoutException:
-        logger.error(f"Timeout obteniendo datos de conclusión para reporte {reporte_id}")
-        fallback_message = f"📋 *Reporte #{reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido. No se pudieron obtener los detalles específicos debido a un problema de conexión."
-        await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
+        logger.critical(f"📄 [CONCLUSION] ===== PROCESO COMPLETADO =====")
         
     except Exception as e:
-        logger.error(f"Error obteniendo comentario de conclusión: {str(e)}")
+        logger.error(f"📄 [ERROR] Error en send_conclusion_comment_and_image: {str(e)}")
+        logger.error(f"📄 [ERROR] Traceback: {traceback.format_exc()}")
         try:
-            fallback_message = f"📋 *Reporte #{reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido satisfactoriamente. Hubo un problema técnico al obtener los detalles específicos."
+            fallback_message = f"📋 *Reporte #{reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido satisfactoriamente."
             await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
-            logger.critical(f"📄 [FALLBACK] Mensaje de error enviado para reporte {reporte_id}")
         except Exception as fallback_error:
-            logger.error(f"Error crítico: no se pudo enviar ni mensaje de fallback: {str(fallback_error)}")
+            logger.error(f"📄 [FALLBACK ERROR] {str(fallback_error)}")
 
 async def send_chat2desk_message_direct(client_id, channel_id, text):
     """
@@ -485,35 +507,197 @@ async def send_chat2desk_message_direct(client_id, channel_id, text):
 
 async def send_chat2desk_image_direct(client_id, channel_id, image_url):
     """
-    Envía imagen directamente via Chat2Desk API.
+    VERSIÓN CORREGIDA según documentación Chat2Desk
     """
     try:
+        logger.critical(f"📷 [CORRECTED] ===== USANDO FORMATO CORRECTO =====")
+        
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         
-        async with httpx.AsyncClient() as client:
+        # ✅ FORMATO CORRECTO según documentación
+        payload = {
+            "client_id": client_id,
+            "channel_id": channel_id,
+            "transport": "wa_direct",
+            "text": "",
+            "attachment": image_url.strip(),
+            "attachment_filename": "evidencia.jpg"  # ✅ ESTO FALTABA
+        }
+        
+        logger.critical(f"📷 [CORRECTED] Payload: {payload}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.chat2desk.com.mx/v1/messages",  # Mantenemos este endpoint
+                headers={
+                    "Authorization": api_token,
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+            
+        logger.critical(f"📷 [CORRECTED] Response: {response.status_code}")
+        logger.critical(f"📷 [CORRECTED] Text: {response.text}")
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            if response_data.get("status") == "success":
+                logger.critical(f"📷 [SUCCESS] ✅ Imagen enviada con attachment_filename")
+                return True
+        
+        # Si aún falla, intentar método base64 con filename
+        logger.critical(f"📷 [FALLBACK] Intentando base64 con filename...")
+        return await send_image_base64_with_filename(client_id, channel_id, image_url)
+        
+    except Exception as e:
+        logger.error(f"📷 [ERROR] {str(e)}")
+        return False
+
+
+async def send_image_base64_with_filename(client_id, channel_id, image_url):
+    """
+    Método base64 con attachment_filename
+    """
+    try:
+        # Descargar imagen
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = await client.get(image_url, headers=headers)
+            response.raise_for_status()
+            image_data = response.content
+            
+        logger.critical(f"📷 [BASE64] Descargada: {len(image_data)} bytes")
+        
+        # Convertir a base64
+        import base64
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+        data_url = f"data:image/jpeg;base64,{image_b64}"
+        
+        # ✅ ENVIAR CON FILENAME
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        
+        payload = {
+            "client_id": client_id,
+            "channel_id": channel_id,
+            "transport": "wa_direct",
+            "text": "",
+            "attachment": data_url,
+            "attachment_filename": "evidencia.jpg"  # ✅ FILENAME REQUERIDO
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 "https://api.chat2desk.com.mx/v1/messages",
                 headers={
                     "Authorization": api_token,
                     "Content-Type": "application/json"
                 },
-                json={
-                    "client_id": client_id,
-                    "channel_id": channel_id,
-                    "transport": "wa_direct", 
-                    "text": "",
-                    "attachment": image_url,
-                    "attachment_filename": "evidencia.jpg"
-                }
+                json=payload
             )
             
+        logger.critical(f"📷 [BASE64] Response: {response.status_code}")
+        logger.critical(f"📷 [BASE64] Text: {response.text}")
+        
         if response.status_code == 200:
-            logger.debug(f"✅ Imagen enviada: {image_url}")
-        else:
-            logger.error(f"❌ Error enviando imagen: {response.status_code}")
-            
+            response_data = response.json()
+            if response_data.get("status") == "success":
+                logger.critical(f"📷 [SUCCESS] ✅ Base64 enviado con filename")
+                return True
+        
+        return False
+        
     except Exception as e:
-        logger.error(f"Error enviando imagen: {str(e)}")
+        logger.error(f"📷 [BASE64 ERROR] {str(e)}")
+        return False
+
+
+async def download_and_upload_image(client_id, channel_id, image_url):
+    """
+    Descarga imagen y la sube como base64 - VERSIÓN MEJORADA
+    """
+    try:
+        logger.critical(f"📷 [DOWNLOAD] ===== DESCARGANDO IMAGEN =====")
+        
+        # ✅ DESCARGAR CON HEADERS DE NAVEGADOR
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(image_url, headers=headers)
+            response.raise_for_status()
+            image_data = response.content
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            
+        logger.critical(f"📷 [DOWNLOAD] ✅ Descargada: {len(image_data)} bytes")
+        logger.critical(f"📷 [DOWNLOAD] Content-Type: {content_type}")
+        
+        # Verificar que SÍ es una imagen por los primeros bytes
+        if image_data.startswith(b'\xff\xd8\xff'):  # JPEG
+            mime_type = 'image/jpeg'
+            logger.critical(f"📷 [DOWNLOAD] ✅ Confirmado: es JPEG")
+        elif image_data.startswith(b'\x89PNG'):  # PNG
+            mime_type = 'image/png'
+            logger.critical(f"📷 [DOWNLOAD] ✅ Confirmado: es PNG")
+        else:
+            # Asumir JPEG si no podemos detectar
+            mime_type = 'image/jpeg'
+            logger.warning(f"📷 [DOWNLOAD] ⚠️ Tipo no detectado, asumiendo JPEG")
+        
+        # Limitar tamaño
+        if len(image_data) > 5 * 1024 * 1024:  # 5MB
+            logger.error(f"📷 [SIZE] ❌ Muy grande: {len(image_data)} bytes")
+            return False
+        
+        # Convertir a base64
+        import base64
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+        data_url = f"data:{mime_type};base64,{image_b64}"
+        
+        logger.critical(f"📷 [BASE64] ✅ Convertida: {len(data_url)} chars")
+        
+        # Enviar
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        
+        payload = {
+            "client_id": client_id,
+            "channel_id": channel_id,
+            "transport": "wa_direct",
+            "text": "",
+            "attachment": data_url
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.chat2desk.com.mx/v1/messages",
+                headers={
+                    "Authorization": api_token,
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+            
+        logger.critical(f"📷 [UPLOAD] Response: {response.status_code}")
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            if response_data.get("status") == "success":
+                logger.critical(f"📷 [SUCCESS] ✅ Imagen subida como base64")
+                return True
+        
+        logger.error(f"📷 [UPLOAD] ❌ Error: {response.text}")
+        return False
+        
+    except Exception as e:
+        logger.error(f"📷 [DOWNLOAD ERROR] {str(e)}")
+        return False
 
 async def send_auto_evaluation(id_reporte: str, concluido: int, calificacion: int, comentario: str = ""):
     """
@@ -565,6 +749,13 @@ AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
+
+# ========= EQUIPO CIAC ============================
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+SPECIAL_NUMBER = "5218114660135"
+# ========= EQUIPO CIAC ============================
 
 # Diccionario para almacenar reportes en progreso
 report_sessions = {}  # key: phone_number, value: {images: [], image_descriptions: [], location: str, timestamp: datetime}
@@ -1200,6 +1391,7 @@ def extract_quoted_message_content(text):
         if match:
             quoted_text = match.group(1).strip()
             user_response = match.group(2).strip()
+            
             
             # Validaciones adicionales para evitar falsos positivos
             if (quoted_text and user_response and 
@@ -2333,6 +2525,25 @@ async def check_inactivity():
             elapsed = (now - session.last_active).total_seconds()
             if elapsed > INACTIVITY_THRESHOLD:
                 try:
+                    # 🆕 VERIFICAR SI HAY EVALUACIÓN PENDIENTE
+                    if (hasattr(session, 'evaluation_state') and 
+                        session.evaluation_state and
+                        hasattr(session, 'evaluation_folio')):
+                        
+                        folio = session.evaluation_folio
+                        
+                        # 🆕 SI YA FUE EVALUADO, NO REENVIAR
+                        if folio in evaluated_reports:
+                            logger.critical(f"🚫 [INACTIVITY] Reporte {folio} ya fue evaluado, limpiando sesión")
+                            session.evaluation_state = None
+                            session.evaluation_folio = None
+                            session.last_hsm_time = None
+                            # Continuar con limpieza normal de inactividad
+                        else:
+                            logger.critical(f"⏰ [INACTIVITY] Evaluación pendiente para reporte {folio}, manteniendo sesión")
+                            # NO limpiar la sesión si hay evaluación pendiente sin completar
+                            continue
+
                     # Notificar al usuario usando Chat2Desk
                     api_token = os.getenv("CHAT2DESK_API_TOKEN")
                     chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
@@ -2392,6 +2603,38 @@ async def check_inactivity():
                         del user_sessions[number]
                     if number in report_sessions:
                         del report_sessions[number]
+
+
+async def cleanup_hsm_reports():
+    """Limpia reportes HSM antiguos cada hora"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Cada hora
+            current_time = datetime.now().timestamp()
+            
+            old_reports = []
+            for key, timestamp in hsm_sent_reports.items():
+                if current_time - timestamp > 3600:  # 1 hora
+                    old_reports.append(key)
+            
+            for key in old_reports:
+                del hsm_sent_reports[key]
+                
+            logger.debug(f"🧹 [HSM CLEANUP] Eliminados {len(old_reports)} reportes HSM antiguos")
+                
+        except Exception as e:
+            logger.error(f"Error en cleanup HSM: {str(e)}")
+
+# 🆕 AGREGAR AQUÍ (después de cleanup_old_evaluated_reports):
+def log_evaluation_status():
+    """Debug function para ver estado de evaluaciones"""
+    logger.critical(f"📊 [EVAL STATUS] Reportes evaluados: {len(evaluated_reports)}")
+    logger.critical(f"📊 [EVAL STATUS] HSM enviados: {len(hsm_sent_reports)}")
+    logger.critical(f"📊 [EVAL STATUS] Sesiones activas: {len(user_sessions)}")
+    
+    for number, session in user_sessions.items():
+        if hasattr(session, 'evaluation_state') and session.evaluation_state:
+            logger.critical(f"📊 [EVAL STATUS] {number}: {session.evaluation_state} - {getattr(session, 'evaluation_folio', 'No folio')}")
 
 # Add this at the module level
 recently_completed_reports = {}  # key: phone_number, value: {timestamp, message_count}
@@ -2896,6 +3139,9 @@ async def lifespan(app: FastAPI):
     # 🆕 NUEVA TAREA: Limpieza del gestor anti-duplicación
     asyncio.create_task(dedup_cleanup_task(dedup_manager))
     logger.critical("🛡️ [DEDUP] Tarea de limpieza anti-duplicación iniciada")
+
+    # 🆕 AGREGAR ESTA LÍNEA:
+    asyncio.create_task(cleanup_hsm_reports())
     
     yield
     # Shutdown: se puede agregar lógica de limpieza si se requiere
@@ -3030,6 +3276,42 @@ async def whatsapp(request: Request):
         hook_type = payload.get('hook_type', '')
         operator_id = payload.get('operator_id', '')
 
+        # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
+        # ========EQUIPO CIAC============
+        if from_number == SPECIAL_NUMBER:
+            logger.critical(f"🚨 NÚMERO ESPECIAL DETECTADO ({SPECIAL_NUMBER}) - ENVIANDO A WEBHOOK")
+            
+            webhook_url = "https://n8n.evolutek.info/webhook/fd814da2-b597-40f6-9f64-e812c8551207"
+            
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        webhook_url,
+                        json=payload,
+                        timeout=30.0
+                    )
+                    
+                if response.status_code == 200:
+                    logger.critical(f"✅ Webhook respondió correctamente para {SPECIAL_NUMBER}")
+                    return JSONResponse(content={
+                        "status": True,
+                        "message": "Mensaje de número especial enviado al webhook"
+                    })
+                else:
+                    logger.error(f"❌ Error en webhook para {SPECIAL_NUMBER}: {response.status_code}")
+                    return JSONResponse(content={
+                        "status": False,
+                        "error": f"Webhook respondió con código {response.status_code}"
+                    }, status_code=500)
+                    
+            except Exception as e:
+                logger.error(f"💥 Error al enviar a webhook: {str(e)}")
+                return JSONResponse(content={
+                    "status": False,
+                    "error": f"Error al enviar a webhook: {str(e)}"
+                }, status_code=500)
+            # ========EQUIPO CIAC============
+            
         if message_type == 'to_client' and message_text:
             logger.critical(f"🔍 [FILTER DEBUG] Evaluando mensaje: '{message_text}'")
             # 🚫 FILTRO ULTRA ROBUSTO - Bloquear CUALQUIER mensaje de evaluación
@@ -3097,7 +3379,7 @@ async def whatsapp(request: Request):
                         # Método 2: Fallback con regex
                         if not reporte_id:
                             import re
-                            match = re.search(r'\b(\d{4,})\b', original_message)
+                            match = regex_module.search(r'\b(\d{4,})\b', original_message)
                             if match:
                                 reporte_id = match.group(1)
                                 logger.critical(f"🎯 [HSM+OK] ID extraído por regex: {reporte_id}")
@@ -3126,19 +3408,12 @@ async def whatsapp(request: Request):
                         logger.critical(f"🎯 [HSM+OK]   - evaluation_client_id: {session.evaluation_client_id}")
                         logger.critical(f"🎯 [HSM+OK]   - evaluation_channel_id: {session.evaluation_channel_id}")
                         
-                        # 📤 ENVIAR COMENTARIO DE CONCLUSIÓN
-                        logger.critical(f"📤 [HSM+OK] ===== LLAMANDO send_conclusion_comment_and_image =====")
-                        logger.critical(f"📤 [HSM+OK] Parámetros:")
-                        logger.critical(f"📤 [HSM+OK]   - client_id: {client_id}")
-                        logger.critical(f"📤 [HSM+OK]   - channel_id: {channel_id}")
-                        logger.critical(f"📤 [HSM+OK]   - reporte_id: {reporte_id}")
-                        
                         # Enviar comentario de conclusión INMEDIATAMENTE
                         logger.critical(f"📤 [HSM+OK] Enviando comentario de conclusión para {reporte_id}")
                         await send_conclusion_comment_and_image(client_id, channel_id, reporte_id)
                         
                         # Esperar un momento antes de la pregunta de evaluación
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(2)
                         
                         # Enviar pregunta de evaluación
                         logger.critical(f"📤 [HSM+OK] Enviando pregunta de evaluación")

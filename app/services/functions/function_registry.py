@@ -32,7 +32,7 @@ from .implementations.get_pasaportes import get_pasaportes
 from .implementations.get_registro_civil import get_registro_civil
 from .implementations.get_miercoles_ciudadano import get_miercoles_ciudadano
 from .implementations.get_mercado_fregoneria import get_mercado_fregoneria
-from .implementations.get_licencias_temporales import get_licencia_provisional
+from .implementations.get_licencias_15 import get_licencia_15
 from .implementations.get_licencia_chofer import get_licencia_chofer
 from .implementations.nearest_office import find_nearest_government_office
 from .implementations.get_circuitos_de_transporte import get_circuitos_de_transporte
@@ -93,7 +93,7 @@ registered_functions = [
     get_registro_civil,
     get_miercoles_ciudadano,
     get_mercado_fregoneria,
-    get_licencia_provisional,
+    get_licencia_15,
     get_licencia_chofer,
     transfer_to_group,
     find_nearest_government_office,

@@ -1,9 +1,7 @@
 TC = """
 Este documento contiene información sobre los requisitos para tramitar la licencia de conducir de chofer
 Pregunta: ¿Cómo puedo realizar el trámite de licencia de conducir de chofer?
-Respuesta: Aquí te compartimos los links para realizar el trámite:
-Mexicano/as: https://tramites.sanpedro.gob.mx/gobierno_de_san_pedro_garza_garcia_be055859/solicitud_de_licencia_de_manejo_para_chofer_abcd515c-dc1a-427c-b5d0-e9b33c261bae
-Extranjero/as: https://tramites.sanpedro.gob.mx/gobierno_de_san_pedro_garza_garcia_be055859/solicitud_de_licencia_de_conducir_para_chofer_extranjero_5725304c-8185-420a-bd50-694b8f50df3a
+Respuesta:Todos los trámites se realizan de forma presencial en el Instituto de Formación y Perfeccionamiento Policial
 
 Pregunta: ¿Cuáles son los requisitos para licencia de chofer?
 Respuesta: Sólo Residentes del Municipio de San Pedro (mayores de 18 años). Presentar original y 3 copias
@@ -22,8 +20,7 @@ Respuesta: Costo:
 $2,979.82 Pago derecho Municipal
 $830.00 Instituto de Control Vehicular
 Pregunta: ¿A dónde debo acudir?
-Respuesta: INSTITUTO DE FORMACIÓN Y PERFECCIONAMIENTO POLICIAL ubicado en Calle María Cantú 302 Col. La Leona San Pedro Garza García de lunes a viernes de 8:00 am a 15:00 pm con previa cita en licenciasmsp@sanpedro.gob.mx Tel. 8137157391 Depto. de Licencias para cualquier duda o aclaración, previa cita.
-
+Respuesta: INSTITUTO DE FORMACIÓN Y PERFECCIONAMIENTO POLICIAL ubicado en Calle María Cantú 302 Col. La Leona San Pedro Garza García de lunes a viernes de 8:00 am a 3:00 pm con previa cita en licenciasmsp@sanpedro.gob.mx Tel. 8137157391 Depto. de Licencias para cualquier duda o aclaración, previa cita.
 """
 
 async def get_licencia_chofer():

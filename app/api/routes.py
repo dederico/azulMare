@@ -563,10 +563,6 @@ async def whatsapp(request: Request):
             logger.debug(f"Ignoring duplicate message with id={uid}")
             return JSONResponse(content={"status": True, "message": "Duplicate message ignored"})
         
-        
-
-
-        
         # Mark message as processed
         processed_message_ids.add(uid)
         
@@ -574,6 +570,11 @@ async def whatsapp(request: Request):
         if len(processed_message_ids) > 1000:
             processed_message_ids.clear()
             processed_message_ids.add(uid)
+        
+
+
+
+
         
         # Extract information from Chat2Desk payload
         chat_id = payload.get('chat_id')

@@ -54,6 +54,10 @@ from .implementations.get_becas import get_becas
 from .implementations.get_consultorio_movil import get_consultorio_movil
 from .implementations.get_intercambio_reciclaje import get_intercambio_reciclaje
 from .implementations.get_info_capilla import get_info_capilla
+from .implementations.get_climate import get_climate
+from .implementations.get_traffic import get_traffic
+
+
 
 
 
@@ -115,6 +119,8 @@ registered_functions = [
     get_becas,
     get_consultorio_movil,
     get_info_capilla, 
-    get_intercambio_reciclaje
+    get_intercambio_reciclaje,
+    get_climate,
+    get_traffic
 
 ]

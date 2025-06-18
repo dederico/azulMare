@@ -151,6 +151,50 @@ async def transfer_to_group(phone_number, group_id=None, reason=None, send_notif
         
         message_result = message_response.json()
         logger.debug(f"Respuesta al enviar mensaje: {message_result}")
+
+        logger.critical(f"🔄 [DIALOG TRANSFER] Buscando diálogo activo para asignar al grupo {group_id}")
+        
+        try:
+            # Buscar diálogo activo del cliente
+            dialogs_url = f"{CHAT2DESK_BASE_URL}/dialogs"
+            dialog_params = {"client_id": client_id, "state": "opened"}
+            
+            async with httpx.AsyncClient() as client:
+                dialogs_response = await client.get(dialogs_url, params=dialog_params, headers=headers)
+                
+                if dialogs_response.status_code == 200:
+                    dialogs_data = dialogs_response.json()
+                    active_dialogs = dialogs_data.get("data", [])
+                    
+                    if active_dialogs:
+                        dialog_id = active_dialogs[0]["id"]
+                        logger.critical(f"✅ [DIALOG TRANSFER] Diálogo activo encontrado: {dialog_id}")
+                        
+                        # TRANSFERIR EL DIÁLOGO usando dialogs (PUT)
+                        dialog_transfer_url = f"{CHAT2DESK_BASE_URL}/dialogs/{dialog_id}"
+                        
+                        # Método 1: Intentar con operator_id
+                        dialog_data = {"operator_id": group_id}
+                        dialog_response = await client.put(dialog_transfer_url, json=dialog_data, headers=headers)
+                        
+                        if dialog_response.status_code == 200:
+                            logger.critical(f"✅ [DIALOG TRANSFER] Diálogo {dialog_id} asignado a operador {group_id}")
+                        else:
+                            # Método 2: Intentar con operators_group_id  
+                            dialog_data_alt = {"operators_group_id": group_id}
+                            dialog_response_alt = await client.put(dialog_transfer_url, json=dialog_data_alt, headers=headers)
+                            
+                            if dialog_response_alt.status_code == 200:
+                                logger.critical(f"✅ [DIALOG TRANSFER] Diálogo {dialog_id} asignado al grupo {group_id}")
+                            else:
+                                logger.warning(f"⚠️ [DIALOG TRANSFER] Falló asignar diálogo: {dialog_response_alt.status_code} - {dialog_response_alt.text}")
+                    else:
+                        logger.warning(f"⚠️ [DIALOG TRANSFER] No se encontró diálogo activo para cliente {client_id}")
+                else:
+                    logger.warning(f"⚠️ [DIALOG TRANSFER] Error buscando diálogos: {dialogs_response.status_code}")
+                    
+        except Exception as dialog_error:
+            logger.error(f"❌ [DIALOG TRANSFER] Error en transferencia de diálogo: {str(dialog_error)}")
                 
         # La estructura de la respuesta puede variar, vamos a verificar diferentes posibilidades
         message_id = None

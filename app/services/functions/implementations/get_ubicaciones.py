@@ -2,7 +2,7 @@ TC = """
 Este documento contiene las ubicaciones de oficinas, y entre otros lugares relevantes del municipio de San Pedro Garza García.
 
 Pregunta: ¿Cuál es la ubicación de la Secretaría de Participación Ciudadana y Gobierno Abierto?
-Respuesta: Río de la Plata 407 Ote, Col. Del Valle, entre Manuel Gomez Morín y Río Rosas. Horario presencial: 8:00 am a 4:00 pm.
+Respuesta: Blvd. Gustavo Díaz Ordaz, Km 33.2, Col. La Leona, Zona Industrial. Horario presencial: 8:00 am a 4:00 pm.
 
 Pregunta: ¿Cuál es la ubicación de la Secretaría de Desarrollo Urbano y Movilidad?
 Respuesta: Palacio de Justicia, Planta Baja, Corregidora 507 Norte entre Independencia y Callejón de los Ayala. Horario presencial: 8:00 am a 4:00 pm.
@@ -93,13 +93,6 @@ Parque Mississippi: Río Potosí entre Río Mississippi y Río de la Plata, Col.
 Parque Rufino Tamayo: Estacionamiento del parque, Av. Rufino Tamayo 100, Corporativo Prodesa, 66278 San Pedro Garza García, N.L.
 Parque Bosques del Valle: Sierra Linda 77, Lomas del Valle, 66250 San Pedro Garza García, N.L.﻿
 Santa Engracia: Los Rosales 385, Col. Santa Engracia, 66267 San Pedro Garza García, N.L.
-
-Pregunta: ¿Cuál es la ubicación de los Centros de recolección de pino?
-Respuesta: 
-Parque Rufino Tamayo: Av. Rufino Tamayo 100, Corporativo Prodesa, 66278 San Pedro Garza García, N.L.
-Parque Bosques del Valle: Av. José Vasconcelos, Bosques del Valle 1er Sector, 66250 Monterrey, N.L. Referencia, Calle bosques del tíbet esquina bosques de pirineos
-Parque El Capitán: Av. Fuentes del Valle, Fuentes del Valle, 66220 San Pedro Garza García, N.L.
-Parque Clouthier: Av. Manuel Jesus Clouthier 500, Zona Clouthier, 66214 San Pedro Garza García, N.L.
 
 Pregunta: ¿Cuál es la ubicación del Corralón?
 Respuesta: Garajes y Talleres. Lic. Benito Juárez Nte. 580 cruz con Callejón de los Arizpe, Col. Casco Urbano

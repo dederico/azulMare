@@ -151,7 +151,8 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
 
     async def llm_generator(self):
         # Usar o3-mini si está configurado
-        model = self.config.get("model") or "gpt-3.5-turbo-1106"
+        model = "gpt-4.1-2025-04-14"
+        #model = self.config.get("model") or "gpt-3.5-turbo-1106"
         
         # Comprobar si estamos usando un modelo de razonamiento (o3-mini)
         if model == "o3-mini":
@@ -171,7 +172,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                 messages=self.conversation_history,
                 stream=True,
                 tool_choice="auto",
-                temperature=0.1,
+                #temperature=0.1,
                 tools=self.function_manager.get_function_definition(),
             )
         return generator

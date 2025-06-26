@@ -2434,7 +2434,12 @@ async def websocket_endpoint(ws: WebSocket):
     llm_service = OpenAIService(
         config=config,
         api_key=OPENAI_API_KEY,
-        system=system_message.format(customer_name=customer_identity, call_sid=call_sid, date2=date_string, now=hour, folio="folio"),
+        system=system_message.format(
+            customer_name=customer_identity, 
+            call_sid=call_sid, 
+            date2=date_string, 
+            now=hour, 
+            folio="folio"),
         function_manager=function_manager
     )
 
@@ -2576,6 +2581,10 @@ async def check_inactivity():
                             
                             async with httpx.AsyncClient() as client:
                                 await client.post(chat2desk_url, json=message_data, headers=headers)
+
+                            if number in transferred_numbers:
+                                del transferred_numbers[number]
+                                logger.critical(f"🧹 [INACTIVITY] Eliminado {number} de transferred_numbers por inactividad")
                     
                     # Eliminar todos los mensajes de este número de la base de datos
                     conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
@@ -2603,6 +2612,9 @@ async def check_inactivity():
                         del user_sessions[number]
                     if number in report_sessions:
                         del report_sessions[number]
+                    if number in transferred_numbers:
+                        del transferred_numbers[number]
+                        logger.critical(f"🧹 [INACTIVITY ERROR] Eliminado {number} de transferred_numbers por error")
 
 
 async def cleanup_hsm_reports():
@@ -3275,6 +3287,7 @@ async def whatsapp(request: Request):
         client_id = payload.get('client_id')
         hook_type = payload.get('hook_type', '')
         operator_id = payload.get('operator_id', '')
+        message_id = payload.get('message_id')
 
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============
@@ -3698,6 +3711,7 @@ async def whatsapp(request: Request):
         chat_id = payload.get('chat_id')
         from_number = payload.get('client', {}).get('phone')
         sender_name = payload.get('client', {}).get('name', 'Usuario')
+        message_id = payload.get('message_id')
         body = payload.get('text', '')
         # Handle None values in body
         if body is None:
@@ -4259,6 +4273,7 @@ async def whatsapp(request: Request):
     db.Insert(user_message)
     await manage_message_history(db, from_number)
     
+    message_id = payload.get('message_id')
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
@@ -4285,6 +4300,7 @@ async def whatsapp(request: Request):
             
             # Guardar todos los datos que el LLM tiene disponibles
             session["llm_context"] = {
+                "message_id": message_id,
                 "yoga_number": from_number,
                 "sender_name": sender_name,
                 "address": address if 'address' in locals() else "Ubicación no disponible",
@@ -4661,15 +4677,15 @@ async def whatsapp(request: Request):
                 logger.warning(f"🔄 TRANSFERENCIA DETECTADA EN RESPUESTA: {response_content[:100]}")
 
                 # 1. EXTRAER EL NÚMERO DE TELÉFONO del código literal
-                phone_to_transfer = from_number  # Por defecto, usar el número del usuario actual
+                #phone_to_transfer = from_number  # Por defecto, usar el número del usuario actual
 
                 # Intentar extraer el número del código literal
                 import re as regex_module
-                transfer_match = regex_module.search(r'transfer_to_group\s*\(\s*(["\']?)(\d+)\1\s*\)', response_content)
-                if transfer_match:
-                    extracted_phone = transfer_match.group(2)
-                    logger.critical(f"📞 NÚMERO EXTRAÍDO DEL CÓDIGO: {extracted_phone}")
-                    phone_to_transfer = extracted_phone
+                # transfer_match = regex_module.search(r'transfer_to_group\s*\(\s*(["\']?)(\d+)\1\s*\)', response_content)
+                # if transfer_match:
+                #     extracted_phone = transfer_match.group(2)
+                #     logger.critical(f"📞 NÚMERO EXTRAÍDO DEL CÓDIGO: {extracted_phone}")
+                #     phone_to_transfer = extracted_phone
 
                 # 2. LIMPIAR el mensaje para el usuario (quitar código literal)
                 clean_message = regex_module.sub(r'transfer_to_group\s*\([^)]*\)', "", response_content)
@@ -4689,36 +4705,53 @@ async def whatsapp(request: Request):
                 logger.critical(f"📝 NÚMERO MARCADO COMO TRANSFERIDO: {from_number}")
 
                 # 4. EJECUTAR LA TRANSFERENCIA REAL
+                # try:
+                #     logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA PARA: {phone_to_transfer}")
+                #     result = await transfer_to_group(
+                #         phone_number=phone_to_transfer,
+                #         group_id=1772,  # Grupo fijo
+                #         reason="Transferencia automática por solicitud del LLM",
+                #         send_notification=True
+                #     )
+
                 try:
-                    logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA PARA: {phone_to_transfer}")
-                    result = await transfer_to_group(
-                        phone_number=phone_to_transfer,
-                        group_id=1772,  # Grupo fijo
-                        reason="Transferencia automática por solicitud del LLM",
-                        send_notification=True
-                    )
+                    # ✅ USAR DIRECTAMENTE EL message_id DEL PAYLOAD (ya lo tienes arriba)
+                    # No importa lo que venga en transfer_to_group() del LLM
+                    
+                    if not message_id:
+                        logger.error("❌ No se encontró message_id en el payload")
+                        response_content = "Error: No se pudo obtener el ID del mensaje"
+                    else:
+                        logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA:")
+                        logger.critical(f"🚀   - message_id: {message_id} (del payload)")
+                        logger.critical(f"🚀   - group_id: 1772 (fijo)")
+                        
+                        result = await transfer_to_group(
+                            message_id=message_id,  # ✅ DEL PAYLOAD - SIEMPRE CORRECTO
+                            group_id=1772,          # ✅ FIJO - SIEMPRE CORRECTO
+                            reason="Transferencia automática por LLM sin conocimiento"
+                        )
 
-                    logger.critical(f"✅ TRANSFERENCIA EJECUTADA: {result}")
+                        logger.critical(f"✅ RESULTADO: {result}")
 
-                    # Registrar en base de datos
-                    transfer_note = Message(
-                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        senderName="System",
-                        message=f"[SYSTEM] Transferencia ejecutada para {phone_to_transfer} a grupo 1772",
-                        number=from_number,
-                        uid=f"transfer-exec-{datetime.now().timestamp()}",
-                        direction="system",
-                        mtype="text",
-                        source="whatsapp"
-                    )
-                    db.Insert(transfer_note)
+                        # Registrar en base de datos
+                        transfer_note = Message(
+                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            senderName="System",
+                            message=f"[SYSTEM] Transferencia automática ejecutada - message_id: {message_id}",
+                            number=from_number,
+                            uid=f"auto-transfer-{datetime.now().timestamp()}",
+                            direction="system",
+                            mtype="text",
+                            source="whatsapp"
+                        )
+                        db.Insert(transfer_note)
 
                 except Exception as transfer_error:
                     logger.error(f"❌ ERROR EJECUTANDO TRANSFERENCIA: {str(transfer_error)}")
                     # Si falla la transferencia, quitar de la lista de transferidos
                     if from_number in transferred_numbers:
                         del transferred_numbers[from_number]
-                    # Cambiar mensaje para indicar error
                     response_content = "Estoy teniendo problemas técnicos para conectarte. Por favor, intenta contactar directamente a atención ciudadana."
             
             # Check if it's a hangup or farewell

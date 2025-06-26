@@ -31,14 +31,14 @@ def format_phone_number(phone):
     # Si no coincide con ningún patrón conocido, devolver como está
     return phone
 
-async def transfer_to_group(phone_number, group_id=None, reason=None, send_notification=True):
+async def transfer_to_group(message_id, group_id=None, reason=None):
     """
-    Transfiere una conversación de WhatsApp a un grupo específico de operadores.
+    Transfiere una conversación usando el message_id del payload.
+    VERSIÓN SÚPER SIMPLE: Usa directamente el message_id del webhook.
 
-    phone_number (string): Número de teléfono del cliente. OBLIGATORIO.
+    message_id (integer): ID del mensaje del payload. OBLIGATORIO.
     group_id (number): ID del grupo de operadores. Por defecto 1772 (Envios).
-    reason (string): Razón de la transferencia.
-    send_notification (boolean): Si es True, envía un mensaje de notificación al usuario.
+    reason (string): Razón de la transferencia (para logs).
 
     Returns:
         string: Mensaje de confirmación o error.
@@ -54,12 +54,7 @@ async def transfer_to_group(phone_number, group_id=None, reason=None, send_notif
             except (ValueError, TypeError):
                 logger.warning(f"group_id no válido: {group_id}, usando valor por defecto 1772")
                 group_id = 1772
-            
-        # Formatear número de teléfono
-        formatted_phone = format_phone_number(phone_number)
-        logger.debug(f"Número de teléfono formateado: {phone_number} -> {formatted_phone}")
 
-        
         # Configurar encabezados
         api_token = os.environ.get("CHAT2DESK_API_TOKEN")
         if not api_token:
@@ -72,169 +67,13 @@ async def transfer_to_group(phone_number, group_id=None, reason=None, send_notif
             "Content-Type": "application/json"
         }
         
-        # 1. Buscar el cliente por número de teléfono
-        search_url = f"{CHAT2DESK_BASE_URL}/clients"
-        params = {"phone_number": formatted_phone}
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(search_url, params=params, headers=headers)
-            
-            if response.status_code != 200:
-                error_msg = f"Error al buscar cliente: {response.status_code} - {response.text}"
-                logger.error(error_msg)
-                return error_msg
-        
-        response_data = response.json()
-        logger.debug(f"Respuesta de búsqueda de cliente: {response_data}")
-        
-        # Verificar si se encontró el cliente
-        if response_data.get("status") != "success" or not response_data.get("data") or len(response_data.get("data", [])) == 0:
-            error_msg = "No se encontró cliente con ese número de teléfono."
-            logger.error(error_msg)
-            return error_msg
-        
-        # Buscar el cliente con el número de teléfono exacto que estamos buscando
-        client_id = None
-        for client in response_data.get("data", []):
-            if client.get("phone") == formatted_phone:
-                client_id = client.get("id")
-                break
-        
-        # Si no encontramos una coincidencia exacta, usar el primer cliente
-        if client_id is None and len(response_data.get("data", [])) > 0:
-            client_id = response_data.get("data")[0].get("id")
-        
-        if client_id is None:
-            error_msg = "No se pudo determinar el ID del cliente."
-            logger.error(error_msg)
-            return error_msg
-        
-        logger.debug(f"ID del cliente encontrado: {client_id}")
-        
-        # 2. Obtener información del grupo de operadores
-        groups_url = f"{CHAT2DESK_BASE_URL}/operators_groups"
-        
-        async with httpx.AsyncClient() as client:
-            groups_response = await client.get(groups_url, headers=headers)
-        
-        group_name = "Atención Ciudadana"
-        if groups_response.status_code == 200:
-            groups_data = groups_response.json()
-            for group in groups_data.get("data", []):
-                if group.get("id") == group_id:
-                    group_name = group.get("name", "Atención Ciudadana")
-                    break
-        
-        # 3. Crear un mensaje nuevo para el cliente - usando valores fijos para channel_id
-        message_url = f"{CHAT2DESK_BASE_URL}/messages"
-
-        transfer_message = "Claro, En breve uno de nuestros agentes te atenderá." if send_notification else "..."
-        
-        # if reason and send_notification:
-        #     transfer_message += f"\n\nMotivo: {reason}"
-
-        # Solo enviar el mensaje si send_notification es True
-        message_data = {
-                "client_id": client_id,
-                "channel_id": 43388,  # Valor fijo para channel_id
-                "transport": "wa_direct",
-                "text": transfer_message
-            }
-            
-        async with httpx.AsyncClient() as client:
-            message_response = await client.post(message_url, json=message_data, headers=headers)
-            
-        if message_response.status_code != 200:
-            error_msg = f"Error al enviar mensaje: {message_response.status_code} - {message_response.text}"
-            logger.error(error_msg)
-            return error_msg
-        
-        message_result = message_response.json()
-        logger.debug(f"Respuesta al enviar mensaje: {message_result}")
-
-        logger.critical(f"🔄 [DIALOG TRANSFER] Buscando diálogo activo para asignar al grupo {group_id}")
-        
-        try:
-            # Buscar diálogo activo del cliente
-            dialogs_url = f"{CHAT2DESK_BASE_URL}/dialogs"
-            dialog_params = {"client_id": client_id, "state": "opened"}
-            
-            async with httpx.AsyncClient() as client:
-                dialogs_response = await client.get(dialogs_url, params=dialog_params, headers=headers)
-                
-                if dialogs_response.status_code == 200:
-                    dialogs_data = dialogs_response.json()
-                    active_dialogs = dialogs_data.get("data", [])
-                    
-                    if active_dialogs:
-                        dialog_id = active_dialogs[0]["id"]
-                        logger.critical(f"✅ [DIALOG TRANSFER] Diálogo activo encontrado: {dialog_id}")
-                        
-                        # TRANSFERIR EL DIÁLOGO usando dialogs (PUT)
-                        dialog_transfer_url = f"{CHAT2DESK_BASE_URL}/dialogs/{dialog_id}"
-                        
-                        # Método 1: Intentar con operator_id
-                        dialog_data = {"operator_id": group_id}
-                        dialog_response = await client.put(dialog_transfer_url, json=dialog_data, headers=headers)
-                        
-                        if dialog_response.status_code == 200:
-                            logger.critical(f"✅ [DIALOG TRANSFER] Diálogo {dialog_id} asignado a operador {group_id}")
-                        else:
-                            # Método 2: Intentar con operators_group_id  
-                            dialog_data_alt = {"operators_group_id": group_id}
-                            dialog_response_alt = await client.put(dialog_transfer_url, json=dialog_data_alt, headers=headers)
-                            
-                            if dialog_response_alt.status_code == 200:
-                                logger.critical(f"✅ [DIALOG TRANSFER] Diálogo {dialog_id} asignado al grupo {group_id}")
-                            else:
-                                logger.warning(f"⚠️ [DIALOG TRANSFER] Falló asignar diálogo: {dialog_response_alt.status_code} - {dialog_response_alt.text}")
-                    else:
-                        logger.warning(f"⚠️ [DIALOG TRANSFER] No se encontró diálogo activo para cliente {client_id}")
-                else:
-                    logger.warning(f"⚠️ [DIALOG TRANSFER] Error buscando diálogos: {dialogs_response.status_code}")
-                    
-        except Exception as dialog_error:
-            logger.error(f"❌ [DIALOG TRANSFER] Error en transferencia de diálogo: {str(dialog_error)}")
-                
-        # La estructura de la respuesta puede variar, vamos a verificar diferentes posibilidades
-        message_id = None
-
-        # Opción 1: data.message_id (según la respuesta que mostraste)
-        if message_result.get("data") and isinstance(message_result.get("data"), dict) and "message_id" in message_result.get("data"):
-            message_id = message_result.get("data").get("message_id")
-        # Opción 2: data.id
-        elif message_result.get("data") and isinstance(message_result.get("data"), dict) and "id" in message_result.get("data"):
-            message_id = message_result.get("data").get("id")
-        # Opción 3: data es directamente un diccionario con id
-        elif message_result.get("data") and "id" in message_result:
-            message_id = message_result.get("id")
-        # Opción 4: id está en el nivel superior
-        elif "id" in message_result:
-            message_id = message_result.get("id")
-        # Opción 5: message_id está en el nivel superior
-        elif "message_id" in message_result:
-            message_id = message_result.get("message_id")
-        # Opción 6: data es una lista y tomamos el primer elemento
-        elif message_result.get("data") and isinstance(message_result.get("data"), list) and len(message_result.get("data")) > 0:
-            first_item = message_result.get("data")[0]
-            if isinstance(first_item, dict):
-                if "message_id" in first_item:
-                    message_id = first_item.get("message_id")
-                elif "id" in first_item:
-                    message_id = first_item.get("id")
-
-        if not message_id:
-            error_msg = "No se pudo obtener el ID del mensaje enviado."
-            logger.error(error_msg)
-            logger.error(f"Estructura de respuesta: {message_result}")
-            return error_msg
-        
-        logger.debug(f"ID del mensaje obtenido: {message_id}")
-         # 4. Transferir el mensaje al grupo
-
+        # ✅ SÚPER SIMPLE: Usar directamente el message_id del payload
         transfer_url = f"{CHAT2DESK_BASE_URL}/messages/{message_id}/transfer_to_group"
         transfer_params = {"group_id": group_id}
-        logger.debug(f"Intentando transferir mensaje con ID {message_id} a grupo {group_id}. URL: {transfer_url}")
+        
+        logger.debug(f"Transfiriendo mensaje {message_id} al grupo {group_id}")
+        logger.debug(f"URL: {transfer_url}")
+        logger.debug(f"Params: {transfer_params}")
 
         async with httpx.AsyncClient() as client:
             transfer_response = await client.get(transfer_url, params=transfer_params, headers=headers)
@@ -244,27 +83,10 @@ async def transfer_to_group(phone_number, group_id=None, reason=None, send_notif
             logger.error(error_msg)
             return error_msg
         
-    # ELIMINADO: Ya no enviamos un segundo mensaje de notificación
-    
-    # 5. Guardar el mensaje en la base de datos local (si se envió un mensaje)
-        try:
-            db = LocalStorage()
-            message = Message(
-                time=datetime.now(pytz.timezone('America/Mexico_City')).strftime("%Y-%m-%d %H:%M:%S"),
-                senderName="Sistema",
-                message=transfer_message,
-                number=formatted_phone,
-                uid=f"transfer-{client_id}-{datetime.now().timestamp()}",
-                direction="outbound",
-                mtype="text",
-                source="whatsapp"
-            )
-            db.Insert(message)
-        except Exception as db_error:
-            logger.error(f"Error al guardar mensaje en la base de datos: {str(db_error)}")
+        logger.critical(f"✅ TRANSFERENCIA EXITOSA: Mensaje {message_id} transferido al grupo {group_id}")
         
         # Mensaje de éxito
-        success_msg = f"La conversación ha sido transferida exitosamente al grupo {group_name}."
+        success_msg = f"La conversación ha sido transferida exitosamente al grupo {group_id}."
         logger.info(success_msg)
         return success_msg
     

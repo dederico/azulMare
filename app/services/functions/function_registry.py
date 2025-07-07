@@ -56,12 +56,12 @@ from .implementations.get_intercambio_reciclaje import get_intercambio_reciclaje
 from .implementations.get_info_capilla import get_info_capilla
 from .implementations.get_climate import get_climate
 from .implementations.get_traffic import get_traffic
-
-
-
-
-
-
+from .implementations.get_consultorio_medico_canteras import get_consultorio_medio_canteras
+from .implementations.get_equipamiento_vivienda import get_equipamiento_vivienda
+from .implementations.get_campamentos_verano import get_campamentos_verano
+from .implementations.get_actividades_san_pedro_parques import get_actividades_san_pedro_parques
+from .implementations.get_mochilas import get_mochilas
+from .implementations.get_becas_juventud import get_becas_juventud
 
 
 registered_functions = [
@@ -121,6 +121,12 @@ registered_functions = [
     get_info_capilla, 
     get_intercambio_reciclaje,
     get_climate,
-    get_traffic
+    get_traffic,
+    get_consultorio_medio_canteras,
+    get_equipamiento_vivienda,
+    get_campamentos_verano,
+    get_actividades_san_pedro_parques,
+    get_mochilas,
+    get_becas_juventud
 
 ]

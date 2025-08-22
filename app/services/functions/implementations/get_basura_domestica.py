@@ -1,5 +1,5 @@
 TC ="""
-Este documento contiene información sobre la ruta de recolección de basura ordinaria o basura doméstica realizada por Red Ambiental en conjunto con la Secretaría de Servicios Públicos y Mantenimiento de la Ciudad de San Pedro Garza García
+Este documento contiene información sobre la ruta de recolección de basura ordinaria o basura doméstica de San Pedro Garza García
 
 Pregunta: ¿Cuáles son las rutas de basura ordinaria / basura doméstica?
 Respuesta:

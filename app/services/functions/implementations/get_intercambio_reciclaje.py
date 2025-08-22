@@ -9,17 +9,17 @@ Plástico (PET, tapitas, aluminio) 👉🏻 Productos de Limpieza
 Vidrio 👉🏻 Utensilios de cocina, vasos, tequileros, vaporeras, etc. 
 Cartón 👉🏻 Paquete de hojas 
 
-El Centro de Bienestar Animal estará aplicando: 
+El Instituto de Bienestar Animal estará aplicando: 
 
 Vacunación antirrábica 
 Desparasitación interna parásitos 
 Desparasitación externa, garrapatas y pulgas
 
 Pregunta: ¿Dónde será el próximo intercambio de reciclaje?
-Respuesta: Auditorio San Pedro
+Respuesta: Auditorio San Pedro en modalidad Drive Thru
 
 Pregunta: ¿Cuándo será el próximo intercambio de reciclaje?
-Respuesta: Sábado 28 de junio
+Respuesta: Sábado 11 de octubre
 
 Pregunta: ¿Cuál es el horario del intercambio de reciclaje?
 Respuesta: 9:00 am a 12:00 pm

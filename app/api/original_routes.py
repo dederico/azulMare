@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from app.util.database import LocalStorage
 from app.models.Config import Config
 from app.models.Message import Message
+from app.services.llm.deepseek_service import DeepSeekService
 from app.services.llm.openai_service import OpenAIService
 from app.services.functions.function_manager import FunctionManager
 from app.services.functions.function_registry import registered_functions
@@ -48,7 +49,6 @@ from app.api.websocket_handler import WebSocketHandler
 from app.core.orchestrator import Orchestrator
 from app.services.stt.deepgram_service import DeepgramService
 from app.services.stt.amazon_service import AmazonTranscribeService
-from app.services.llm.openai_service import OpenAIService
 from app.services.tts.eleven_service import ElevenTTSService
 from app.services.tts.polly_service import AmazonTTSService
 from app.services.functions.function_registry import registered_functions
@@ -160,15 +160,16 @@ async def handle_hsm_conclusion_notification(payload, from_number):
     }
 
 
-async def handle_evaluation_response(from_number, text, client_id, channel_id):
+async def handle_evaluation_response(from_number, text, client_id, channel_id, transport="wa_direct"):
     """
     Maneja respuestas del usuario durante el flujo de evaluación.
-    
+
     Args:
         from_number: Número del usuario
         text: Texto de la respuesta
         client_id: ID del cliente en Chat2Desk
         channel_id: ID del canal
+        transport: Transport type (wa_direct or widget)
         
     Returns:
         bool: True si se procesó como evaluación, False si no
@@ -274,8 +275,8 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
     5. 😍 Excelente
 
     Escribe el número de la opción que quieres seleccionar."""
-            
-            await send_chat2desk_message_direct(client_id, channel_id, rating_message)
+
+            await send_chat2desk_message_direct(client_id, channel_id, rating_message, transport)
             logger.critical(f"✅ [EVALUACIÓN] Usuario {from_number} acordó con resolución")
             return True
             
@@ -285,7 +286,7 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
             session.update_activity()
             
             reason_message = "¿Podrías indicarnos el motivo por el cuál no tuvo resolución?"
-            await send_chat2desk_message_direct(client_id, channel_id, reason_message)
+            await send_chat2desk_message_direct(client_id, channel_id, reason_message, transport)
             logger.critical(f"⚠️ [EVALUACIÓN] Usuario {from_number} NO acordó con resolución")
             return True
             
@@ -293,7 +294,7 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
             # Respuesta inválida
             logger.critical(f"❌ [EVAL] Respuesta inválida para Sí/No: '{respuesta}'")
             clarification_message = "Por favor responde *Sí* o *No* para continuar con la evaluación."
-            await send_chat2desk_message_direct(client_id, channel_id, clarification_message)
+            await send_chat2desk_message_direct(client_id, channel_id, clarification_message, transport)
             return True
     
     # ESTADO 2: Esperando calificación (1-5)
@@ -333,7 +334,7 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
             )
             
             thanks_message = "Gracias por tu retroalimentación, tomamos en consideración tus comentarios para mejorar la atención a tus reportes"
-            await send_chat2desk_message_direct(client_id, channel_id, thanks_message)
+            await send_chat2desk_message_direct(client_id, channel_id, thanks_message, transport)
             
             logger.critical(f"⭐ [EVALUACIÓN COMPLETA] Reporte {folio}: Calificación {rating}/5")
             return True
@@ -342,7 +343,7 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
             # Calificación inválida
             logger.critical(f"❌ [EVAL] Calificación inválida: '{text}'")
             invalid_rating_message = "Por favor responde del *1* al *5* para continuar con la evaluación."
-            await send_chat2desk_message_direct(client_id, channel_id, invalid_rating_message)
+            await send_chat2desk_message_direct(client_id, channel_id, invalid_rating_message, transport)
             return True
     
     # ESTADO 3: Esperando motivo de desacuerdo
@@ -377,8 +378,8 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
         )
         
         thanks_message = "Gracias por tu retroalimentación, tomamos en consideración tus comentarios para mejorar la atención a tus reportes"
-        await send_chat2desk_message_direct(client_id, channel_id, thanks_message)
-        
+        await send_chat2desk_message_direct(client_id, channel_id, thanks_message, transport)
+
         logger.critical(f"❌ [EVALUACIÓN COMPLETA] Reporte {folio}: Desacuerdo - '{comentario[:50]}...'")
         return True
     
@@ -386,9 +387,10 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id):
     logger.critical(f"❌ [EVAL] Estado desconocido: '{evaluation_state}'")
     return False
 
-async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
+async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id, transport="wa_direct"):
     """
     VERSIÓN MEJORADA: Obtiene y envía el comentario de conclusión e imagen del técnico.
+    Supports both wa_direct (WhatsApp) and widget (web chat).
     """
     try:
         logger.critical(f"📄 [CONCLUSION] ===== INICIANDO send_conclusion_comment_and_image =====")
@@ -412,7 +414,7 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
         if not data or not isinstance(data, list) or len(data) == 0:
             logger.warning(f"📄 [NO DATA] No hay información para reporte {clean_reporte_id}")
             fallback_message = f"📋 *Reporte #{clean_reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido satisfactoriamente."
-            await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
+            await send_chat2desk_message_direct(client_id, channel_id, fallback_message, transport)
             return
             
         comentario_data = data[0]
@@ -433,7 +435,7 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
         conclusion_message += f"📍 *Ubicación atendida:*\n{dir_calle}, {dir_colonia}"
         
         logger.critical(f"📄 [MENSAJE] Enviando conclusión...")
-        await send_chat2desk_message_direct(client_id, channel_id, conclusion_message)
+        await send_chat2desk_message_direct(client_id, channel_id, conclusion_message, transport)
         logger.critical(f"📄 [MENSAJE] ✅ Mensaje de conclusión enviado")
         
         # ✅ ENVIAR IMAGEN CON LOGS DETALLADOS
@@ -450,7 +452,7 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
                 logger.critical(f"📷 [SENDING] ===== ENVIANDO IMAGEN =====")
                 logger.critical(f"📷 [SENDING] URL limpia: {clean_image_url}")
 
-                image_sent = await send_chat2desk_image_direct(client_id, channel_id, clean_image_url)
+                image_sent = await send_chat2desk_image_direct(client_id, channel_id, clean_image_url, transport)
                 
                 if image_sent:
                     logger.critical(f"📷 [SUCCESS] ✅ Imagen enviada exitosamente")
@@ -471,17 +473,18 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id):
         logger.error(f"📄 [ERROR] Traceback: {traceback.format_exc()}")
         try:
             fallback_message = f"📋 *Reporte #{reporte_id} - CONCLUIDO*\n\nTu reporte ha sido atendido satisfactoriamente."
-            await send_chat2desk_message_direct(client_id, channel_id, fallback_message)
+            await send_chat2desk_message_direct(client_id, channel_id, fallback_message, transport)
         except Exception as fallback_error:
             logger.error(f"📄 [FALLBACK ERROR] {str(fallback_error)}")
 
-async def send_chat2desk_message_direct(client_id, channel_id, text):
+async def send_chat2desk_message_direct(client_id, channel_id, text, transport="wa_direct"):
     """
     Envía mensaje directamente via Chat2Desk API.
+    Supports both wa_direct (WhatsApp) and widget (web chat).
     """
     try:
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
-        
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 "https://api.chat2desk.com.mx/v1/messages",
@@ -492,7 +495,7 @@ async def send_chat2desk_message_direct(client_id, channel_id, text):
                 json={
                     "client_id": client_id,
                     "channel_id": channel_id,
-                    "transport": "wa_direct",
+                    "transport": transport,
                     "text": text
                 }
             )
@@ -505,20 +508,21 @@ async def send_chat2desk_message_direct(client_id, channel_id, text):
     except Exception as e:
         logger.error(f"Error enviando mensaje directo: {str(e)}")
 
-async def send_chat2desk_image_direct(client_id, channel_id, image_url):
+async def send_chat2desk_image_direct(client_id, channel_id, image_url, transport="wa_direct"):
     """
     VERSIÓN CORREGIDA según documentación Chat2Desk
+    Supports both wa_direct (WhatsApp) and widget (web chat).
     """
     try:
         logger.critical(f"📷 [CORRECTED] ===== USANDO FORMATO CORRECTO =====")
-        
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
-        
+
         # ✅ FORMATO CORRECTO según documentación
         payload = {
             "client_id": client_id,
             "channel_id": channel_id,
-            "transport": "wa_direct",
+            "transport": transport,
             "text": "",
             "attachment": image_url.strip(),
             "attachment_filename": "evidencia.jpg"  # ✅ ESTO FALTABA
@@ -547,16 +551,17 @@ async def send_chat2desk_image_direct(client_id, channel_id, image_url):
         
         # Si aún falla, intentar método base64 con filename
         logger.critical(f"📷 [FALLBACK] Intentando base64 con filename...")
-        return await send_image_base64_with_filename(client_id, channel_id, image_url)
+        return await send_image_base64_with_filename(client_id, channel_id, image_url, transport)
         
     except Exception as e:
         logger.error(f"📷 [ERROR] {str(e)}")
         return False
 
 
-async def send_image_base64_with_filename(client_id, channel_id, image_url):
+async def send_image_base64_with_filename(client_id, channel_id, image_url, transport="wa_direct"):
     """
     Método base64 con attachment_filename
+    Supports both wa_direct (WhatsApp) and widget (web chat).
     """
     try:
         # Descargar imagen
@@ -577,11 +582,11 @@ async def send_image_base64_with_filename(client_id, channel_id, image_url):
         
         # ✅ ENVIAR CON FILENAME
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
-        
+
         payload = {
             "client_id": client_id,
             "channel_id": channel_id,
-            "transport": "wa_direct",
+            "transport": transport,
             "text": "",
             "attachment": data_url,
             "attachment_filename": "evidencia.jpg"  # ✅ FILENAME REQUERIDO
@@ -613,9 +618,10 @@ async def send_image_base64_with_filename(client_id, channel_id, image_url):
         return False
 
 
-async def download_and_upload_image(client_id, channel_id, image_url):
+async def download_and_upload_image(client_id, channel_id, image_url, transport="wa_direct"):
     """
     Descarga imagen y la sube como base64 - VERSIÓN MEJORADA
+    Supports both wa_direct (WhatsApp) and widget (web chat).
     """
     try:
         logger.critical(f"📷 [DOWNLOAD] ===== DESCARGANDO IMAGEN =====")
@@ -665,11 +671,11 @@ async def download_and_upload_image(client_id, channel_id, image_url):
         
         # Enviar
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
-        
+
         payload = {
             "client_id": client_id,
             "channel_id": channel_id,
-            "transport": "wa_direct",
+            "transport": transport,
             "text": "",
             "attachment": data_url
         }
@@ -2442,6 +2448,19 @@ async def websocket_endpoint(ws: WebSocket):
             folio="folio"),
         function_manager=function_manager
     )
+    
+    # Alternative DeepSeek service
+    # deepseek_service = DeepSeekService(
+    #     config=config,
+    #     api_key=os.getenv("DEEPSEEK_API_KEY"),
+    #     system=system_message.format(
+    #         customer_name=customer_identity, 
+    #         call_sid=call_sid, 
+    #         date2=date_string, 
+    #         now=hour, 
+    #         folio="folio"),
+    #     function_manager=function_manager
+    # )
 
     # tts_service = ElevenTTSService(
     #     api_key=ELEVENLABS_API_KEY,
@@ -2914,21 +2933,21 @@ async def remove_from_completed_reports(number, delay_seconds):
     except Exception as e:
         logger.error(f"Error removing {number} from completed reports: {str(e)}")
 
-async def send_chat2desk_message(phone_number, client_id, channel_id, text):
-    """Send a message via Chat2Desk API."""
+async def send_chat2desk_message(phone_number, client_id, channel_id, text, transport="wa_direct"):
+    """Send a message via Chat2Desk API. Supports both wa_direct (WhatsApp) and widget (web chat)."""
     try:
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-        
+
         headers = {
             "Authorization": api_token,
             "Content-Type": "application/json"
         }
-        
+
         data = {
             "client_id": client_id,
             "channel_id": channel_id,
-            "transport": "wa_direct",
+            "transport": transport,
             "text": text
         }
         
@@ -3288,6 +3307,7 @@ async def whatsapp(request: Request):
         hook_type = payload.get('hook_type', '')
         operator_id = payload.get('operator_id', '')
         message_id = payload.get('message_id')
+        transport = payload.get('transport', 'wa_direct')  # Extract transport: wa_direct or widget
 
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============
@@ -3354,7 +3374,7 @@ async def whatsapp(request: Request):
             session = user_sessions[from_number]
             if hasattr(session, 'evaluation_state') and session.evaluation_state:
                 evaluation_handled = await handle_evaluation_response(
-                    from_number, body, client_id, channel_id
+                    from_number, body, client_id, channel_id, transport
                 )
                 if evaluation_handled:
                     return JSONResponse(content={"status": True, "message": "Evaluation response processed"})
@@ -3423,7 +3443,7 @@ async def whatsapp(request: Request):
                         
                         # Enviar comentario de conclusión INMEDIATAMENTE
                         logger.critical(f"📤 [HSM+OK] Enviando comentario de conclusión para {reporte_id}")
-                        await send_conclusion_comment_and_image(client_id, channel_id, reporte_id)
+                        await send_conclusion_comment_and_image(client_id, channel_id, reporte_id, transport)
                         
                         # Esperar un momento antes de la pregunta de evaluación
                         await asyncio.sleep(2)
@@ -3431,7 +3451,7 @@ async def whatsapp(request: Request):
                         # Enviar pregunta de evaluación
                         logger.critical(f"📤 [HSM+OK] Enviando pregunta de evaluación")
                         validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-                        await send_chat2desk_message_direct(client_id, channel_id, validation_message)
+                        await send_chat2desk_message_direct(client_id, channel_id, validation_message, transport)
                         
                         logger.critical(f"✅ [HSM+OK] Evaluación iniciada exitosamente para reporte {reporte_id}")
                         return JSONResponse(content={"status": True, "message": "Evaluación iniciada por OK citado"})
@@ -3442,7 +3462,7 @@ async def whatsapp(request: Request):
                         try:
                             # Fallback mínimo
                             validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-                            await send_chat2desk_message_direct(client_id, channel_id, validation_message)
+                            await send_chat2desk_message_direct(client_id, channel_id, validation_message, transport)
                             
                             # Configurar estado básico
                             if from_number not in user_sessions:
@@ -3540,7 +3560,7 @@ async def whatsapp(request: Request):
                 data = {
                     "client_id": client_id,
                     "channel_id": channel_id,
-                    "transport": "wa_direct",
+                    "transport": transport,
                     "text": ai_greeting
                 }
                 
@@ -3865,7 +3885,7 @@ async def whatsapp(request: Request):
                                     data = {
                                         "client_id": client_id,
                                         "channel_id": channel_id,
-                                        "transport": "wa_direct",
+                                        "transport": transport,
                                         "text": body
                                     }
                                     
@@ -3987,16 +4007,16 @@ async def whatsapp(request: Request):
                             "Authorization": api_token,
                             "Content-Type": "application/json"
                         }
-                        
+
                         data = {
                             "client_id": client_id,
                             "channel_id": channel_id,
-                            "transport": "wa_direct",
+                            "transport": transport,
                             "text": body
                         }
-                        
+
                         response = requests.post(chat2desk_url, json=data, headers=headers)
-                        
+
                         if response.status_code == 200:
                             logger.debug(f"Respuesta de imagen enviada exitosamente a Chat2Desk")
                             return JSONResponse(content={"status": True, "message": "Respuesta de imagen enviada por Chat2Desk"})
@@ -4177,16 +4197,16 @@ async def whatsapp(request: Request):
                             "Authorization": api_token,
                             "Content-Type": "application/json"
                         }
-                        
+
                         data = {
                             "client_id": client_id,
                             "channel_id": channel_id,
-                            "transport": "wa_direct",
+                            "transport": transport,
                             "text": body
                         }
-                        
+
                         response = requests.post(chat2desk_url, json=data, headers=headers)
-                        
+
                         if response.status_code == 200:
                             logger.debug(f"Mensaje de finalización enviado directamente a través de Chat2Desk")
                         else:
@@ -4356,6 +4376,14 @@ async def whatsapp(request: Request):
             system=system_prompt,
             function_manager=function_manager
         )
+        
+        # Alternative DeepSeek service
+        # deepseek_service = DeepSeekService(
+        #     config=config,
+        #     api_key=os.getenv("DEEPSEEK_API_KEY"),
+        #     system=system_prompt,
+        #     function_manager=function_manager
+        # )
 
         # Procesar la imagen si está disponible
         if 'image_description' in locals() and image_description:
@@ -4765,7 +4793,7 @@ async def whatsapp(request: Request):
         data = {
             "client_id": client_id,
             "channel_id": channel_id,
-            "transport": "wa_direct",
+            "transport": transport,
             "text": response_content
         }
         

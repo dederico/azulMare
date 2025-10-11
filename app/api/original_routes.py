@@ -47,9 +47,9 @@ from fastapi import APIRouter, Request, Response, WebSocket, HTTPException, Fast
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from app.api.websocket_handler import WebSocketHandler
 from app.core.orchestrator import Orchestrator
-from app.services.stt.deepgram_service import DeepgramService
+# from app.services.stt.deepgram_service import DeepgramService  # Not used
 from app.services.stt.amazon_service import AmazonTranscribeService
-from app.services.tts.eleven_service import ElevenTTSService
+# from app.services.tts.eleven_service import ElevenTTSService  # Not used
 from app.services.tts.polly_service import AmazonTTSService
 from app.services.functions.function_registry import registered_functions
 from app.services.llm.config.system import system_message

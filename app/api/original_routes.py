@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 from app.util.database import LocalStorage
 from app.models.Config import Config
 from app.models.Message import Message
-from app.services.llm.deepseek_service import DeepSeekService
+# from app.services.llm.deepseek_service import DeepSeekService  # Not used
 from app.services.llm.openai_service import OpenAIService
 from app.services.functions.function_manager import FunctionManager
 from app.services.functions.function_registry import registered_functions

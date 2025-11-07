@@ -62,7 +62,7 @@ from .implementations.get_campamentos_verano import get_campamentos_verano
 from .implementations.get_actividades_san_pedro_parques import get_actividades_san_pedro_parques
 from .implementations.get_mochilas import get_mochilas
 from .implementations.get_becas_juventud import get_becas_juventud
-
+from .implementations.get_nuevo_alfonso_reyes import get_nuevo_alfonso_reyes
 
 registered_functions = [
     save_client_selection2, 
@@ -127,6 +127,7 @@ registered_functions = [
     get_campamentos_verano,
     get_actividades_san_pedro_parques,
     get_mochilas,
-    get_becas_juventud
+    get_becas_juventud,
+    get_nuevo_alfonso_reyes
 
 ]

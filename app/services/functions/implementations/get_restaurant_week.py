@@ -18,7 +18,7 @@ Pregunta: ¿Cuál es el rango de precios?
 Respuesta: Desde $149 hasta $799
 
 Pregunta: ¿Cuáles son las fechas del SPRW?
-Respuesta: Del 7 al 17 de agosto
+Respuesta: Del 15 al 25 de enero
 """
 
 async def get_restaurant_week():

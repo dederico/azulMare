@@ -777,6 +777,8 @@ finalized_report_numbers = set()
 recently_returned_to_bot = {}
 BOT_GRACE_PERIOD = 10
 user_answers = {}
+closed_by_inactivity = {}  # key: phone_number, value: expiration_timestamp
+INACTIVITY_COOLDOWN = 15 * 60  # 15 minutos en segundos - periodo para NO reactivar después de cierre
 hsm_sent_reports = {}
 sent_evaluation_messages = {} 
 
@@ -2623,6 +2625,11 @@ async def check_inactivity():
                     # Eliminar también cualquier reporte en progreso
                     if number in report_sessions:
                         del report_sessions[number]
+
+                    # 🚫 MARCAR NÚMERO COMO CERRADO POR INACTIVIDAD
+                    closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
+                    logger.critical(f"🚫 [INACTIVITY] {number} marcado como cerrado - cooldown de {INACTIVITY_COOLDOWN/60:.0f} minutos")
+
                     logger.debug(f"Sesión de {number} desconectada por inactividad.")
                 except Exception as e:
                     logger.error(f"Error enviando mensaje de desconexión para {number}: {str(e)}")
@@ -2635,6 +2642,10 @@ async def check_inactivity():
                         del transferred_numbers[number]
                         logger.critical(f"🧹 [INACTIVITY ERROR] Eliminado {number} de transferred_numbers por error")
 
+                    # 🚫 TAMBIÉN MARCAR EN CASO DE ERROR
+                    closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
+                    logger.critical(f"🚫 [INACTIVITY ERROR] {number} marcado como cerrado (error handler)")
+
 
 async def cleanup_hsm_reports():
     """Limpia reportes HSM antiguos cada hora"""
@@ -2642,19 +2653,40 @@ async def cleanup_hsm_reports():
         try:
             await asyncio.sleep(3600)  # Cada hora
             current_time = datetime.now().timestamp()
-            
+
             old_reports = []
             for key, timestamp in hsm_sent_reports.items():
                 if current_time - timestamp > 3600:  # 1 hora
                     old_reports.append(key)
-            
+
             for key in old_reports:
                 del hsm_sent_reports[key]
-                
+
             logger.debug(f"🧹 [HSM CLEANUP] Eliminados {len(old_reports)} reportes HSM antiguos")
-                
+
         except Exception as e:
             logger.error(f"Error en cleanup HSM: {str(e)}")
+
+async def cleanup_inactivity_cooldowns():
+    """Limpia cooldowns de inactividad expirados cada 10 minutos"""
+    while True:
+        try:
+            await asyncio.sleep(600)  # Cada 10 minutos
+            current_time = datetime.now().timestamp()
+
+            expired_numbers = []
+            for number, expiry_time in closed_by_inactivity.items():
+                if current_time > expiry_time:
+                    expired_numbers.append(number)
+
+            for number in expired_numbers:
+                del closed_by_inactivity[number]
+
+            if expired_numbers:
+                logger.debug(f"🧹 [COOLDOWN CLEANUP] Eliminados {len(expired_numbers)} cooldowns expirados")
+
+        except Exception as e:
+            logger.error(f"Error en cleanup cooldowns: {str(e)}")
 
 # 🆕 AGREGAR AQUÍ (después de cleanup_old_evaluated_reports):
 def log_evaluation_status():
@@ -3173,7 +3205,11 @@ async def lifespan(app: FastAPI):
 
     # 🆕 AGREGAR ESTA LÍNEA:
     asyncio.create_task(cleanup_hsm_reports())
-    
+
+    # 🆕 NUEVA TAREA: Limpieza de cooldowns de inactividad
+    asyncio.create_task(cleanup_inactivity_cooldowns())
+    logger.critical("🧹 [COOLDOWN] Tarea de limpieza de cooldowns de inactividad iniciada")
+
     yield
     # Shutdown: se puede agregar lógica de limpieza si se requiere
     print("🛑 CERRANDO SERVIDOR...")
@@ -4245,6 +4281,19 @@ async def whatsapp(request: Request):
             logger.critical(f"🚫 [OK BLOCKED] OK ignorado para {from_number} - posible respuesta de evaluación")
             return JSONResponse(content={"status": True, "message": "OK response ignored during evaluation"})
         
+    # 🚫 VERIFICAR SI EL NÚMERO ESTÁ EN COOLDOWN POR INACTIVIDAD
+    current_time = datetime.now().timestamp()
+    if from_number in closed_by_inactivity:
+        cooldown_expiry = closed_by_inactivity[from_number]
+        if current_time < cooldown_expiry:
+            remaining_minutes = (cooldown_expiry - current_time) / 60
+            logger.critical(f"🚫 [COOLDOWN] {from_number} está en cooldown por inactividad. Faltan {remaining_minutes:.1f} minutos")
+            return JSONResponse(content={"status": True, "message": "Usuario en cooldown por inactividad"})
+        else:
+            # Cooldown expirado, remover del diccionario
+            del closed_by_inactivity[from_number]
+            logger.critical(f"✅ [COOLDOWN EXPIRED] {from_number} cooldown expirado, puede reactivarse")
+
     # Crear o actualizar la sesión del usuario
     if from_number not in user_sessions:
         logger.debug(f"Creando nueva sesión para el usuario: {from_number}")

@@ -2627,8 +2627,13 @@ async def check_inactivity():
                         del report_sessions[number]
 
                     # 🚫 MARCAR NÚMERO COMO CERRADO POR INACTIVIDAD
-                    closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
-                    logger.critical(f"🚫 [INACTIVITY] {number} marcado como cerrado - cooldown de {INACTIVITY_COOLDOWN/60:.0f} minutos")
+                    # SOLO si NO estaba transferido a un agente humano
+                    was_transferred = number in transferred_numbers
+                    if not was_transferred:
+                        closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
+                        logger.critical(f"🚫 [INACTIVITY] {number} marcado como cerrado - cooldown de {INACTIVITY_COOLDOWN/60:.0f} minutos")
+                    else:
+                        logger.critical(f"✅ [INACTIVITY] {number} estaba transferido, NO se aplica cooldown")
 
                     logger.debug(f"Sesión de {number} desconectada por inactividad.")
                 except Exception as e:
@@ -2638,13 +2643,20 @@ async def check_inactivity():
                         del user_sessions[number]
                     if number in report_sessions:
                         del report_sessions[number]
+
+                    # Verificar si estaba transferido antes de eliminarlo
+                    was_transferred = number in transferred_numbers
                     if number in transferred_numbers:
                         del transferred_numbers[number]
                         logger.critical(f"🧹 [INACTIVITY ERROR] Eliminado {number} de transferred_numbers por error")
 
                     # 🚫 TAMBIÉN MARCAR EN CASO DE ERROR
-                    closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
-                    logger.critical(f"🚫 [INACTIVITY ERROR] {number} marcado como cerrado (error handler)")
+                    # SOLO si NO estaba transferido
+                    if not was_transferred:
+                        closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
+                        logger.critical(f"🚫 [INACTIVITY ERROR] {number} marcado como cerrado (error handler)")
+                    else:
+                        logger.critical(f"✅ [INACTIVITY ERROR] {number} estaba transferido, NO se aplica cooldown")
 
 
 async def cleanup_hsm_reports():

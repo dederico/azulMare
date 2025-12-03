@@ -1,24 +1,102 @@
 TC = """
 Este documento contiene la información de los servicios de la dirección de Salud Pública del municipio
 Pregunta: ¿Cuáles son los servicios de la Dirección de Salud Pública del municipio?
-Respuesta: los servicios brindados por la dirección de Salud Pública son los siguientes:
-Fumigación
-Descripción:
-Fumigación en avenidas contra enfermedades como Dengue, Zika y Chikungunya.
-Se programa para el espacio público con el objetivo de prevenir enfermedades transmitidas por el mosquito Aedes aegypti.
-Restricciones: No aplica para interiores de domicilios ni para parques.
-Tiempo de compromiso: 15 días.
-Insalubridad
-Descripción:
-Se atienden quejas de insalubridad de ciudadanos en espacios públicos.
-Restricciones: No aplica para exterminio de roedores ni para terrenos baldíos.
-Tiempo de compromiso: 18 días.
+Respuesta: Los servicios que brinda la Dirección de Salud Pública son los siguientes:
+Consultorio Médico Canteras
+Consultorio Médico Los Pinos
+Consultorio Médico El Obispo
+Consultorio Movil
 Ruta de la Salud
-Descripción:
-Inscripción al programa "Ruta de la Salud".
-Se realiza un estudio socioeconómico por enlaces comunitarios y se evalúa desde Salud Pública la posibilidad de ingresar al programa.
-Restricciones: No aplica para traslados inmediatos ni urgencias.
-Tiempo de compromiso: 7 días.
+Brigada UN SOLO SAN PEDRO
+Salud Preventiva
+Pregunta: ¿Cuál es la información de fechas, requisitos, ubicación y costo del Consultorio Médico Canteras?
+Respuesta:
+Fechas y horarios de atención:
+Lunes a viernes 9:00 am a 5:00 pm
+Sábados 9:00 am a 2:00 pm
+Requisitos
+INE
+Comprobante de domicilio o CURP
+En caso de menores, llevar preferentemente su cartilla de vacunación y estar acompañado de padre o tutor
+Ubicación:
+Enrique H Herrera 824, Colonia Canteras, 67150, San Pedro Garza García, N.L.
+Costo:
+Gratuito
+
+Pregunta: ¿Cuál es la información de fechas, requisitos, ubicación y costo del Consultorio Médico Los Pinos?
+Respuesta:
+Fechas y horarios de atención:
+Lunes a viernes 9:00 am a 5:00 pm
+Sábados 9:00 am a 2:00 pm
+Requisitos
+INE
+Comprobante de domicilio o CURP
+En caso de menores, llevar preferentemente su cartilla de vacunación y estar acompañado de padre o tutor
+Ubicación:
+Modesto Arreola 228, Colonia los Pinos 1er Sector, 66239, San Pedro Garza García, N.L.
+Costo:
+Gratuito
+
+Pregunta: ¿Cuál es la información de fechas, requisitos, ubicación y costo del Consultorio Médico El Obispo?
+Respuesta:
+Fechas y horarios de atención:
+Lunes a viernes 9:00 am a 5:00 pm
+Sábados 9:00 am a 2:00 pm
+Requisitos
+INE
+Comprobante de domicilio o CURP
+En caso de menores, llevar preferentemente su cartilla de vacunación y estar acompañado de padre o tutor
+Ubicación:
+Eulalio Guzmán 693, Colonia El Obispo, 66216, San Pedro Garza García, N.L.
+Costo:
+Gratuito
+
+Pregunta: ¿Cuál es la información de fechas, requisitos y ubicación del Consultorio Móvil?
+Respuesta:
+Fechas y horarios de atención:
+Lunes a viernes 8:30 am a 12:00 pm
+Requisitos
+Registro Previo
+Ser ciudadano de San Pedro Garza García. 
+Ubicación:
+Clouthier/A. I. Villarreal Col. Revolución San Pedro Garza García, N.L.
+
+Pregunta: ¿Cuál es la información de fechas, requisitos, ubicación y costo de la Ruta de la Salud?
+Respuesta:
+Fechas y horarios de atención:
+Lunes a viernes 8:30 am a 3:30 pm
+Requisitos
+Vivir en el municipio de San Pedro Garza García
+Tener movilidad
+Contar con red de apoyo
+Ser vulnerable (se realiza estudio socioeconómico)
+Ubicación:
+Centro Administrativo Municipal (CAM), Calle Maria Cantú 329 Col. La Leona Zona Industrial
+Costo:
+Gratuito
+
+Pregunta: ¿Cuál es la información de fechas, requisitos, ubicación y costo de la Brigada UN SOLO SAN PEDRO?
+Respuesta:
+Fechas y horarios de atención:
+Último jueves de cada mes, durante todo el año
+Requisitos
+Ser ciudadano de San Pedro Garza García
+Ubicación:
+Variable
+Costo:
+Gratuito
+
+Pregunta: ¿Cuál es la información de fechas, requisitos, ubicación y costo del programa Salud Preventiva?
+Respuesta:
+Fechas y horarios de atención:
+Último jueves de cada mes, durante todo el año
+Requisitos
+Ser ciudadano de San Pedro Garza García
+Ubicación:
+Variable
+Costo:
+Gratuito
+
 """
 
 async def get_salud_publica():

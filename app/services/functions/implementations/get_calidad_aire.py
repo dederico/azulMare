@@ -22,15 +22,35 @@ async def get_calidad_aire():
                     data = await response.json()
                     logger.info(f"Datos recibidos del API: {data}")
 
-                    resumen = data.get("resumen", "")
                     categoria = data.get("categoria", "No disponible")
                     aqi = data.get("aqi", "No disponible")
+                    fecha = data.get("fecha", "")
+                    principal = data.get("principal", "")
+                    detalles = data.get("detalles", {})
 
-                    if resumen and resumen.strip():
-                        return f"Calidad del aire: {resumen}"
-                    else:
-                        # Fallback si no viene el campo resumen
-                        return f"Calidad del aire: {categoria} (ICA: {aqi})"
+                    # Construir mensaje detallado
+                    mensaje = f"Calidad del aire en San Pedro Garza García:\n"
+                    mensaje += f"• Estado: {categoria}\n"
+                    mensaje += f"• Índice AQI: {aqi}\n"
+
+                    if principal:
+                        principal_nombre = {
+                            "pm25": "PM2.5",
+                            "pm10": "PM10",
+                            "o3": "Ozono (O3)",
+                            "no2": "Dióxido de Nitrógeno (NO2)",
+                            "so2": "Dióxido de Azufre (SO2)",
+                            "co": "Monóxido de Carbono (CO)"
+                        }.get(principal, principal)
+                        mensaje += f"• Contaminante principal: {principal_nombre}\n"
+
+                    if detalles:
+                        mensaje += f"• Detalles: PM2.5={detalles.get('pm25', 'N/A')}, PM10={detalles.get('pm10', 'N/A')}, O3={detalles.get('o3', 'N/A')}\n"
+
+                    if fecha:
+                        mensaje += f"• Última actualización: {fecha}"
+
+                    return mensaje
                 else:
                     error_text = await response.text()
                     logger.error(f"Error HTTP {response.status} al obtener calidad del aire: {error_text}")

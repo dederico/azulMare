@@ -1,103 +1,111 @@
 
 TC = """
-Este documento contiene información sobre ubicaciones, horarios y
-contactos de los gimnasios y áreas deportivas municipales
+Este documento contiene información sobre las actividades, programas, servicios, requisitos, ubicaciones e información general sobre la Dirección de Deportes del municipio de San Pedro Garza García
+
 Pregunta: ¿Cuáles son los gimnasios municipales?
-Respuesta:
+Respuesta: 
+
+Centro de Desarrollo Integral (CDI)
+Ubicación: Lázaro Garza Ayala 1001, Col. Lázaro Garza Ayala https://maps.app.goo.gl/nY7JEduWtGGAEwW6A
+Instalaciones: Gimnasio
+Horario: De 6:00 a 21:00 horas
+Télefono: 8110524343
+Link de registro: https://forms.gle/32WubmuvMg5V3XZU7
+
+Unidad Deportiva San Pedro 400
+Ubicación: Av. Manuel Jesus Clouthier 157, Col. San Pedro 400 https://maps.app.goo.gl/aN5bJhVZLfCtd92K6
+Instalaciones: Gimnasio y Alberca
+Horario: De 6:00 a 21:00 horas
+Teléfono: 8183158814
+Link de registro: https://forms.gle/qytDKdrDUgHgDfzc6
+
+Unidad Deportiva La Raza
+Ubicación: Av. Manuel Jesus Clouthier y Platino, S/N, Col. San Pedro 400 https://maps.app.goo.gl/2ga33z7wCmSDoBeC6
+Instalaciones: Gimnasio y Alberca
+Horario: De 7:00 a 21:00 horas
+Teléfono: 8182425034
+Link de registro: https://forms.gle/12eNQXiHr5RfJmh57
+
+Unidad Deportiva Vista Montaña
+Ubicación: Nicéforo Zambrano S/N, Col. Vista Montaña https://maps.app.goo.gl/bco8PaxQA2rgsaLJ7
+Instalaciones: Gimnasio
+Horario: De 7:00 a 21:00 horas
+Teléfono: 8189891759
+Link de registro: https://forms.gle/kcehncckgR8VNAWaA
+
+Unidad Deportiva El Obispo
+Ubicación: Landon 820, Col. Villa del Obispo https://maps.app.goo.gl/2xTT8nLMFtQR6t4n8
+Instalaciones: Gimnasio
+Horario: De 7:00 a 21:00 horas
+Teléfono: 
+Link de registro: https://forms.gle/iuVkSt9T6izxkmJr7
+
+Unidad Deportiva Tampiquito
+Ubicación: Plutarco Elías Calles y Amatista S/N, Col. Lomas de Tampiquito https://maps.app.goo.gl/LymTfHNHLFidq5dw9
+Instalaciones: Gimnasio
+Horario: 7:00 a 21:00 horas
+Teléfono: 
+Link de registro: https://forms.gle/Ax5uHnNUCPszc7nJ9
+
+Unidad Deportiva Jesús D. González
+Ubicación: Libertad 206, Col. Casco Urbano 
+Instalaciones: Gimnasio
+Horario: 6:00 a 22:00 horas
+Teléfono: 
+Link de registro: https://forms.gle/b27PEQzvgLFgFNsy8
+
+Unidad Deportiva Oriente
+Ubicación: Paseo Irma y Paseo Olga	 S/N, Col. Ampliación Valle del Mirador
+Instalaciones: Gimnasio
+Horario: De 6:00 a 22:00 horas
+
 Centro Deportivo FUD
-- Ubicación: Ma. Cantú Treviño 329 Col. La Leona, San Pedro Garza García, N.L.
-- Horario de atención: Lunes a viernes de 09:00 a 17:00 hrs.
-- Horario de gimnasio: Lunes a viernes 08:00 a 21:00 hrs. y sábado de 08:00 a 12:00
-hrs.
-- Teléfono: 81 8676 5356
-Gimnasio San Pedro 400
-- Ubicación: Av. Clouthier No. 157, col. San Pedro 400, San Pedro Garza García, N.L.
-- Horario de atención: Lunes a Viernes de 08:00 a 21:00 hrs.
-- Horario de gimnasio: Lunes a viernes de 07:00 a 21:00 hrs. y sábado de 08:00 a
-13:00 hrs.
-- Teléfono: 81 8315 8814
-Gimnasio La Raza
-- Ubicación: Av. Clouthier y Platino S/N, col. San Pedro 400, San Pedro Garza García,
-N.L.
-- Horario de atención: Lunes a viernes de 08:00 a 21:00 hrs.
-- Horario de gimnasio: Lunes a viernes de 07:00 a 21:00 hrs. y sábado de 08:00 a
-13:00 hrs.
-- Teléfono: 81 8242 5034
-CDI San Pedro
-- Ubicación: Lázaro Garza Ayala 1001, col. Lázaro Garza Ayala, San Pedro Garza
-García, N.L.
-- Horario de atención: Lunes a viernes de 08:00 a 21:00 hrs.
-- Horario de gimnasio: Lunes a viernes de 07:00 a 21:00h y sábado de 08:00 a 13:00
-hrs.
-- Teléfono:81 1052 4343
-Jesús D. González
-- Ubicación: Libertad 206, col. Centro, San Pedro Garza García, N.L.
-- Horario de atención: Lunes a viernes de 08:00 a 21:00 hrs.
-- Horario de gimnasio: Lunes a viernes de 06:00 a 21:00 hrs. y sábado de 08:00 a
-13:00 hrs.
-- Teléfono: 81 8400 4513
-Gimnasio Tampiquito
-- Ubicación: Plutarco Elías Calles y Amatista S/N, col. Lomas de Tampiquito, San
-Pedro Garza García, N.L.
-- Horario de atención: Lunes a viernes de 08:00 a 21:00 hrs.
+Ubicación: Av María Cantú Treviño 329, Col. La Leona
+Instalaciones: Gimnasio
+Horario: 6:00 a 21:00 horas
+Teléfono: 8186765356
+Link de registro: https://forms.gle/S3EGzJEEWhqjZPRj7
 
-- Horario de gimnasio: Lunes a viernes de 07:00 a 21:00 hrs. y sábado de 08:00 a
-13:00h hrs.
-- Teléfono: 81 8338 7611
-Gimnasio Vista Montaña:
-- Ubicación: Nicéforo Zambrano S/N, col. Vista Montaña, San Pedro Garza García,
-N.L.
-- Horario de atención: Lunes a viernes de 08:00 a 21:00h hrs.
-- Horario de gimnasio: Lunes a viernes de 07:00 a 21:00 hrs. y sábado de 08:00 a
-13:00 hrs.
-- Teléfono: 81 8989 1759
-Gimnasio El Obispo
-- Ubicación: Landon S/N, col. Villa del Obispo, San Pedro Garza García, N.L.
-- Horario de atención: Lunes a viernes de 08:00 a 21:00h hrs.
-- Horario de gimnasio: Lunes a viernes de 07:00 a 21:00 hrs. y sábado de 08:00 a
-13:00 hrs.
-- Teléfono: 81 8315 8971
-Pregunta: ¿Qué espacios deportivos tiene el municipio?
+Pregunta: ¿Dónde se encuentran las oficinas de deportes?
 Respuesta:
-- Alberca Olímpica: Ubicada en el gimnasio La Raza, cuenta con clases para niños
-desde los 6 años hasta adultos mayores, además de ser casa de nuestro equipo
-representativo de natación. Conoce las distintas actividades y horarios que tenemos
-para ti:
-Adultos: Lunes a viernes de 06:00 a 10:00 hrs. y lunes a viernes de 19:00 a 21:00 hrs.
-Niños de 4 a 14 años: Lunes a viernes de 15:00 a 17:00 hrs.
-Informes:
-Teléfono: 818 242 5034
-Ubicación: Av. Clouthier y Platino S/N, col. San Pedro 400, San Pedro Garza García, N.L.
-- Cancha de la U: Con instalaciones de primer nivel, cuenta con baños en buen
-estado y en los que el mantenimiento es constante. Acércate a preguntar sobre las
-ligas y actividades que ofrecemos en esta cancha.
-Informes:
-Teléfono: 818 315 6912
-WhatsApp: 813 238 4611
-Correo: jessica.martinez@sanpedro.gob.mx
-Ubicación: Zona Clouthier, entre Ruiz Cortinez y Corregidora, San Pedro Garza García, N.L.
-- Parque de Béisbol Carlos Bremer: Remodelado recientemente, este parque de
-béisbol cuenta con instalaciones en excelente estado. Acércate a preguntar sobre
-las ligas de béisbol y softbol que ofrecemos en este parque.
 
-Informes:
-Tel: 818 315 6912
-Correo: elba.wong@sanpedro.gob.mx
-Ubicación: Av. Corregidora S/N, entre 16 de septiembre y 5 de mayo, col. Casco Urbano,
-San Pedro Garza García, N.L.
-- Biciparque: Ciclismo de montaña y BMX, en este biciparque pueden disfrutar de la
-emoción de rodar chicos y grandes. Abierto a todo el público y con entrada libre, los
-únicos requisitos son tener casco y cubrebocas.
-Informes:
-WhatsApp: 818 111 9995
-Correo: deporte.social@sanpedro.gob.mx
-Ubicación: Palma S/N, óvalo de ciclismo frente la UDEM, Col. La Leona. San Pedro Garza
-García, N.L.
+Av. María Cantú Treviño 329, Col. La Leona
+Dirección de Deportes
+Coordinación de Deporte Inclusivo
+Coordinación de Deporte Social
+Coordinación Deporte Competitivo
+
+Av. Clouthier y Platino S/N, Col. San Pedro 400
+Ligas Deportivas
+
+Pregunta: ¿Cuáles son los costos por actividades deportivas?
+Respuesta:
+
+Actividad deportiva mensual
+Residentes de SPGG: $200.00
+Residentes de otros municipios: $500.00
+Actividad extra
+Residentes de SPGG: $100.00
+Residentes de otros municipios: $200.00
+Paquete familiar (2 personas con una actividad deportiva mensual)
+Residentes de SPGG: $300.00
+Residentes de otros municipios: $800.00
+Paquete familiar (3 a 5 personas en una actividad deportiva mensual) no aplican actividades acuáticas ni gimnasia olímpica
+Residentes de SPGG: $400.00
+Residentes de otros municipios: $1000.00
+Reposición de credencial
+Residentes de SPGG: $30.00
+Residentes de otros municipios: $30.00
+Notas:
+Actividades acuáticas y gimnasio no aplican en paquetes familiares.
+Personas mayores de 60 años quedan exentos de cobro mensual
+
 """
 
 
 async def get_gimnasios():
-    """Obtener informacion sobre ubicaciones, horarios y contactos de los gimnasios y áreas deportivas municipales en caso de ser necesario.
+    """
+    Este documento contiene información sobre las actividades, programas, servicios, requisitos, ubicaciones e información general sobre la Dirección de Deportes del municipio de San Pedro Garza García
 
     Returns:
         string: Información sobre ubicaciones, horarios y contactos de los gimnasios y áreas deportivas municipales.

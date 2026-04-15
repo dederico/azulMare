@@ -3234,6 +3234,149 @@ router = APIRouter()
 # Add this at the module level (outside of the function)
 # Initialize the TTL cache - messages expire after 1 hour, max 1000 entries
 processed_message_ids = TTLCache(max_size=1000, ttl_seconds=3600)
+widget_guard_lock = threading.RLock()
+widget_identity_events = OrderedDict()
+widget_fingerprint_events = OrderedDict()
+widget_text_events = OrderedDict()
+
+WIDGET_IDENTITY_WINDOW_SECONDS = 30
+WIDGET_IDENTITY_LIMIT = 5
+WIDGET_FINGERPRINT_WINDOW_SECONDS = 60
+WIDGET_FINGERPRINT_LIMIT = 8
+WIDGET_TEXT_WINDOW_SECONDS = 120
+WIDGET_TEXT_LIMIT = 3
+
+
+def _cleanup_widget_guard_cache(cache, window_seconds):
+    now = datetime.now()
+    expired_keys = [
+        key for key, timestamps in cache.items()
+        if not timestamps or now - timestamps[-1] > timedelta(seconds=window_seconds)
+    ]
+    for key in expired_keys:
+        del cache[key]
+
+
+def _register_widget_guard_event(cache, key, window_seconds):
+    now = datetime.now()
+    timestamps = cache.setdefault(key, [])
+    cutoff = now - timedelta(seconds=window_seconds)
+    timestamps[:] = [ts for ts in timestamps if ts > cutoff]
+    timestamps.append(now)
+    return len(timestamps)
+
+
+def normalize_widget_text(text):
+    if not text:
+        return ""
+    normalized = " ".join(str(text).strip().lower().split())
+    return normalized[:500]
+
+
+def evaluate_widget_abuse(payload):
+    """
+    Evalúa patrones de abuso específicos del widget sin depender de la IP real.
+    """
+    transport = payload.get("transport", "wa_direct")
+    if transport != "widget":
+        return False, {}
+
+    client_id = str(payload.get("client_id") or "")
+    dialog_id = str(payload.get("dialog_id") or "")
+    client = payload.get("client") or {}
+    chat_phone = str(client.get("phone") or "")
+    request_id = str(payload.get("request_id") or "")
+    message_id = str(payload.get("message_id") or "")
+    raw_text = payload.get("text") or ""
+    normalized_text = normalize_widget_text(raw_text)
+    is_new_client = bool(payload.get("is_new_client"))
+    is_new_request = bool(payload.get("is_new_request"))
+
+    identity_key = f"{client_id}:{dialog_id}:{chat_phone}"
+    fingerprint_key = chat_phone or f"{client_id}:{dialog_id}"
+    text_key = normalized_text
+
+    with widget_guard_lock:
+        _cleanup_widget_guard_cache(widget_identity_events, WIDGET_IDENTITY_WINDOW_SECONDS)
+        _cleanup_widget_guard_cache(widget_fingerprint_events, WIDGET_FINGERPRINT_WINDOW_SECONDS)
+        _cleanup_widget_guard_cache(widget_text_events, WIDGET_TEXT_WINDOW_SECONDS)
+
+        identity_hits = _register_widget_guard_event(
+            widget_identity_events, identity_key, WIDGET_IDENTITY_WINDOW_SECONDS
+        )
+        fingerprint_hits = _register_widget_guard_event(
+            widget_fingerprint_events, fingerprint_key, WIDGET_FINGERPRINT_WINDOW_SECONDS
+        )
+        text_hits = 0
+        if text_key:
+            text_hits = _register_widget_guard_event(
+                widget_text_events, text_key, WIDGET_TEXT_WINDOW_SECONDS
+            )
+
+    if identity_hits > WIDGET_IDENTITY_LIMIT:
+        return True, {
+            "reason": "identity_rate_limit",
+            "identity_hits": identity_hits,
+            "fingerprint_hits": fingerprint_hits,
+            "text_hits": text_hits,
+            "client_id": client_id,
+            "dialog_id": dialog_id,
+            "chat_phone": chat_phone,
+            "request_id": request_id,
+            "message_id": message_id,
+        }
+
+    if is_new_client and is_new_request and fingerprint_hits > WIDGET_FINGERPRINT_LIMIT:
+        return True, {
+            "reason": "new_widget_fingerprint_burst",
+            "identity_hits": identity_hits,
+            "fingerprint_hits": fingerprint_hits,
+            "text_hits": text_hits,
+            "client_id": client_id,
+            "dialog_id": dialog_id,
+            "chat_phone": chat_phone,
+            "request_id": request_id,
+            "message_id": message_id,
+        }
+
+    if text_key and text_hits >= WIDGET_TEXT_LIMIT:
+        return True, {
+            "reason": "repeated_widget_text",
+            "identity_hits": identity_hits,
+            "fingerprint_hits": fingerprint_hits,
+            "text_hits": text_hits,
+            "client_id": client_id,
+            "dialog_id": dialog_id,
+            "chat_phone": chat_phone,
+            "request_id": request_id,
+            "message_id": message_id,
+            "text_sample": normalized_text[:120],
+        }
+
+    return False, {
+        "identity_hits": identity_hits,
+        "fingerprint_hits": fingerprint_hits,
+        "text_hits": text_hits,
+    }
+
+
+def log_widget_request_metadata(request):
+    forwarded_for = request.headers.get("x-forwarded-for")
+    real_ip = request.headers.get("x-real-ip")
+    cf_connecting_ip = request.headers.get("cf-connecting-ip")
+    user_agent = request.headers.get("user-agent")
+    referer = request.headers.get("referer")
+    remote_host = request.client.host if request.client else None
+
+    logger.info(
+        "[WIDGET META] remote_host=%s cf_connecting_ip=%s x_real_ip=%s x_forwarded_for=%s referer=%s user_agent=%s",
+        remote_host,
+        cf_connecting_ip,
+        real_ip,
+        forwarded_for,
+        referer,
+        user_agent,
+    )
 
 #Add this function to identify and filter out bot-originated messages
 def is_bot_generated_message(message_text, recent_ai_messages=None):
@@ -3356,6 +3499,15 @@ async def whatsapp(request: Request):
         operator_id = payload.get('operator_id', '')
         message_id = payload.get('message_id')
         transport = payload.get('transport', 'wa_direct')  # Extract transport: wa_direct or widget
+
+        if transport == 'widget':
+            log_widget_request_metadata(request)
+            should_block, widget_guard_metadata = evaluate_widget_abuse(payload)
+            if should_block:
+                logger.warning(
+                    f"🛡️ [WIDGET GUARD] Bloqueando mensaje sospechoso: {json.dumps(widget_guard_metadata, ensure_ascii=False)}"
+                )
+                return JSONResponse(content={"status": True, "message": "Mensaje de widget bloqueado"})
 
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============

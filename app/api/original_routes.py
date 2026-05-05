@@ -3618,6 +3618,7 @@ async def whatsapp(request: Request):
         operator_id = payload.get('operator_id', '')
         message_id = payload.get('message_id')
         transport = payload.get('transport', 'wa_direct')  # Extract transport: wa_direct or widget
+        request_id = payload.get('request_id')
 
         if transport == 'widget':
             log_widget_request_metadata(request)
@@ -4566,7 +4567,7 @@ async def whatsapp(request: Request):
         session = user_sessions[from_number]
         # Si acabamos de enviar un HSM (últimos 2 minutos), ignorar el OK
         current_time = datetime.now().timestamp()
-        if hasattr(session, 'last_hsm_time') and (current_time - session.last_hsm_time) < 120:
+        if hasattr(session, 'last_hsm_time') and session.last_hsm_time is not None and (current_time - session.last_hsm_time) < 120:
             logger.critical(f"🚫 [OK BLOCKED] OK ignorado para {from_number} - posible respuesta de evaluación")
             return JSONResponse(content={"status": True, "message": "OK response ignored during evaluation"})
         

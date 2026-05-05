@@ -67,6 +67,7 @@ from .implementations.pago_predial import pago_predial
 from .implementations.pago_multas import pago_multas
 from .implementations.encuesta_mesas_directivas import encuesta_mesas_directivas
 from .implementations.get_presupuesto_participativo import get_presupuesto_participativo
+from .implementations.get_actividades_mayo_junio import get_actividades_mayo_junio
 
 registered_functions = [
     save_client_selection2, 
@@ -136,6 +137,7 @@ registered_functions = [
     pago_predial,
     pago_multas,
     encuesta_mesas_directivas,
-    get_presupuesto_participativo
+    get_presupuesto_participativo,
+    get_actividades_mayo_junio
 
 ]

@@ -396,14 +396,6 @@ def get_effective_user_message_text(body, reply_context):
     return (body or "").strip()
 
 
-def build_incoming_request_dedup_key(from_number, request_id):
-    """
-    Genera una llave lógica para redelivery del mismo mensaje entrante.
-    """
-    if request_id is None:
-        return None
-    return f"from_client:{from_number}:{request_id}"
-
 async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id, transport="wa_direct"):
     """
     VERSIÓN MEJORADA: Obtiene y envía el comentario de conclusión e imagen del técnico.
@@ -3351,7 +3343,6 @@ router = APIRouter()
 # Add this at the module level (outside of the function)
 # Initialize the TTL cache - messages expire after 1 hour, max 1000 entries
 processed_message_ids = TTLCache(max_size=1000, ttl_seconds=3600)
-processed_incoming_request_keys = TTLCache(max_size=2000, ttl_seconds=3600)
 recent_direct_message_keys = TTLCache(max_size=2000, ttl_seconds=20)
 widget_guard_lock = threading.RLock()
 widget_identity_events = OrderedDict()
@@ -3911,14 +3902,6 @@ async def whatsapp(request: Request):
         if message_type != 'from_client':
             logger.debug(f"Ignorando mensaje con type={message_type} que no es from_client")
             return JSONResponse(content={"status": True, "message": "Mensaje del sistema ignorado"})
-
-        incoming_request_key = build_incoming_request_dedup_key(from_number, request_id)
-        if incoming_request_key and processed_incoming_request_keys.contains(incoming_request_key):
-            logger.debug(f"Ignorando redelivery duplicado por request_id={request_id}")
-            return JSONResponse(content={"status": True, "message": "Mensaje duplicado por request_id ignorado"})
-
-        if incoming_request_key:
-            processed_incoming_request_keys.add(incoming_request_key)
 
         # Deduplicar mensajes entrantes antes de cualquier flujo que pueda responder o disparar efectos.
         if processed_message_ids.contains(uid):

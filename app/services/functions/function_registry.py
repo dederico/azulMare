@@ -63,8 +63,9 @@ from .implementations.get_actividades_san_pedro_parques import get_actividades_s
 from .implementations.get_mochilas import get_mochilas
 from .implementations.get_becas_juventud import get_becas_juventud
 from .implementations.get_nuevo_alfonso_reyes import get_nuevo_alfonso_reyes
-from .implementations.pago_predial import pago_predial
-from .implementations.pago_multas import pago_multas
+# POR EL MOMENTO NO SE HARÁN PAGOS DE PREDIAL NI MULTAS
+#from .implementations.pago_predial import pago_predial
+#from .implementations.pago_multas import pago_multas
 from .implementations.encuesta_mesas_directivas import encuesta_mesas_directivas
 from .implementations.get_presupuesto_participativo import get_presupuesto_participativo
 from .implementations.get_actividades_mayo_junio import get_actividades_mayo_junio
@@ -134,8 +135,9 @@ registered_functions = [
     get_mochilas,
     get_becas_juventud,
     get_nuevo_alfonso_reyes,
-    pago_predial,
-    pago_multas,
+    # POR EL MOMENTO NO SE HARAN PAGOS DE PREDIAL NI MULTAS
+    #pago_predial,
+    #pago_multas,
     encuesta_mesas_directivas,
     get_presupuesto_participativo,
     get_actividades_mayo_junio

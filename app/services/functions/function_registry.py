@@ -69,6 +69,7 @@ from .implementations.get_nuevo_alfonso_reyes import get_nuevo_alfonso_reyes
 from .implementations.encuesta_mesas_directivas import encuesta_mesas_directivas
 from .implementations.get_presupuesto_participativo import get_presupuesto_participativo
 from .implementations.get_actividades_mayo_junio import get_actividades_mayo_junio
+from .implementations.get_actividades_mundial import get_actividades_mundial
 
 registered_functions = [
     save_client_selection2, 
@@ -140,6 +141,7 @@ registered_functions = [
     #pago_multas,
     encuesta_mesas_directivas,
     get_presupuesto_participativo,
-    get_actividades_mayo_junio
+    get_actividades_mayo_junio,
+    get_actividades_mundial
 
 ]

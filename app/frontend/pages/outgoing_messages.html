@@ -13,6 +13,7 @@
       --muted: #6b7280;
       --primary: #0f766e;
       --primary-dark: #115e59;
+      --danger-soft: #fef3f2;
       --danger: #b42318;
       --success: #166534;
     }
@@ -78,6 +79,7 @@
     button.primary { background: var(--primary); color: white; }
     button.primary:hover { background: var(--primary-dark); }
     button.secondary { background: #ecece7; color: var(--text); }
+    button.danger { background: var(--danger-soft); color: var(--danger); border: 1px solid #fecdca; }
     .section-title {
       margin: 28px 0 12px;
       font-size: 22px;
@@ -258,13 +260,18 @@
           </div>
           {% endif %}
           <div>{{ campaign.message }}</div>
-          <form method="POST" action="/admin/ciac/mensajes-proactivos" style="margin-top: 12px;">
-            <input type="hidden" name="action" value="send_now">
-            <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
-            <div class="actions">
+          <div class="actions" style="margin-top: 12px;">
+            <form method="POST" action="/admin/ciac/mensajes-proactivos">
+              <input type="hidden" name="action" value="send_now">
+              <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
               <button class="primary" type="submit">Enviar ahora</button>
-            </div>
-          </form>
+            </form>
+            <form method="POST" action="/admin/ciac/mensajes-proactivos" onsubmit="return confirm('¿Ocultar esta campaña de la vista?');">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
+              <button class="danger" type="submit">Eliminar</button>
+            </form>
+          </div>
           {% if campaign.recipients %}
           <div class="recipient-list">
             {% for recipient in campaign.recipients %}

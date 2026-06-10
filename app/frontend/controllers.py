@@ -332,6 +332,7 @@ def parse_outgoing_recipients(recipients_text: str) -> list[dict]:
 
 def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
     campaigns = local_storage.GetAll(OutgoingCampaign, json=True) or []
+    campaigns = [campaign for campaign in campaigns if (campaign.get("status") or "").lower() != "deleted"]
     campaigns = list(reversed(campaigns))
     enriched = []
     for campaign in campaigns:
@@ -430,6 +431,22 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
     }
 
 
+def delete_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dict:
+    campaign = local_storage.GetByPK(OutgoingCampaign, campaign_id)
+    if not campaign:
+        raise ValueError("No se encontró la campaña solicitada.")
+
+    campaign.status = "deleted"
+    if not local_storage.Update(campaign):
+        raise ValueError("No se pudo ocultar la campaña.")
+
+    return {
+        "status": True,
+        "message": f"Campaña '{campaign.name}' ocultada correctamente.",
+        "campaign_id": campaign_id,
+    }
+
+
 def _get_chat2desk_headers() -> dict:
     api_token = os.getenv("CHAT2DESK_API_TOKEN")
     if not api_token:
@@ -524,6 +541,8 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
     campaign = local_storage.GetByPK(OutgoingCampaign, campaign_id)
     if not campaign:
         raise ValueError("No se encontró la campaña solicitada.")
+    if (campaign.status or "").lower() == "deleted":
+        raise ValueError("La campaña fue ocultada y ya no puede enviarse.")
 
     recipients = local_storage.Search(OutgoingRecipient(campaign_id=campaign_id), order="asc") or []
     pending_recipients = [recipient for recipient in recipients if (recipient.status or "pending") == "pending"]

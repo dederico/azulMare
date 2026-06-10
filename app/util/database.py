@@ -8,6 +8,8 @@ from app.models.Config import Config
 from app.models.User import User
 from app.models.File import File
 from app.models.Message import Message
+from app.models.OutgoingCampaign import OutgoingCampaign
+from app.models.OutgoingRecipient import OutgoingRecipient
 from dotenv import load_dotenv
 from app.models.Notification import Notification
 # from pinecone import Pinecone
@@ -45,7 +47,7 @@ class LocalStorage:
         logger.debug(f"Local storage has been initialized with URL: {self.connection_url}")
 
     def migrate(self):
-        tables = [Call, User, Config, Notification, File, Message]
+        tables = [Call, User, Config, Notification, File, Message, OutgoingCampaign, OutgoingRecipient]
         for table in tables:
             self.__verify_schema(table)
 

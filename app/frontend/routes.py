@@ -2,7 +2,7 @@ import os
 import json
 from fastapi import FastAPI
 from app.models.User import User
-from .controllers import Context
+from .controllers import Context, create_knowledge_function, create_outgoing_campaign, list_outgoing_campaigns, send_outgoing_campaign
 from app.util.logger import logger
 from subprocess import check_output
 from app.models.Config import Config
@@ -13,10 +13,15 @@ from fastapi.templating import Jinja2Templates
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi import APIRouter, Request, Response, Depends, Cookie
+from urllib.parse import quote_plus
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/frontend/pages")
 oauth2 = OAuth2PasswordBearer(tokenUrl="token")
+SAM_KB_USERNAME = "atencion_ciudadana"
+SAM_KB_PASSWORD = "sam_2026"
+SAM_KB_COOKIE = "sam_kb_auth"
+SAM_KB_COOKIE_VALUE = "ok"
 
 def parse(body):
     payload = {}
@@ -27,6 +32,44 @@ def parse(body):
 
 def page(name):
     return f"app/frontend/pages/{name}"
+
+
+def sam_kb_is_authenticated(request: Request) -> bool:
+    return request.cookies.get(SAM_KB_COOKIE) == SAM_KB_COOKIE_VALUE
+
+
+def render_sam_kb_page(request: Request, authenticated: bool, error: str = "", success: str = "", form_data: dict | None = None):
+    return templates.TemplateResponse(
+        request,
+        "sam_base_conocimiento.html",
+        {
+            "authenticated": authenticated,
+            "error": error,
+            "success": success,
+            "form_data": form_data or {},
+        },
+    )
+
+
+def render_outgoing_messages_page(
+    request: Request,
+    authenticated: bool,
+    error: str = "",
+    success: str = "",
+    form_data: dict | None = None,
+):
+    campaigns = list_outgoing_campaigns(LocalStorage()) if authenticated else []
+    return templates.TemplateResponse(
+        request,
+        "outgoing_messages.html",
+        {
+            "authenticated": authenticated,
+            "error": error,
+            "success": success,
+            "form_data": form_data or {},
+            "campaigns": campaigns,
+        },
+    )
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -39,6 +82,176 @@ async def index(request: Request):
         return content
     else:
         return RedirectResponse("/admin/dashboard")
+
+
+@router.get("/ciac/sam-base-de-conocimiento", response_class=HTMLResponse)
+async def sam_base_conocimiento(request: Request):
+    return render_sam_kb_page(
+        request=request,
+        authenticated=sam_kb_is_authenticated(request),
+        error=request.query_params.get("error", ""),
+        success=request.query_params.get("success", ""),
+    )
+
+
+@router.post("/ciac/sam-base-de-conocimiento", response_class=HTMLResponse)
+async def sam_base_conocimiento_submit(request: Request):
+    form = await request.form()
+    payload = {k: (v if isinstance(v, str) else str(v)) for k, v in form.items()}
+    action = payload.get("action", "").strip().lower()
+    authenticated = sam_kb_is_authenticated(request)
+
+    if action == "login":
+        username = (payload.get("username") or "").strip()
+        password = payload.get("password") or ""
+        if username == SAM_KB_USERNAME and password == SAM_KB_PASSWORD:
+            response = RedirectResponse(
+                url="/admin/ciac/sam-base-de-conocimiento?success=" + quote_plus("Acceso concedido."),
+                status_code=303,
+            )
+            response.set_cookie(SAM_KB_COOKIE, SAM_KB_COOKIE_VALUE, httponly=True, samesite="lax")
+            return response
+        return render_sam_kb_page(
+            request=request,
+            authenticated=False,
+            error="Credenciales inválidas.",
+            form_data={"username": username},
+        )
+
+    if action == "logout":
+        response = RedirectResponse(url="/admin/ciac/sam-base-de-conocimiento", status_code=303)
+        response.delete_cookie(SAM_KB_COOKIE)
+        return response
+
+    if not authenticated:
+        return render_sam_kb_page(
+            request=request,
+            authenticated=False,
+            error="Tu sesión expiró. Inicia sesión de nuevo.",
+        )
+
+    if action == "create":
+        try:
+            result = create_knowledge_function(LocalStorage(), payload)
+            return render_sam_kb_page(
+                request=request,
+                authenticated=True,
+                success=result["message"],
+                form_data={},
+            )
+        except Exception as e:
+            logger.error("Error creating knowledge function: %s", e)
+            return render_sam_kb_page(
+                request=request,
+                authenticated=True,
+                error=str(e),
+                form_data=payload,
+            )
+
+    return render_sam_kb_page(
+        request=request,
+        authenticated=authenticated,
+        error="Acción no soportada.",
+        form_data=payload,
+    )
+
+
+@router.get("/ciac/mensajes-proactivos", response_class=HTMLResponse)
+async def outgoing_messages(request: Request):
+    return render_outgoing_messages_page(
+        request=request,
+        authenticated=sam_kb_is_authenticated(request),
+        error=request.query_params.get("error", ""),
+        success=request.query_params.get("success", ""),
+    )
+
+
+@router.post("/ciac/mensajes-proactivos", response_class=HTMLResponse)
+async def outgoing_messages_submit(request: Request):
+    form = await request.form()
+    payload = {k: (v if isinstance(v, str) else str(v)) for k, v in form.items()}
+    action = payload.get("action", "").strip().lower()
+    authenticated = sam_kb_is_authenticated(request)
+
+    if action == "login":
+        username = (payload.get("username") or "").strip()
+        password = payload.get("password") or ""
+        if username == SAM_KB_USERNAME and password == SAM_KB_PASSWORD:
+            response = RedirectResponse(
+                url="/admin/ciac/mensajes-proactivos?success=" + quote_plus("Acceso concedido."),
+                status_code=303,
+            )
+            response.set_cookie(SAM_KB_COOKIE, SAM_KB_COOKIE_VALUE, httponly=True, samesite="lax")
+            return response
+        return render_outgoing_messages_page(
+            request=request,
+            authenticated=False,
+            error="Credenciales inválidas.",
+            form_data={"username": username},
+        )
+
+    if action == "logout":
+        response = RedirectResponse(url="/admin/ciac/mensajes-proactivos", status_code=303)
+        response.delete_cookie(SAM_KB_COOKIE)
+        return response
+
+    if not authenticated:
+        return render_outgoing_messages_page(
+            request=request,
+            authenticated=False,
+            error="Tu sesión expiró. Inicia sesión de nuevo.",
+        )
+
+    if action == "create":
+        try:
+            result = create_outgoing_campaign(LocalStorage(), payload)
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                success=result["message"],
+                form_data={},
+            )
+        except Exception as e:
+            logger.error("Error creating outgoing campaign: %s", e)
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error=str(e),
+                form_data=payload,
+            )
+
+    if action == "send_now":
+        campaign_id = (payload.get("campaign_id") or "").strip()
+        if not campaign_id.isdigit():
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error="No se recibió un identificador de campaña válido.",
+                form_data=payload,
+            )
+        try:
+            result = send_outgoing_campaign(LocalStorage(), int(campaign_id))
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                success=result["message"],
+                form_data={},
+            )
+        except Exception as e:
+            logger.error("Error sending outgoing campaign: %s", e)
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error=str(e),
+                form_data=payload,
+            )
+
+    return render_outgoing_messages_page(
+        request=request,
+        authenticated=authenticated,
+        error="Acción no soportada.",
+        form_data=payload,
+    )
 
 @router.get("/{fragment}", response_class=HTMLResponse)
 async def dashboard(request: Request, fragment):
@@ -64,7 +277,6 @@ async def dashboard(request: Request, fragment):
         logger.error(e)
         context = { "request": request, "data": {} }
         return templates.TemplateResponse(f"500.html", context)
-
 @router.api_route("/{fragment}/{id}", methods=["GET", "POST", "DELETE"], response_class=HTMLResponse)
 async def dashboard(request: Request, fragment : str, id : str):
     try:

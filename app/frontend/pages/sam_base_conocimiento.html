@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAM Base de Conocimiento</title>
+  <style>
+    :root {
+      --bg: #f7f7f5;
+      --panel: #ffffff;
+      --border: #d8d8d1;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --primary: #0f766e;
+      --primary-dark: #115e59;
+      --danger: #b42318;
+      --success: #166534;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px 16px;
+      background: linear-gradient(180deg, #f3f4ef 0%, #fbfbf9 100%);
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    .wrap {
+      max-width: 920px;
+      margin: 0 auto;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 32px;
+      line-height: 1.1;
+    }
+    p.lead {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+    .notice {
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+    }
+    .notice.error {
+      background: #fef3f2;
+      border: 1px solid #fecdca;
+      color: var(--danger);
+    }
+    .notice.success {
+      background: #ecfdf3;
+      border: 1px solid #abefc6;
+      color: var(--success);
+    }
+    form {
+      display: grid;
+      gap: 18px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+    .field.full {
+      grid-column: 1 / -1;
+    }
+    label {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font: inherit;
+      color: var(--text);
+      background: #fff;
+    }
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 18px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+    }
+    button.primary {
+      background: var(--primary);
+      color: white;
+    }
+    button.primary:hover { background: var(--primary-dark); }
+    button.secondary {
+      background: #ecece7;
+      color: var(--text);
+    }
+    @media (max-width: 720px) {
+      .panel { padding: 20px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+      .actions { justify-content: stretch; }
+      .actions button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>SAM Base de Conocimiento</h1>
+      <p class="lead">Alta controlada de nuevas funciones de conocimiento para SAM. Este módulo crea el archivo, actualiza el registry y modifica el prompt activo en base de datos.</p>
+
+      {% if error %}
+      <div class="notice error">{{ error }}</div>
+      {% endif %}
+
+      {% if success %}
+      <div class="notice success">{{ success }}</div>
+      {% endif %}
+
+      {% if not authenticated %}
+      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento">
+        <input type="hidden" name="action" value="login">
+        <div class="field">
+          <label for="username">Usuario</label>
+          <input id="username" name="username" type="text" value="{{ form_data.get('username', '') }}" required>
+        </div>
+        <div class="field">
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" required>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Entrar</button>
+        </div>
+      </form>
+      {% else %}
+      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento">
+        <input type="hidden" name="action" value="create">
+        <div class="grid">
+          <div class="field">
+            <label for="function_name">Nombre interno</label>
+            <input id="function_name" name="function_name" type="text" placeholder="ejemplo: becas_julio_2026" value="{{ form_data.get('function_name', '') }}" required>
+            <div class="hint">Escribe un nombre corto para identificar este tema. Usa solo letras minúsculas, números y guiones bajos. No uses espacios, acentos ni símbolos.</div>
+          </div>
+          <div class="field">
+            <label for="prompt_topic">Texto para el prompt</label>
+            <input id="prompt_topic" name="prompt_topic" type="text" placeholder="actividades culturales del mes de julio de 2026" value="{{ form_data.get('prompt_topic', '') }}" required>
+            <div class="hint">Describe aquí el tema tal como lo preguntaría un ciudadano. Este texto le dirá a SAM cuándo debe usar esta información.</div>
+          </div>
+          <div class="field full">
+            <label for="function_summary">Docstring corto</label>
+            <input id="function_summary" name="function_summary" type="text" placeholder="Obtener información sobre actividades culturales de julio de 2026." value="{{ form_data.get('function_summary', '') }}">
+          </div>
+          <div class="field full">
+            <label for="tc_content">Contenido del documento (TC)</label>
+            <textarea id="tc_content" name="tc_content" placeholder='Este documento contiene información sobre ...&#10;&#10;Pregunta: ...&#10;Respuesta: ...' required>{{ form_data.get('tc_content', '') }}</textarea>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Crear función</button>
+        </div>
+      </form>
+
+      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento" style="margin-top: 14px;">
+        <input type="hidden" name="action" value="logout">
+        <div class="actions">
+          <button class="secondary" type="submit">Salir</button>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

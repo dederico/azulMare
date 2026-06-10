@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mensajes Proactivos</title>
+  <style>
+    :root {
+      --bg: #f6f5f0;
+      --panel: #ffffff;
+      --border: #d9d7ce;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --primary: #0f766e;
+      --primary-dark: #115e59;
+      --danger: #b42318;
+      --success: #166534;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px 16px;
+      background: linear-gradient(180deg, #f4f3ed 0%, #fbfbf8 100%);
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    .wrap { max-width: 1120px; margin: 0 auto; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    h1 { margin: 0 0 10px; font-size: 32px; line-height: 1.1; }
+    p.lead { margin: 0 0 24px; color: var(--muted); font-size: 16px; }
+    .notice { margin-bottom: 16px; padding: 12px 14px; border-radius: 10px; font-size: 14px; }
+    .notice.error { background: #fef3f2; border: 1px solid #fecdca; color: var(--danger); }
+    .notice.success { background: #ecfdf3; border: 1px solid #abefc6; color: var(--success); }
+    form { display: grid; gap: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .field { display: grid; gap: 8px; }
+    .field.full { grid-column: 1 / -1; }
+    label { font-size: 14px; font-weight: 700; }
+    input, textarea, select {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font: inherit;
+      color: var(--text);
+      background: #fff;
+    }
+    textarea {
+      min-height: 130px;
+      resize: vertical;
+      font-family: "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 18px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+    }
+    button.primary { background: var(--primary); color: white; }
+    button.primary:hover { background: var(--primary-dark); }
+    button.secondary { background: #ecece7; color: var(--text); }
+    .section-title {
+      margin: 28px 0 12px;
+      font-size: 22px;
+    }
+    .cards {
+      display: grid;
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      background: #fcfcfa;
+    }
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #eef6f5;
+      color: #0f766e;
+      font-size: 12px;
+      font-weight: 700;
+      margin-right: 6px;
+    }
+    .recipient-list {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .recipient-row {
+      border: 1px solid #e8e6dc;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #fff;
+    }
+    .recipient-row strong {
+      display: inline-block;
+      margin-bottom: 4px;
+    }
+    .status-pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-left: 8px;
+    }
+    .status-pill.pending { background: #f3f4f6; color: #374151; }
+    .status-pill.sent { background: #ecfdf3; color: #166534; }
+    .status-pill.failed { background: #fef3f2; color: #b42318; }
+    .status-pill.processing { background: #eff6ff; color: #1d4ed8; }
+    .status-pill.completed,
+    .status-pill.completed_with_errors,
+    .status-pill.scheduled,
+    .status-pill.draft { background: #f4f4f5; color: #3f3f46; }
+    .empty {
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      background: #fafaf8;
+    }
+    @media (max-width: 720px) {
+      .panel { padding: 20px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+      .actions { justify-content: stretch; }
+      .actions button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>Mensajes Proactivos</h1>
+      <p class="lead">Crea listas de destinatarios con el criterio operativo que necesites, redacta el mensaje y deja lista la campaña para envío manual o programado.</p>
+
+      {% if error %}
+      <div class="notice error">{{ error }}</div>
+      {% endif %}
+
+      {% if success %}
+      <div class="notice success">{{ success }}</div>
+      {% endif %}
+
+      {% if not authenticated %}
+      <form method="POST" action="/admin/ciac/mensajes-proactivos">
+        <input type="hidden" name="action" value="login">
+        <div class="field">
+          <label for="username">Usuario</label>
+          <input id="username" name="username" type="text" value="{{ form_data.get('username', '') }}" required>
+        </div>
+        <div class="field">
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" required>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Entrar</button>
+        </div>
+      </form>
+      {% else %}
+      <form method="POST" action="/admin/ciac/mensajes-proactivos">
+        <input type="hidden" name="action" value="create">
+        <div class="grid">
+          <div class="field">
+            <label for="campaign_name">Nombre de la campaña</label>
+            <input id="campaign_name" name="campaign_name" type="text" placeholder="ejemplo: aviso_bache_k1_mayo" value="{{ form_data.get('campaign_name', '') }}" required>
+            <div class="hint">Usa un nombre corto para identificar esta campaña dentro del sistema.</div>
+          </div>
+          <div class="field">
+            <label for="audience_name">Nombre de la lista o segmento</label>
+            <input id="audience_name" name="audience_name" type="text" placeholder="ejemplo: vecinos K1 zona norte" value="{{ form_data.get('audience_name', '') }}" required>
+            <div class="hint">Describe aquí el grupo de personas que recibirán el mensaje.</div>
+          </div>
+          <div class="field">
+            <label for="scheduled_at">Fecha y hora programada</label>
+            <input id="scheduled_at" name="scheduled_at" type="datetime-local" value="{{ form_data.get('scheduled_at', '') }}">
+            <div class="hint">Si lo dejas vacío, la campaña quedará guardada como borrador.</div>
+          </div>
+          <div class="field">
+            <label for="created_by">Responsable de la campaña</label>
+            <input id="created_by" name="created_by" type="text" placeholder="ejemplo: Atención Ciudadana" value="{{ form_data.get('created_by', '') }}">
+            <div class="hint">Opcional. Sirve para saber quién dejó preparada la campaña.</div>
+          </div>
+          <div class="field full">
+            <label for="message_body">Mensaje a enviar</label>
+            <textarea id="message_body" name="message_body" placeholder="Escribe aquí el mensaje que recibirán todos los contactos de esta lista." required>{{ form_data.get('message_body', '') }}</textarea>
+          </div>
+          <div class="field full">
+            <label for="recipients_text">Lista de destinatarios</label>
+            <textarea id="recipients_text" name="recipients_text" placeholder="Una persona por línea. Ejemplo: Nombre: Juan Pérez Número:+528188888888 K:1&#10;Nombre: María López Número:+528177777777 K:2" required>{{ form_data.get('recipients_text', '') }}</textarea>
+            <div class="hint">Cada línea debe incluir por lo menos el nombre y el número. Puedes agregar más datos como K, colonia, calle o cualquier otro criterio en formato <strong>Campo: valor</strong>.</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Guardar campaña</button>
+        </div>
+      </form>
+
+      <form method="POST" action="/admin/ciac/mensajes-proactivos" style="margin-top: 14px;">
+        <input type="hidden" name="action" value="logout">
+        <div class="actions">
+          <button class="secondary" type="submit">Salir</button>
+        </div>
+      </form>
+
+      <h2 class="section-title">Campañas Guardadas</h2>
+      {% if campaigns %}
+      <div class="cards">
+        {% for campaign in campaigns %}
+        <div class="card">
+          <h3>{{ campaign.name }}</h3>
+          <div class="meta">
+            <span>Lista: {{ campaign.audienceName }}</span>
+            <span>Estatus: <span class="status-pill {{ campaign.status }}">{{ campaign.status }}</span></span>
+            <span>Destinatarios: {{ campaign.recipientCount }}</span>
+            <span>Programada: {{ campaign.scheduledAt or 'No programada' }}</span>
+          </div>
+          {% if campaign.ks %}
+          <div style="margin-bottom: 10px;">
+            {% for k in campaign.ks %}
+            <span class="pill">K: {{ k }}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+          <div>{{ campaign.message }}</div>
+          <form method="POST" action="/admin/ciac/mensajes-proactivos" style="margin-top: 12px;">
+            <input type="hidden" name="action" value="send_now">
+            <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
+            <div class="actions">
+              <button class="primary" type="submit">Enviar ahora</button>
+            </div>
+          </form>
+          {% if campaign.recipients %}
+          <div class="recipient-list">
+            {% for recipient in campaign.recipients %}
+            <div class="recipient-row">
+              <strong>{{ recipient.name }}</strong>
+              <span class="status-pill {{ recipient.status }}">{{ recipient.status }}</span>
+              <div>{{ recipient.phone }}</div>
+              {% if recipient.metadataParsed %}
+              <div style="margin-top: 6px; color: var(--muted); font-size: 13px;">
+                {% for key, value in recipient.metadataParsed.items() %}
+                <span style="margin-right: 10px;">{{ key|upper }}: {{ value }}</span>
+                {% endfor %}
+              </div>
+              {% endif %}
+              {% if recipient.sentAt %}
+              <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Enviado: {{ recipient.sentAt }}</div>
+              {% endif %}
+              {% if recipient.errorMessage %}
+              <div style="margin-top: 6px; color: var(--danger); font-size: 12px;">Error: {{ recipient.errorMessage }}</div>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty">Todavía no hay campañas guardadas en este módulo.</div>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

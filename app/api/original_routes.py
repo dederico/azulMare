@@ -94,6 +94,37 @@ evaluated_reports = {}
 # 🆕 SISTEMA DE EVALUACIÓN POST-RESOLUCIÓN
 # ===============================================
 
+
+def _truncate_for_log(value, limit=500):
+    if value is None:
+        return None
+    value = str(value)
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
+
+
+def log_chat2desk_outbound_attempt(context, payload, from_number=None, message_id=None):
+    safe_payload = dict(payload or {})
+    if "text" in safe_payload:
+        safe_payload["text_preview"] = _truncate_for_log(safe_payload.get("text"), 300)
+        safe_payload["text_length"] = len(safe_payload.get("text") or "")
+        del safe_payload["text"]
+
+    logger.critical(
+        f"📤 [CHAT2DESK:{context}] attempt "
+        f"from_number={from_number} message_id={message_id} payload={json.dumps(safe_payload, ensure_ascii=False)}"
+    )
+
+
+def log_chat2desk_outbound_response(context, response, from_number=None, message_id=None):
+    body_preview = _truncate_for_log(getattr(response, "text", None), 500)
+    logger.critical(
+        f"📥 [CHAT2DESK:{context}] response "
+        f"from_number={from_number} message_id={message_id} "
+        f"status_code={getattr(response, 'status_code', 'unknown')} body={body_preview}"
+    )
+
 # Estados de evaluación
 EVALUATION_STATES = {
     "WAITING_OK_CLICK": "evaluacion_esperando_click_ok",  # 🆕 NUEVO
@@ -3753,9 +3784,21 @@ async def whatsapp(request: Request):
                     "transport": transport,
                     "text": ai_greeting
                 }
-                
+
+                log_chat2desk_outbound_attempt(
+                    "return_to_ai",
+                    data,
+                    from_number=from_number,
+                    message_id=message_id,
+                )
                 async with httpx.AsyncClient() as client:
                     response = await client.post(chat2desk_url, json=data, headers=headers)
+                log_chat2desk_outbound_response(
+                    "return_to_ai",
+                    response,
+                    from_number=from_number,
+                    message_id=message_id,
+                )
                 
                 assistant_message = Message(
                     time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -4197,9 +4240,20 @@ async def whatsapp(request: Request):
                                         "transport": transport,
                                         "text": body
                                     }
-                                    
+
+                                    log_chat2desk_outbound_attempt(
+                                        "nearest_office_direct",
+                                        data,
+                                        from_number=from_number,
+                                        message_id=message_id,
+                                    )
                                     direct_response = requests.post(chat2desk_url, json=data, headers=headers)
-                                    
+                                    log_chat2desk_outbound_response(
+                                        "nearest_office_direct",
+                                        direct_response,
+                                        from_number=from_number,
+                                        message_id=message_id,
+                                    )
                                     if direct_response.status_code == 200:
                                         logger.debug(f"Información de oficina cercana enviada exitosamente a Chat2Desk")
                                         # No continuar con el procesamiento normal del LLM
@@ -4324,7 +4378,19 @@ async def whatsapp(request: Request):
                             "text": body
                         }
 
+                        log_chat2desk_outbound_attempt(
+                            "image_ack",
+                            data,
+                            from_number=from_number,
+                            message_id=message_id,
+                        )
                         response = requests.post(chat2desk_url, json=data, headers=headers)
+                        log_chat2desk_outbound_response(
+                            "image_ack",
+                            response,
+                            from_number=from_number,
+                            message_id=message_id,
+                        )
 
                         if response.status_code == 200:
                             logger.debug(f"Respuesta de imagen enviada exitosamente a Chat2Desk")
@@ -4514,7 +4580,19 @@ async def whatsapp(request: Request):
                             "text": body
                         }
 
+                        log_chat2desk_outbound_attempt(
+                            "report_finalization_direct",
+                            data,
+                            from_number=from_number,
+                            message_id=message_id,
+                        )
                         response = requests.post(chat2desk_url, json=data, headers=headers)
+                        log_chat2desk_outbound_response(
+                            "report_finalization_direct",
+                            response,
+                            from_number=from_number,
+                            message_id=message_id,
+                        )
 
                         if response.status_code == 200:
                             logger.debug(f"Mensaje de finalización enviado directamente a través de Chat2Desk")
@@ -5118,10 +5196,22 @@ async def whatsapp(request: Request):
             "transport": transport,
             "text": response_content
         }
-        
+
+        log_chat2desk_outbound_attempt(
+            "whatsapp_main",
+            data,
+            from_number=from_number,
+            message_id=message_id,
+        )
         # Envío robusto con manejo de errores específicos
         response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
-        
+        log_chat2desk_outbound_response(
+            "whatsapp_main",
+            response,
+            from_number=from_number,
+            message_id=message_id,
+        )
+
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":

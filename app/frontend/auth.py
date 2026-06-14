@@ -17,6 +17,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+colegio_pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 http_bearer = HTTPBearer(auto_error=False)
 
@@ -46,6 +47,14 @@ class ColegioLoginResponse(BaseModel):
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
+
+
+def verify_colegio_password(plain_password, hashed_password):
+    return colegio_pwd_context.verify(plain_password, hashed_password)
+
+
+def hash_colegio_password(password: str):
+    return colegio_pwd_context.hash(password)
 
 def authenticate_user(users, username: str, password: str):
     if len(users) == 0:
@@ -148,7 +157,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 @router.post("/login", response_model=ColegioLoginResponse)
 async def colegio_login(payload: ColegioLoginRequest):
     user = get_colegio_user_by_email(payload.email)
-    if not user or not verify_password(payload.password, user.password_hash):
+    if not user or not verify_colegio_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
     user.last_login_at = datetime.utcnow().isoformat()
@@ -167,10 +176,10 @@ async def colegio_change_password(
     payload: ColegioChangePasswordRequest,
     current_user: ColegioMilitarizadoUser = Depends(get_current_colegio_user),
 ):
-    if not verify_password(payload.current_password, current_user.password_hash):
+    if not verify_colegio_password(payload.current_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="La contraseña actual no es correcta")
 
-    current_user.password_hash = pwd_context.hash(payload.new_password)
+    current_user.password_hash = hash_colegio_password(payload.new_password)
     current_user.must_change_password = False
     current_user.updated_at = datetime.utcnow().isoformat()
     LocalStorage().Update(current_user)

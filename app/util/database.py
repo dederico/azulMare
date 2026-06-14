@@ -19,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+colegio_pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 # class VectorBase:
 #     def __init__(self, db):
@@ -139,7 +140,7 @@ class LocalStorage:
             logger.warning("No se encontraron filas válidas en CORREOS.MD para sembrar colegio_militarizado_users")
             return
 
-        default_password_hash = pwd_context.hash("CMNL2026!Temp#")
+        default_password_hash = colegio_pwd_context.hash("CMNL2026!Temp#")
         now = datetime.utcnow().isoformat()
 
         try:

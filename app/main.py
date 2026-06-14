@@ -26,6 +26,7 @@ else:
 
 APP_NAME = "spgg-gpt"
 from app.api.original_routes import router as api_router, lifespan as base_lifespan
+from app.api.ia_leon_routes import router as ia_leon_router
 from app.frontend.auth import router as auth_router
 
 @asynccontextmanager
@@ -54,6 +55,8 @@ app.mount("/static", StaticFiles(directory="app/frontend/static"), name="static"
 
 logger.info("[BOOT] Registrando api_router")
 app.include_router(api_router)
+logger.info("[BOOT] Registrando ia_leon_router")
+app.include_router(ia_leon_router)
 logger.info("[BOOT] Registrando view_router con prefijo /admin")
 app.include_router(view_router, prefix="/admin")
 logger.info("[BOOT] Registrando auth_router con prefijo /auth")

@@ -2,6 +2,8 @@ import os
 import psycopg2
 from psycopg2 import Binary
 from psycopg2 import sql
+from datetime import datetime
+from passlib.context import CryptContext
 from .logger import logger
 from app.models.Call import Call
 from app.models.Config import Config
@@ -16,6 +18,7 @@ from app.models.Notification import Notification
 from sentence_transformers import SentenceTransformer
 
 load_dotenv()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # class VectorBase:
 #     def __init__(self, db):
@@ -47,16 +50,37 @@ class LocalStorage:
         logger.debug(f"Local storage has been initialized with URL: {self.connection_url}")
 
     def migrate(self):
-        tables = [Call, User, Config, Notification, File, Message, OutgoingCampaign, OutgoingRecipient]
+        from app.models.ColegioMilitarizadoUser import ColegioMilitarizadoUser
+        from app.models.ColegioMilitarizadoConversation import ColegioMilitarizadoConversation
+
+        tables = [
+            Call,
+            User,
+            Config,
+            Notification,
+            File,
+            Message,
+            OutgoingCampaign,
+            OutgoingRecipient,
+            ColegioMilitarizadoUser,
+            ColegioMilitarizadoConversation,
+        ]
         for table in tables:
             self.__verify_schema(table)
+
+        self._seed_colegio_militarizado_users()
+
+    @staticmethod
+    def _table_name(model_or_class):
+        cls = model_or_class if isinstance(model_or_class, type) else type(model_or_class)
+        return getattr(cls, "__tablename__", f"{cls.__name__.lower()}s")
 
     def __verify_schema(self, model_cls):
         try:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
-            table_name = f"{model_cls.__name__.lower()}s"
+            table_name = self._table_name(model_cls)
             logger.debug("Creating/Checking/Updating table " + table_name)
 
             cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}';")
@@ -104,6 +128,121 @@ class LocalStorage:
             logger.error(e)
             return False
 
+    def _seed_colegio_militarizado_users(self):
+        seed_path = os.path.join(os.getcwd(), "CORREOS.MD")
+        if not os.path.exists(seed_path):
+            logger.warning("CORREOS.MD no existe; se omite sembrado de colegio_militarizado_users")
+            return
+
+        seed_rows = self._parse_colegio_users_seed(seed_path)
+        if not seed_rows:
+            logger.warning("No se encontraron filas válidas en CORREOS.MD para sembrar colegio_militarizado_users")
+            return
+
+        default_password_hash = pwd_context.hash("CMNL2026!Temp#")
+        now = datetime.utcnow().isoformat()
+
+        try:
+            conn = psycopg2.connect(
+                dbname=self.dbName,
+                user=self.user,
+                password=self.password,
+                host=self.host,
+                port=self.port,
+            )
+            cursor = conn.cursor()
+            cursor.execute("SELECT email FROM colegio_militarizado_users")
+            existing_emails = {row[0].strip().lower() for row in cursor.fetchall() if row[0]}
+
+            rows_to_insert = []
+            for row in seed_rows:
+                email = row["email"].strip().lower()
+                if email in existing_emails:
+                    continue
+
+                rows_to_insert.append((
+                    row["area"],
+                    email,
+                    row["responsable"],
+                    row["alias"],
+                    default_password_hash,
+                    "staff",
+                    self._extract_campus(row["area"]),
+                    True,
+                    True,
+                    now,
+                    now,
+                    "",
+                ))
+
+            if rows_to_insert:
+                cursor.executemany(
+                    """
+                    INSERT INTO colegio_militarizado_users
+                    (
+                        area,
+                        email,
+                        responsable,
+                        alias,
+                        password_hash,
+                        role,
+                        campus,
+                        is_active,
+                        must_change_password,
+                        created_at,
+                        updated_at,
+                        last_login_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    rows_to_insert,
+                )
+                logger.info("Sembrados %s usuarios en colegio_militarizado_users", len(rows_to_insert))
+            else:
+                logger.info("colegio_militarizado_users ya estaba sembrada; no se insertaron usuarios nuevos")
+
+            conn.commit()
+        except Exception as e:
+            logger.error("Error sembrando colegio_militarizado_users: %s", e)
+        finally:
+            if 'conn' in locals():
+                conn.close()
+
+    @staticmethod
+    def _parse_colegio_users_seed(seed_path):
+        rows = []
+        with open(seed_path, "r", encoding="utf-8") as seed_file:
+            for index, raw_line in enumerate(seed_file):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if index == 0 and "Correo" in line and "Responsable" in line:
+                    continue
+
+                parts = line.split("\t")
+                if len(parts) < 4:
+                    continue
+
+                area, email, responsable, alias = [part.strip() for part in parts[:4]]
+                if "@" not in email:
+                    continue
+
+                rows.append(
+                    {
+                        "area": area,
+                        "email": email,
+                        "responsable": responsable if responsable else email,
+                        "alias": "" if alias == "—" else alias,
+                    }
+                )
+        return rows
+
+    @staticmethod
+    def _extract_campus(area):
+        if "Plantel " in area:
+            return area.split("Plantel ", 1)[1].strip()
+        return "General"
+
     # Añadir este método a la clase LocalStorage
     def delete_messages_by_number(self, number):
         try:
@@ -145,7 +284,7 @@ class LocalStorage:
             cursor = conn.cursor()
 
             cursor.execute(sql.SQL("SELECT * FROM {table} WHERE id = %s").format(
-                table=sql.Identifier(model.__name__.lower() + 's')), [id])
+                table=sql.Identifier(self._table_name(model))), [id])
             column_names = [desc[0] for desc in cursor.description]
 
             record = cursor.fetchone()
@@ -176,7 +315,7 @@ class LocalStorage:
                 query_parts.append(f"LIMIT {limit}")
 
             query = sql.SQL(" ".join(query_parts)).format(
-                table=sql.Identifier(model.__class__.__name__.lower() + 's')
+                table=sql.Identifier(self._table_name(model.__class__))
             )
 
             cursor.execute(query, list(attributes.values()))
@@ -207,7 +346,7 @@ class LocalStorage:
             cols = sql.SQL("*") if len(cols) == 0 else sql.SQL(", ").join(map(sql.Identifier, cols))
 
             cursor.execute(rawQuery or sql.SQL("SELECT {cols} FROM {table}").format(
-                table=sql.Identifier(model.__name__.lower() + 's'),
+                table=sql.Identifier(self._table_name(model)),
                 cols=cols
             ))
             column_names = [desc[0] for desc in cursor.description]
@@ -235,7 +374,7 @@ class LocalStorage:
                 if len(data) == 0:
                     return False
 
-                table_name = f"{type(data[0]).__name__.lower()}s"  # Use the type of the first element in the list
+                table_name = self._table_name(type(data[0]))
                 all_payloads = [
                     {field: value for field, value in entry.__dict__.items() if field != '_dirty_attributes'}
                     for entry in data
@@ -264,7 +403,7 @@ class LocalStorage:
                 logger.info("Bulk records added successfully in Local Storage")
                 return True
             else:
-                table_name = f"{type(data).__name__.lower()}s"
+                table_name = self._table_name(type(data))
                 payload = {field: value for field, value in data.__dict__.items() if field != '_dirty_attributes'}
 
                 fields = ', '.join([f'"{sql.Identifier(field).string}"' for field in payload.keys()])
@@ -302,7 +441,7 @@ class LocalStorage:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
 
-            table_name = f"{type(data).__name__.lower()}s"
+            table_name = self._table_name(type(data))
             payload = { field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' }
             fields = ', '.join([f"\"{sql.Identifier(field).string}\" = %s" for field in payload.keys() ])
 
@@ -335,7 +474,7 @@ class LocalStorage:
             conn = psycopg2.connect(dbname=self.dbName, user=self.user, password=self.password, host=self.host, port=self.port)
             cursor = conn.cursor()
     
-            table_name = f"{type(data).__name__.lower()}s"
+            table_name = self._table_name(type(data))
             payload = {field: value for field, value in data.__dict__.items() if field != '_dirty_attributes' and field != 'id'}
             fields = ' AND '.join([f"\"{sql.Identifier(field).string}\" = %s" for field in payload.keys()])
     

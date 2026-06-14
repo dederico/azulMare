@@ -57,6 +57,7 @@ app.add_middleware(
     allow_origins=[
         "https://colegiomilitarizadonl.com",
         "https://www.colegiomilitarizadonl.com",
+        "https://api.colegiomilitarizadonl.com",
         "http://localhost:4321",
         "http://localhost:3000",
     ],

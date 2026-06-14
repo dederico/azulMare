@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SAM Base de Conocimiento</title>
+  <title>Base de Conocimiento del Colegio</title>
   <style>
     :root {
       --bg: #f7f7f5;
@@ -139,8 +139,8 @@
 <body>
   <div class="wrap">
     <div class="panel">
-      <h1>SAM Base de Conocimiento</h1>
-      <p class="lead">Alta controlada de nuevas funciones de conocimiento para SAM. Este módulo crea el archivo, actualiza el registry y modifica el prompt activo en base de datos.</p>
+      <h1>Base de Conocimiento del Colegio</h1>
+      <p class="lead">Alta controlada de nuevas funciones de conocimiento para el asistente del Colegio Militarizado General Mariano Escobedo. Este módulo crea el archivo, actualiza el registry y modifica el prompt activo en base de datos.</p>
 
       {% if error %}
       <div class="notice error">{{ error }}</div>
@@ -151,7 +151,7 @@
       {% endif %}
 
       {% if not authenticated %}
-      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento">
+      <form method="POST" action="/admin/colegio-militarizado/base-de-conocimiento">
         <input type="hidden" name="action" value="login">
         <div class="field">
           <label for="username">Usuario</label>
@@ -166,7 +166,7 @@
         </div>
       </form>
       {% else %}
-      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento">
+      <form method="POST" action="/admin/colegio-militarizado/base-de-conocimiento">
         <input type="hidden" name="action" value="create">
         <div class="grid">
           <div class="field">
@@ -176,8 +176,8 @@
           </div>
           <div class="field">
             <label for="prompt_topic">Texto para el prompt</label>
-            <input id="prompt_topic" name="prompt_topic" type="text" placeholder="actividades culturales del mes de julio de 2026" value="{{ form_data.get('prompt_topic', '') }}" required>
-            <div class="hint">Describe aquí el tema tal como lo preguntaría un ciudadano. Este texto le dirá a SAM cuándo debe usar esta información.</div>
+            <input id="prompt_topic" name="prompt_topic" type="text" placeholder="calificaciones del ciclo escolar actual" value="{{ form_data.get('prompt_topic', '') }}" required>
+            <div class="hint">Describe aquí el tema tal como lo preguntaría una madre, padre, tutor, aspirante o alumno. Este texto le dirá al asistente cuándo debe usar esta información.</div>
           </div>
           <div class="field full">
             <label for="function_summary">Docstring corto</label>
@@ -193,7 +193,7 @@
         </div>
       </form>
 
-      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento" style="margin-top: 14px;">
+      <form method="POST" action="/admin/colegio-militarizado/base-de-conocimiento" style="margin-top: 14px;">
         <input type="hidden" name="action" value="logout">
         <div class="actions">
           <button class="secondary" type="submit">Salir</button>

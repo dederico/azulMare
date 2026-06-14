@@ -18,10 +18,13 @@ from urllib.parse import quote_plus
 router = APIRouter()
 templates = Jinja2Templates(directory="app/frontend/pages")
 oauth2 = OAuth2PasswordBearer(tokenUrl="token")
-SAM_KB_USERNAME = "atencion_ciudadana"
-SAM_KB_PASSWORD = "sam_2026"
-SAM_KB_COOKIE = "sam_kb_auth"
-SAM_KB_COOKIE_VALUE = "ok"
+PRIMARY_ADMIN_USERNAME = "colegio_militarizado"
+PRIMARY_ADMIN_PASSWORD = "leon_2026"
+LEGACY_ADMIN_USERNAME = "atencion_ciudadana"
+LEGACY_ADMIN_PASSWORD = "sam_2026"
+PRIMARY_ADMIN_COOKIE = "colegio_militarizado_admin_auth"
+LEGACY_ADMIN_COOKIE = "sam_kb_auth"
+ADMIN_COOKIE_VALUE = "ok"
 
 def parse(body):
     payload = {}
@@ -34,11 +37,14 @@ def page(name):
     return f"app/frontend/pages/{name}"
 
 
-def sam_kb_is_authenticated(request: Request) -> bool:
-    return request.cookies.get(SAM_KB_COOKIE) == SAM_KB_COOKIE_VALUE
+def admin_is_authenticated(request: Request) -> bool:
+    return (
+        request.cookies.get(PRIMARY_ADMIN_COOKIE) == ADMIN_COOKIE_VALUE
+        or request.cookies.get(LEGACY_ADMIN_COOKIE) == ADMIN_COOKIE_VALUE
+    )
 
 
-def render_sam_kb_page(request: Request, authenticated: bool, error: str = "", success: str = "", form_data: dict | None = None):
+def render_knowledge_admin_page(request: Request, authenticated: bool, error: str = "", success: str = "", form_data: dict | None = None):
     return templates.TemplateResponse(
         request,
         "sam_base_conocimiento.html",
@@ -84,34 +90,40 @@ async def index(request: Request):
         return RedirectResponse("/admin/dashboard")
 
 
+@router.get("/colegio-militarizado/base-de-conocimiento", response_class=HTMLResponse)
 @router.get("/ciac/sam-base-de-conocimiento", response_class=HTMLResponse)
-async def sam_base_conocimiento(request: Request):
-    return render_sam_kb_page(
+async def knowledge_admin(request: Request):
+    return render_knowledge_admin_page(
         request=request,
-        authenticated=sam_kb_is_authenticated(request),
+        authenticated=admin_is_authenticated(request),
         error=request.query_params.get("error", ""),
         success=request.query_params.get("success", ""),
     )
 
 
+@router.post("/colegio-militarizado/base-de-conocimiento", response_class=HTMLResponse)
 @router.post("/ciac/sam-base-de-conocimiento", response_class=HTMLResponse)
-async def sam_base_conocimiento_submit(request: Request):
+async def knowledge_admin_submit(request: Request):
     form = await request.form()
     payload = {k: (v if isinstance(v, str) else str(v)) for k, v in form.items()}
     action = payload.get("action", "").strip().lower()
-    authenticated = sam_kb_is_authenticated(request)
+    authenticated = admin_is_authenticated(request)
 
     if action == "login":
         username = (payload.get("username") or "").strip()
         password = payload.get("password") or ""
-        if username == SAM_KB_USERNAME and password == SAM_KB_PASSWORD:
+        valid_credentials = (
+            (username == PRIMARY_ADMIN_USERNAME and password == PRIMARY_ADMIN_PASSWORD)
+            or (username == LEGACY_ADMIN_USERNAME and password == LEGACY_ADMIN_PASSWORD)
+        )
+        if valid_credentials:
             response = RedirectResponse(
-                url="/admin/ciac/sam-base-de-conocimiento?success=" + quote_plus("Acceso concedido."),
+                url="/admin/colegio-militarizado/base-de-conocimiento?success=" + quote_plus("Acceso concedido."),
                 status_code=303,
             )
-            response.set_cookie(SAM_KB_COOKIE, SAM_KB_COOKIE_VALUE, httponly=True, samesite="lax")
+            response.set_cookie(PRIMARY_ADMIN_COOKIE, ADMIN_COOKIE_VALUE, httponly=True, samesite="lax")
             return response
-        return render_sam_kb_page(
+        return render_knowledge_admin_page(
             request=request,
             authenticated=False,
             error="Credenciales inválidas.",
@@ -119,12 +131,13 @@ async def sam_base_conocimiento_submit(request: Request):
         )
 
     if action == "logout":
-        response = RedirectResponse(url="/admin/ciac/sam-base-de-conocimiento", status_code=303)
-        response.delete_cookie(SAM_KB_COOKIE)
+        response = RedirectResponse(url="/admin/colegio-militarizado/base-de-conocimiento", status_code=303)
+        response.delete_cookie(PRIMARY_ADMIN_COOKIE)
+        response.delete_cookie(LEGACY_ADMIN_COOKIE)
         return response
 
     if not authenticated:
-        return render_sam_kb_page(
+        return render_knowledge_admin_page(
             request=request,
             authenticated=False,
             error="Tu sesión expiró. Inicia sesión de nuevo.",
@@ -133,7 +146,7 @@ async def sam_base_conocimiento_submit(request: Request):
     if action == "create":
         try:
             result = create_knowledge_function(LocalStorage(), payload)
-            return render_sam_kb_page(
+            return render_knowledge_admin_page(
                 request=request,
                 authenticated=True,
                 success=result["message"],
@@ -141,14 +154,14 @@ async def sam_base_conocimiento_submit(request: Request):
             )
         except Exception as e:
             logger.error("Error creating knowledge function: %s", e)
-            return render_sam_kb_page(
+            return render_knowledge_admin_page(
                 request=request,
                 authenticated=True,
                 error=str(e),
                 form_data=payload,
             )
 
-    return render_sam_kb_page(
+    return render_knowledge_admin_page(
         request=request,
         authenticated=authenticated,
         error="Acción no soportada.",
@@ -156,32 +169,38 @@ async def sam_base_conocimiento_submit(request: Request):
     )
 
 
+@router.get("/colegio-militarizado/mensajes-institucionales", response_class=HTMLResponse)
 @router.get("/ciac/mensajes-proactivos", response_class=HTMLResponse)
 async def outgoing_messages(request: Request):
     return render_outgoing_messages_page(
         request=request,
-        authenticated=sam_kb_is_authenticated(request),
+        authenticated=admin_is_authenticated(request),
         error=request.query_params.get("error", ""),
         success=request.query_params.get("success", ""),
     )
 
 
+@router.post("/colegio-militarizado/mensajes-institucionales", response_class=HTMLResponse)
 @router.post("/ciac/mensajes-proactivos", response_class=HTMLResponse)
 async def outgoing_messages_submit(request: Request):
     form = await request.form()
     payload = {k: (v if isinstance(v, str) else str(v)) for k, v in form.items()}
     action = payload.get("action", "").strip().lower()
-    authenticated = sam_kb_is_authenticated(request)
+    authenticated = admin_is_authenticated(request)
 
     if action == "login":
         username = (payload.get("username") or "").strip()
         password = payload.get("password") or ""
-        if username == SAM_KB_USERNAME and password == SAM_KB_PASSWORD:
+        valid_credentials = (
+            (username == PRIMARY_ADMIN_USERNAME and password == PRIMARY_ADMIN_PASSWORD)
+            or (username == LEGACY_ADMIN_USERNAME and password == LEGACY_ADMIN_PASSWORD)
+        )
+        if valid_credentials:
             response = RedirectResponse(
-                url="/admin/ciac/mensajes-proactivos?success=" + quote_plus("Acceso concedido."),
+                url="/admin/colegio-militarizado/mensajes-institucionales?success=" + quote_plus("Acceso concedido."),
                 status_code=303,
             )
-            response.set_cookie(SAM_KB_COOKIE, SAM_KB_COOKIE_VALUE, httponly=True, samesite="lax")
+            response.set_cookie(PRIMARY_ADMIN_COOKIE, ADMIN_COOKIE_VALUE, httponly=True, samesite="lax")
             return response
         return render_outgoing_messages_page(
             request=request,
@@ -191,8 +210,9 @@ async def outgoing_messages_submit(request: Request):
         )
 
     if action == "logout":
-        response = RedirectResponse(url="/admin/ciac/mensajes-proactivos", status_code=303)
-        response.delete_cookie(SAM_KB_COOKIE)
+        response = RedirectResponse(url="/admin/colegio-militarizado/mensajes-institucionales", status_code=303)
+        response.delete_cookie(PRIMARY_ADMIN_COOKIE)
+        response.delete_cookie(LEGACY_ADMIN_COOKIE)
         return response
 
     if not authenticated:

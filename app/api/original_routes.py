@@ -70,7 +70,6 @@ from app.models.Message import Message
 from app.models.Config import Config
 from app.util.factory import Hooks
 from app.util.database import LocalStorage
-from app.services.functions.implementations.save_selection2 import save_client_selection2
 from app.services.functions.implementations.save_selection import find_row_and_update_selection
 from app.services.functions.implementations.identify import get_customer_identity
 from app.services.functions.implementations.date import get_current_date
@@ -80,10 +79,7 @@ from app.services.stt.stt_service import STTService
 from app.services.stt.media_transcriber import TranscribeOGG
 from twilio.base.exceptions import TwilioRestException
 import threading
-from app.services.functions.implementations.transfer_message_event import transfer_to_group
 from threading import RLock
-from app.api.streets_array import SAN_PEDRO_STREETS_REAL
-from app.api.colonies_array import SAN_PEDRO_COLONIES
 import difflib
 import re
 from app.services.deduplication import dedup_manager, dedup_cleanup_task
@@ -101,6 +97,25 @@ EVALUATION_STATES = {
     "WAITING_RATING": "evaluacion_esperando_calificacion", 
     "WAITING_REASON": "evaluacion_esperando_motivo"
 }
+
+# Colegio Militar no usa CIAC ni transferencia humana en esta rama.
+CIAC_INTEGRATIONS_ENABLED = False
+HUMAN_HANDOFF_ENABLED = False
+SPECIAL_NUMBER_ROUTING_ENABLED = False
+
+
+def generate_local_report_folio() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+    return f"Folio: CMGME-{timestamp}"
+
+
+async def create_local_report_folio(yoga_number: str, selection_data: dict, images_list: list | None = None) -> str:
+    folio = generate_local_report_folio()
+    logger.critical(
+        f"🏫 [LOCAL REPORT] Generando folio local para {yoga_number}: {folio} "
+        f"tipo={selection_data.get('selection1')} imagenes={len(images_list or [])}"
+    )
+    return folio
 
 async def handle_hsm_conclusion_notification(payload, from_number):
     """
@@ -401,6 +416,17 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id, t
     VERSIÓN MEJORADA: Obtiene y envía el comentario de conclusión e imagen del técnico.
     Supports both wa_direct (WhatsApp) and widget (web chat).
     """
+    if not CIAC_INTEGRATIONS_ENABLED:
+        logger.critical(
+            f"🏫 [CIAC DISABLED] Omitiendo comentario final CIAC para reporte {reporte_id}"
+        )
+        fallback_message = (
+            f"📋 *Reporte #{reporte_id}*\n\n"
+            "Tu solicitud fue registrada en el flujo local del colegio."
+        )
+        await send_chat2desk_message_direct(client_id, channel_id, fallback_message, transport)
+        return
+
     try:
         logger.critical(f"📄 [CONCLUSION] ===== INICIANDO send_conclusion_comment_and_image =====")
         logger.critical(f"📄 [CONCLUSION] client_id: {client_id}")
@@ -740,6 +766,13 @@ async def send_auto_evaluation(id_reporte: str, concluido: int, calificacion: in
         calificacion: 1-5 (solo si concluido=1)
         comentario: Motivo de desacuerdo (solo si concluido=2)
     """
+    if not CIAC_INTEGRATIONS_ENABLED:
+        logger.critical(
+            f"🏫 [CIAC DISABLED] Auto-evaluación omitida para reporte {id_reporte} "
+            f"concluido={concluido} calificacion={calificacion}"
+        )
+        return
+
     try:
         payload = {
             "idReporte": int(id_reporte),
@@ -801,6 +834,12 @@ async def send_reactivation_email_notifications(reporte_id: str, comentario: str
     """
     Solicita al CIAC el envío de correos cuando el ciudadano no acepta la resolución.
     """
+    if not CIAC_INTEGRATIONS_ENABLED:
+        logger.critical(
+            f"🏫 [CIAC DISABLED] Notificación de reactivación omitida para reporte {reporte_id}"
+        )
+        return
+
     report_id_value = 0
     try:
         report_id_value = int(str(reporte_id).strip())
@@ -888,422 +927,145 @@ INACTIVITY_COOLDOWN = 15 * 60  # 15 minutos en segundos - periodo para NO reacti
 hsm_sent_reports = {}
 sent_evaluation_messages = {} 
 
-# ===============================================================
-# OPTIMIZACIÓN: Crear índices una sola vez al iniciar el servidor
-# ===============================================================
-
-class StreetsAndColoniesOptimizer:
-    """
-    🚀 OPTIMIZACIÓN EXPANDIDA: Calles + Colonias reales de San Pedro
-    """
-    def __init__(self):
-        print(f"🚀 [OPTIMIZER INIT] Iniciando con {len(SAN_PEDRO_STREETS_REAL)} calles y {len(SAN_PEDRO_COLONIES)} colonias")
-        
-        self.original_streets = SAN_PEDRO_STREETS_REAL
-        self.original_colonies = SAN_PEDRO_COLONIES
-        
-        # Índices para calles
-        self.normalized_streets = {}
-        self.street_word_index = {}
-        
-        # Índices para colonias  
-        self.normalized_colonies = {}
-        self.colony_word_index = {}
-        
-        self._build_indexes()
-        
-        # NUEVO: Verificar que los índices se construyeron
-        print(f"🚀 [OPTIMIZER INIT] Índices construidos:")
-        print(f"   - normalized_streets: {len(self.normalized_streets)} entradas")
-        print(f"   - normalized_colonies: {len(self.normalized_colonies)} entradas")
-        print(f"   - ¿'centro' normalizado existe? {'centro' in self.normalized_colonies}")
-        
-        # Test inmediato
-        test_result = self.find_closest_colony("centro")
-        print(f"🚀 [OPTIMIZER TEST] Búsqueda de 'centro': {test_result}")
-    
-    def _normalize_text(self, text):
-        """Normaliza texto para comparación (sin acentos, minúsculas)"""
-        return (text.lower()
-                .replace('á', 'a').replace('é', 'e').replace('í', 'i')
-                .replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
-                .strip())
-    
-    def _build_indexes(self):
-        """🚀 Construye índices optimizados para CALLES Y COLONIAS"""
-        print(f"🚀 [OPTIMIZER] Construyendo índices para {len(self.original_streets)} calles y {len(self.original_colonies)} colonias...")
-        
-        # Índices para calles
-        for street in self.original_streets:
-            normalized = self._normalize_text(street)
-            self.normalized_streets[normalized] = street
-            
-            words = normalized.split()
-            for word in words:
-                if word not in self.street_word_index:
-                    self.street_word_index[word] = []
-                self.street_word_index[word].append(street)
-        
-        # Índices para colonias
-        for colony in self.original_colonies:
-            normalized = self._normalize_text(colony)
-            self.normalized_colonies[normalized] = colony
-            
-            words = normalized.split()
-            for word in words:
-                if word not in self.colony_word_index:
-                    self.colony_word_index[word] = []
-                self.colony_word_index[word].append(colony)
-        
-        print(f"✅ [OPTIMIZER] Índices listos: {len(self.normalized_streets)} calles, {len(self.normalized_colonies)} colonias")
-    
-    def find_closest_street(self, input_text):
-        """🚀 Encuentra la calle más parecida"""
-        return self._find_closest_item(input_text, self.normalized_streets, self.street_word_index)
-    
-    def find_closest_colony(self, input_text):
-        """🚀 NUEVO: Encuentra la colonia más parecida"""
-        return self._find_closest_item(input_text, self.normalized_colonies, self.colony_word_index)
-    
-    def _find_closest_item(self, input_text, normalized_dict, word_index):
-        """🚀 Lógica genérica para buscar calles o colonias"""
-        if not input_text or len(input_text.strip()) < 2:
-            return None, 0
-        
-        input_clean = self._normalize_text(input_text)
-        
-        # 1. ⚡ Búsqueda exacta
-        if input_clean in normalized_dict:
-            return normalized_dict[input_clean], 1.0
-        
-        # 2. ⚡ Búsqueda por palabras clave
-        input_words = input_clean.split()
-        candidates = set()
-        
-        for word in input_words:
-            if word in word_index:
-                candidates.update(word_index[word])
-        
-        if candidates:
-            best_match = None
-            best_score = 0
-            
-            for candidate in candidates:
-                candidate_normalized = self._normalize_text(candidate)
-                similarity = difflib.SequenceMatcher(None, input_clean, candidate_normalized).ratio()
-                
-                if similarity > best_score:
-                    best_score = similarity
-                    best_match = candidate
-            
-            if best_match and best_score >= 0.6:
-                return best_match, best_score
-        
-        # 3. ⚡ Fuzzy matching completo
-        normalized_list = list(normalized_dict.keys())
-        close_matches = difflib.get_close_matches(input_clean, normalized_list, n=1, cutoff=0.6)
-        
-        if close_matches:
-            matched_normalized = close_matches[0]
-            original_item = normalized_dict[matched_normalized]
-            similarity = difflib.SequenceMatcher(None, input_clean, matched_normalized).ratio()
-            return original_item, similarity
-        
-        return None, 0
-    
 def validate_street_exists(street_name):
-    """🚀 Validación de calles"""
+    """Validación neutra de calle sin catálogo geográfico fijo."""
     if not street_name:
         return False, "No se proporcionó nombre de calle"
-    
-    closest_street, similarity = find_closest_street(street_name)
-    
-    if closest_street and similarity >= 0.9:
-        return True, f"Calle válida: {closest_street}"
-    elif closest_street and similarity >= 0.7:
-        return True, f"Calle similar: {closest_street} (verifica ortografía)"
-    else:
-        return False, f"Calle '{street_name}' no encontrada en San Pedro"
-        
-    
+    if len(street_name.strip()) >= 3:
+        return True, f"Calle capturada: {street_name.strip()}"
+    return False, f"Calle inválida: {street_name}"
+
+
 def validate_colony_exists(colony_name):
-    """🚀 NUEVO: Validación de colonias"""
+    """Validación neutra de colonia sin catálogo geográfico fijo."""
     if not colony_name:
         return False, "No se proporcionó nombre de colonia"
-    
-    closest_colony, similarity = find_closest_colony(colony_name)
-    
-    if closest_colony and similarity >= 0.9:
-        return True, f"Colonia válida: {closest_colony}"
-    elif closest_colony and similarity >= 0.7:
-        return True, f"Colonia similar: {closest_colony} (verifica ortografía)"
-    else:
-        return False, f"Colonia '{colony_name}' no encontrada en San Pedro"
+    if len(colony_name.strip()) >= 3:
+        return True, f"Colonia capturada: {colony_name.strip()}"
+    return False, f"Colonia inválida: {colony_name}"
 
-# ===============================================================
-# CREAR INSTANCIA GLOBAL (una sola vez al iniciar)
-# ===============================================================
-streets_and_colonies_optimizer = StreetsAndColoniesOptimizer()
-
-# ===============================================================
-# FUNCIONES WRAPPER PARA USO FÁCIL
-# ===============================================================
 
 def find_closest_street(input_text):
-    """🚀 Wrapper optimizado - Tiempo: <1ms"""
-    return streets_and_colonies_optimizer.find_closest_street(input_text)
+    """Compatibilidad: devuelve el mismo texto como candidato."""
+    if not input_text or len(input_text.strip()) < 3:
+        return None, 0
+    return input_text.strip().title(), 1.0
 
 
 def find_closest_colony(input_text):
-    """🚀 Wrapper optimizado para colonias - Tiempo: <1ms"""
-    return streets_and_colonies_optimizer.find_closest_colony(input_text)
+    """Compatibilidad: devuelve el mismo texto como candidato."""
+    if not input_text or len(input_text.strip()) < 3:
+        return None, 0
+    return input_text.strip().title(), 1.0
+
 
 def detect_and_store_user_data_with_real_streets_and_colonies(from_number: str, body: str):
     """
-    🚀 VERSIÓN CORREGIDA Y OPTIMIZADA: Usa arrays importados y patrones flexibles
+    Detección neutra de datos de ubicación sin catálogos de San Pedro.
     """
-    logger.critical(f"🔍 [REAL STREETS] Analizando: {from_number} - '{body[:50]}...'")
-    
+    logger.critical(f"🔍 [GENERIC ADDRESS] Analizando: {from_number} - '{body[:50]}...'")
+
     body_lower = body.lower()
     saved_fields = []
-    
-    # ===============================================================
-    # 1. DETECCIÓN DE CALLES CON OPTIMIZACIÓN MEJORADA
-    # ===============================================================
-    
-    street_patterns_real = [
-        # Patrones específicos (mantener los existentes)
-        r"(?i)(?:está|esta|ubicad[oa]?)\s+en\s+([a-záéíóúñ\s\d]+?)(?:\s+(?:cruz|esquina|y)\s+con\s+([a-záéíóúñ\s]+?))?(?:\s|,|$)",
-        r"(?i)en\s+(?:la\s+)?calle\s+([a-záéíóúñ\s\d]+?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
-        r"(?i)sobre\s+([a-záéíóúñ\s\d]+?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
-        r"(?i)(?:en|de)\s+([a-záéíóúñ\s\d]{4,}?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
-        
-        # 🚀 NUEVOS PATRONES MÁS FLEXIBLES
-        # Capturar nombres propios que podrían ser calles (2-3 palabras capitalizadas)
-        r"(?i)\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})\b",
-        
-        # Capturar después de "en" sin requerir "calle" (más flexible)
-        r"(?i)(?:^|\s)en\s+([a-záéíóúñ\s\d]{3,20})(?:\s+(?:número|#|\d)|,|$)",
-        
-        # Capturar nombres al inicio del mensaje
-        r"(?i)^([a-záéíóúñ\s\d]{3,25})(?:\s+(?:número|#|\d)|,)",
-        
-        # Capturar entre comas (formato común: "calle, número, colonia")
-        r"(?i)(?:^|,\s*)([a-záéíóúñ\s\d]{3,25})(?=\s*,|\s*\d|\s*$)",
+
+    street_patterns = [
+        r"(?i)(?:está|esta|ubicad[oa]?)\s+en\s+([a-záéíóúñ0-9\s#\-\.]+?)(?:\s+(?:cruz|esquina|y)\s+con\s+([a-záéíóúñ0-9\s#\-\.]+?))?(?:\s|,|$)",
+        r"(?i)en\s+(?:la\s+)?calle\s+([a-záéíóúñ0-9\s#\-\.]+?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
+        r"(?i)sobre\s+([a-záéíóúñ0-9\s#\-\.]+?)(?:\s+(?:cruz|esquina|y|número|#|\d)|,|$)",
+        r"(?i)^([a-záéíóúñ0-9\s#\-\.]{4,30})(?:\s*,\s*|\s+(?:número|#|\d))",
     ]
-    
-    # Lista de palabras que NO son calles (filtros mejorados)
+
     excluded_street_words = [
-        "problema", "reporte", "tengo", "hay", "está", "esta", "es", "son",
-        "muy", "poco", "mucho", "todo", "nada", "algo", "aquí", "ahí", "allí",
-        "buenos", "días", "tardes", "noches", "hola", "gracias", "por", "favor",
-        "quiero", "necesito", "puedo", "debo", "voy", "vamos", "hacer", "decir",
-        "colonia", "col", "número", "casa", "edificio", "piso", "departamento"
+        "problema", "reporte", "tengo", "hay", "esta", "está", "hola", "gracias",
+        "colonia", "numero", "número", "departamento", "edificio"
     ]
-    
-    for pattern in street_patterns_real:
+
+    for pattern in street_patterns:
         match = re.search(pattern, body)
         if match:
             street_candidate = match.group(1).strip()
-            
-            # Filtrar palabras excluidas
-            if (len(street_candidate) >= 3 and 
+            if (len(street_candidate) >= 3 and
                 not any(excluded in street_candidate.lower() for excluded in excluded_street_words)):
-                
-                # 🚀 Búsqueda optimizada con threshold más permisivo
-                closest_street, similarity = find_closest_street(street_candidate)
-                
-                if closest_street and similarity >= 0.6:  # Reducido de 0.7 a 0.6
-                    save_user_answer(from_number, "selection5", closest_street)
-                    saved_fields.append(("selection5", f"{closest_street} (sim: {similarity:.2f})"))
-                    logger.critical(f"💾 [REAL STREET] '{street_candidate}' → '{closest_street}' (sim: {similarity:.2f})")
-                    
-                    # Si hay "cruz con" detectar la segunda calle
-                    if len(match.groups()) > 1 and match.group(2):
-                        cross_street = match.group(2).strip()
-                        closest_cross, cross_similarity = find_closest_street(cross_street)
-                        
-                        if closest_cross and cross_similarity >= 0.5:  # Threshold más bajo para cruce
-                            enhanced_street = f"{closest_street} cruz con {closest_cross}"
-                            save_user_answer(from_number, "selection5", enhanced_street)
-                            saved_fields[-1] = ("selection5", enhanced_street)
-                            logger.critical(f"💾 [CROSS STREET] + '{closest_cross}' → '{enhanced_street}'")
-                    break
-                else:
-                    # 🆕 Si no encuentra coincidencia exacta, guardar como candidato si parece válido
-                    if (len(street_candidate) >= 4 and 
-                        street_candidate.replace(" ", "").replace("-", "").isalpha() and
-                        any(char.isupper() for char in street_candidate)):  # Tiene mayúsculas (nombre propio)
-                        
-                        save_user_answer(from_number, "selection5", street_candidate.title())
-                        saved_fields.append(("selection5", f"{street_candidate.title()} (candidato)"))
-                        logger.critical(f"💾 [STREET CANDIDATE] '{street_candidate}' guardado como candidato")
-                        break
-                    else:
-                        logger.warning(f"⚠️ [STREET NOT FOUND] '{street_candidate}' no encontrada (sim: {similarity:.2f})")
-    
-    # ===============================================================
-    # 2. DETECCIÓN DE COLONIAS - USANDO ARRAY IMPORTADO Y find_closest_colony
-    # ===============================================================
-    
-    colony_patterns_real = [
-        # Patrones específicos existentes
+                street_value = street_candidate.title()
+                if len(match.groups()) > 1 and match.group(2):
+                    street_value = f"{street_value} cruz con {match.group(2).strip().title()}"
+                save_user_answer(from_number, "selection5", street_value)
+                saved_fields.append(("selection5", street_value))
+                logger.critical(f"💾 [GENERIC STREET] '{street_candidate}'")
+                break
+
+    colony_patterns = [
         r"(?i)colonia\s+([a-záéíóúñ\s]+?)(?:\s|,|$)",
         r"(?i),\s*(?:colonia|col\.?)\s+([a-záéíóúñ\s]+?)(?:\s|$)",
-        
-        # 🚀 USAR EL ARRAY IMPORTADO SAN_PEDRO_COLONIES dinámicamente
-        r"(?i)\b(" + "|".join([col.lower() for col in SAN_PEDRO_COLONIES]) + r")\b",
-        
-        # 🚀 NUEVOS PATRONES MÁS FLEXIBLES
-        # Capturar después de coma (segundo elemento común en direcciones)
         r"(?i).*,\s*([a-záéíóúñ\s]{4,25})$",
-        
-        # Capturar nombres propios que podrían ser colonias
-        r"(?i)\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)\b(?=\s*$)",
-        
-        # Capturar palabras que terminan en patrones típicos de colonias
-        r"(?i)\b([a-záéíóúñ\s]*(?:centro|valle|lomas|bosques|jardines|residencial|colonial|heights|park|fraccionamiento))\b",
+        r"(?i)\b([a-záéíóúñ\s]*(?:centro|valle|lomas|bosques|jardines|residencial|colonial|fraccionamiento))\b",
     ]
-    
-    # Lista de palabras que NO son colonias
+
     excluded_colony_words = [
         "problema", "reporte", "calle", "avenida", "número", "casa", "edificio",
         "piso", "departamento", "oficina", "local", "negocio", "tienda", "tengo",
         "hay", "está", "esta", "buenos", "días", "hola", "gracias"
     ]
-    
-    for pattern in colony_patterns_real:
+
+    for pattern in colony_patterns:
         match = re.search(pattern, body)
         if match:
             colony_candidate = match.group(1).strip() if match.group(1) else match.group(0).strip()
-            
-            # Filtrar palabras excluidas
-            if (len(colony_candidate) >= 3 and 
+            if (len(colony_candidate) >= 3 and
                 not any(excluded in colony_candidate.lower() for excluded in excluded_colony_words)):
-                
-                # 🚀 USAR find_closest_colony con threshold permisivo
-                closest_colony, similarity = find_closest_colony(colony_candidate)
-                
-                if closest_colony and similarity >= 0.6:  # Threshold permisivo
-                    save_user_answer(from_number, "selection7", closest_colony)
-                    saved_fields.append(("selection7", f"{closest_colony} (sim: {similarity:.2f})"))
-                    logger.critical(f"💾 [REAL COLONY] '{colony_candidate}' → '{closest_colony}' (sim: {similarity:.2f})")
-                    break
-                else:
-                    # 🆕 Verificar si es una colonia conocida directamente del array
-                    is_known_colony = any(known.lower() in colony_candidate.lower() for known in SAN_PEDRO_COLONIES)
-                    
-                    if is_known_colony or (len(colony_candidate) >= 4 and 
-                                         colony_candidate.replace(" ", "").isalpha()):
-                        save_user_answer(from_number, "selection7", colony_candidate.title())
-                        saved_fields.append(("selection7", f"{colony_candidate.title()} (candidato)"))
-                        logger.critical(f"💾 [COLONY CANDIDATE] '{colony_candidate.title()}' guardado como candidato")
-                        break
-                    else:
-                        logger.warning(f"⚠️ [COLONY NOT FOUND] '{colony_candidate}' no encontrada (sim: {similarity:.2f})")
-    
-    # ===============================================================
-    # 3. DETECCIÓN DIRECTA POR PALABRAS CLAVE (NUEVO)
-    # ===============================================================
-    
-    # 🚀 Búsqueda directa sin patrones regex para casos simples
-    body_words = body_lower.split()
-    
-    # Buscar calles directamente en las palabras
-    if not any("selection5" in field[0] for field in saved_fields):  # Solo si no se encontró calle
-        for word in body_words:
-            if len(word) >= 4:  # Palabras de al menos 4 caracteres
-                closest_street, similarity = find_closest_street(word)
-                if closest_street and similarity >= 0.8:  # Threshold alto para búsqueda directa
-                    save_user_answer(from_number, "selection5", closest_street)
-                    saved_fields.append(("selection5", f"{closest_street} (directo: {similarity:.2f})"))
-                    logger.critical(f"💾 [DIRECT STREET] '{word}' → '{closest_street}' (sim: {similarity:.2f})")
-                    break
-    
-    # Buscar colonias directamente en las palabras
-    if not any("selection7" in field[0] for field in saved_fields):  # Solo si no se encontró colonia
-        for word in body_words:
-            if len(word) >= 4:  # Palabras de al menos 4 caracteres
-                closest_colony, similarity = find_closest_colony(word)
-                if closest_colony and similarity >= 0.8:  # Threshold alto para búsqueda directa
-                    save_user_answer(from_number, "selection7", closest_colony)
-                    saved_fields.append(("selection7", f"{closest_colony} (directo: {similarity:.2f})"))
-                    logger.critical(f"💾 [DIRECT COLONY] '{word}' → '{closest_colony}' (sim: {similarity:.2f})")
-                    break
-    
-    # ===============================================================
-    # 4. OTROS CAMPOS (LÓGICA MEJORADA)
-    # ===============================================================
-    
+                colony_value = colony_candidate.title()
+                save_user_answer(from_number, "selection7", colony_value)
+                saved_fields.append(("selection7", colony_value))
+                logger.critical(f"💾 [GENERIC COLONY] '{colony_candidate}'")
+                break
+
     patterns = {
-        # Patrones existentes
         "selection2": r"(?i)(?:nombre\s*[:=]\s*|me\s+llamo\s+|soy\s+)([a-záéíóúñ\s]+?)(?:\s|,|$)",
         "selection4": r"(?i)(?:tipo\s*[:=]\s*|problema\s*[:=]?\s*|reporte\s*[:=]?\s*)([^\n,]+)",
         "selection6": r"(?i)(?:n[uú]mero\s*[:=]\s*|#\s*)(\d{1,5})\b",
-        
-        # 🚀 NUEVOS PATRONES MÁS FLEXIBLES
-        "selection2_alt": r"(?i)^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)",  # Nombre al inicio
-        "selection6_alt": r"(?i)\b(\d{1,4})\b(?!\d)",  # Cualquier número de 1-4 dígitos
+        "selection2_alt": r"(?i)^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)",
+        "selection6_alt": r"(?i)\b(\d{1,4})\b(?!\d)",
     }
 
     for selection_key, pattern in patterns.items():
-        # Limpiar el key (remover _alt si existe)
         clean_key = selection_key.replace("_alt", "")
-        
         matches = re.findall(pattern, body)
         for match in matches:
             value = match.strip()
-            
-            # Validaciones específicas
-            if clean_key == "selection2" and len(value) >= 2:  # Nombre válido
+            if clean_key == "selection2" and len(value) >= 2:
                 save_user_answer(from_number, clean_key, value.title())
                 saved_fields.append((clean_key, value.title()))
                 break
-            elif clean_key == "selection4" and len(value) >= 5:  # Descripción válida
+            elif clean_key == "selection4" and len(value) >= 5:
                 save_user_answer(from_number, clean_key, value)
                 saved_fields.append((clean_key, value))
                 break
-            elif clean_key == "selection6" and value.isdigit():  # Número válido
+            elif clean_key == "selection6" and value.isdigit():
                 num_val = int(value)
-                if 1 <= num_val <= 99999:
+                if 1 <= num_val <= 9999:
                     save_user_answer(from_number, clean_key, value)
                     saved_fields.append((clean_key, value))
                     break
-    
-    # ===============================================================
-    # 5. LOG DE RESULTADOS MEJORADO
-    # ===============================================================
-    
+
     if saved_fields:
         log_summary = "; ".join([f"{key}='{val}'" for key, val in saved_fields])
-        logger.critical(f"[{from_number}] ✅ CORREGIDO - Campos detectados: {log_summary}")
-        
-        # 🆕 Log adicional de estadísticas
-        logger.critical(f"[{from_number}] 📊 STATS - Total campos: {len(saved_fields)}, " +
-                       f"Arrays usados: SAN_PEDRO_COLONIES({len(SAN_PEDRO_COLONIES)} items)")
+        logger.critical(f"[{from_number}] ✅ GENERIC - Campos detectados: {log_summary}")
     else:
-        logger.debug(f"[{from_number}] ❌ CORREGIDO - No se detectó información válida en: {body.strip()}")
-        
-        # 🆕 Log de debug para entender por qué no se detectó nada
-        logger.debug(f"[{from_number}] 🔍 DEBUG - Palabras analizadas: {body_lower.split()[:10]}")  
+        logger.debug(f"[{from_number}] ❌ GENERIC - No se detectó información válida en: {body.strip()}")
 
-# ===============================================================
-# PERFORMANCE STATS (opcional para debug)
-# ===============================================================
 
 def detect_and_store_user_data(from_number: str, body: str):
     """
-    🚀 Wrapper que usa la versión optimizada con calles reales de San Pedro
+    Wrapper de detección neutra de datos.
     """
     return detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
 
+
 def get_streets_performance_stats():
-    """🚀 Stats de rendimiento del optimizador"""
+    """Stats neutras del detector genérico."""
     return {
-        "total_streets": len(streets_and_colonies_optimizer.original_streets),
-        "normalized_streets": len(streets_and_colonies_optimizer.normalized_streets),
-        "word_index_size": len(streets_and_colonies_optimizer.word_index),
-        "memory_efficient": True,
+        "mode": "generic",
+        "catalog_based": False,
         "avg_search_time_ms": "<1ms"
     }
 
@@ -1774,19 +1536,10 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
     try:
         logger.critical(f"🚀 [CREATING] Iniciando reporte {request_id}")
         
-        # LLAMAR A LA FUNCIÓN ORIGINAL
-        folio = await save_client_selection2(
+        folio = await create_local_report_folio(
             yoga_number=yoga_number,
-            selection1=selection1,
-            selection2=selection2,
-            selection3=selection3,
-            selection4=selection4,
-            selection5=selection5,
-            selection6=selection6,
-            selection7=selection7,
-            selection8=selection8,
+            selection_data=selection_data,
             images_list=images_list,
-            descriptions_list=descriptions_list
         )
         
         if folio and "Folio:" in folio:
@@ -1965,18 +1718,19 @@ async def save_client_selection_with_deduplication(yoga_number, selection1, sele
                    f"desc={selection4}, calle={selection5}, numero={selection6}, colonia={selection7}")
         logger.debug(f"Images: {len(images_list) if images_list else 0}")
 
-        folio = await save_client_selection2(
-            yoga_number=yoga_number, 
-            selection1=selection1, 
-            selection2=selection2, 
-            selection3=selection3,
-            selection4=selection4, 
-            selection5=selection5, 
-            selection6=selection6, 
-            selection7=selection7,
-            selection8=selection8, 
-            images_list=images_list,  # Asegúrate de que este parámetro se pase
-            descriptions_list=descriptions_list
+        selection_data = {
+            'selection1': selection1,
+            'selection2': selection2,
+            'selection3': selection3,
+            'selection4': selection4,
+            'selection5': selection5,
+            'selection6': selection6,
+            'selection7': selection7,
+        }
+        folio = await create_local_report_folio(
+            yoga_number=yoga_number,
+            selection_data=selection_data,
+            images_list=images_list,
         )
         
         # Registrar este reporte exitoso
@@ -3622,7 +3376,7 @@ async def whatsapp(request: Request):
 
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============
-        if from_number == SPECIAL_NUMBER:
+        if SPECIAL_NUMBER_ROUTING_ENABLED and from_number == SPECIAL_NUMBER:
             logger.critical(f"🚨 NÚMERO ESPECIAL DETECTADO ({SPECIAL_NUMBER}) - ENVIANDO A WEBHOOK")
             
             webhook_url = "https://n8n.evolutek.info/webhook/fd814da2-b597-40f6-9f64-e812c8551207"
@@ -5044,65 +4798,18 @@ async def whatsapp(request: Request):
 
                 # Si el mensaje queda vacío, usar uno genérico
                 if not clean_message or len(clean_message.strip()) < 10:
-                    clean_message = "Te voy a conectar con un agente humano que podrá ayudarte mejor. Un momento por favor."
+                    clean_message = "No cuento con esa información en este momento."
 
                 response_content = clean_message
                 logger.critical(f"🧹 MENSAJE LIMPIADO PARA USUARIO: {response_content}")
 
-                # 3. MARCAR COMO TRANSFERIDO
-                expiration_time = datetime.now().timestamp() + transfer_timeout
-                transferred_numbers[from_number] = expiration_time
-                logger.critical(f"📝 NÚMERO MARCADO COMO TRANSFERIDO: {from_number}")
-
-                # 4. EJECUTAR LA TRANSFERENCIA REAL
-                # try:
-                #     logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA PARA: {phone_to_transfer}")
-                #     result = await transfer_to_group(
-                #         phone_number=phone_to_transfer,
-                #         group_id=1772,  # Grupo fijo
-                #         reason="Transferencia automática por solicitud del LLM",
-                #         send_notification=True
-                #     )
-
-                try:
-                    # ✅ USAR DIRECTAMENTE EL message_id DEL PAYLOAD (ya lo tienes arriba)
-                    # No importa lo que venga en transfer_to_group() del LLM
-                    
-                    if not message_id:
-                        logger.error("❌ No se encontró message_id en el payload")
-                        response_content = "Error: No se pudo obtener el ID del mensaje"
-                    else:
-                        logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA:")
-                        logger.critical(f"🚀   - message_id: {message_id} (del payload)")
-                        logger.critical(f"🚀   - group_id: 1772 (fijo)")
-                        
-                        result = await transfer_to_group(
-                            message_id=message_id,  # ✅ DEL PAYLOAD - SIEMPRE CORRECTO
-                            group_id=1772,          # ✅ FIJO - SIEMPRE CORRECTO
-                            reason="Transferencia automática por LLM sin conocimiento"
-                        )
-
-                        logger.critical(f"✅ RESULTADO: {result}")
-
-                        # Registrar en base de datos
-                        transfer_note = Message(
-                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            senderName="System",
-                            message=f"[SYSTEM] Transferencia automática ejecutada - message_id: {message_id}",
-                            number=from_number,
-                            uid=f"auto-transfer-{datetime.now().timestamp()}",
-                            direction="system",
-                            mtype="text",
-                            source="whatsapp"
-                        )
-                        db.Insert(transfer_note)
-
-                except Exception as transfer_error:
-                    logger.error(f"❌ ERROR EJECUTANDO TRANSFERENCIA: {str(transfer_error)}")
-                    # Si falla la transferencia, quitar de la lista de transferidos
-                    if from_number in transferred_numbers:
-                        del transferred_numbers[from_number]
-                    response_content = "Estoy teniendo problemas técnicos para conectarte. Por favor, intenta contactar directamente a atención ciudadana."
+                if HUMAN_HANDOFF_ENABLED:
+                    logger.warning("⚠️ [HANDOFF] La ruta de transferencia sigue habilitada")
+                else:
+                    logger.critical(
+                        f"🏫 [HANDOFF DISABLED] Transferencia humana omitida para {from_number}"
+                    )
+                    response_content = "No cuento con esa información en este momento."
             
             # Check if it's a hangup or farewell
             elif any(p in response_content for p in ["functions.hangup", "call_sid ="]):

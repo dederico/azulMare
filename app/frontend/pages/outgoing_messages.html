@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mensajes Proactivos</title>
+  <title>Mensajes Institucionales</title>
   <style>
     :root {
       --bg: #f6f5f0;
@@ -166,8 +166,8 @@
 <body>
   <div class="wrap">
     <div class="panel">
-      <h1>Mensajes Proactivos</h1>
-      <p class="lead">Crea listas de destinatarios con el criterio operativo que necesites, redacta el mensaje y deja lista la campaña para envío manual o programado.</p>
+      <h1>Mensajes Institucionales</h1>
+      <p class="lead">Crea listas de destinatarios, redacta avisos del colegio y deja lista cada campaña para envío manual o programado.</p>
 
       {% if error %}
       <div class="notice error">{{ error }}</div>
@@ -178,7 +178,7 @@
       {% endif %}
 
       {% if not authenticated %}
-      <form method="POST" action="/admin/ciac/mensajes-proactivos">
+      <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales">
         <input type="hidden" name="action" value="login">
         <div class="field">
           <label for="username">Usuario</label>
@@ -193,17 +193,17 @@
         </div>
       </form>
       {% else %}
-      <form method="POST" action="/admin/ciac/mensajes-proactivos">
+      <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales">
         <input type="hidden" name="action" value="create">
         <div class="grid">
           <div class="field">
             <label for="campaign_name">Nombre de la campaña</label>
-            <input id="campaign_name" name="campaign_name" type="text" placeholder="ejemplo: aviso_bache_k1_mayo" value="{{ form_data.get('campaign_name', '') }}" required>
+            <input id="campaign_name" name="campaign_name" type="text" placeholder="ejemplo: aviso_reunion_padres_junio" value="{{ form_data.get('campaign_name', '') }}" required>
             <div class="hint">Usa un nombre corto para identificar esta campaña dentro del sistema.</div>
           </div>
           <div class="field">
             <label for="audience_name">Nombre de la lista o segmento</label>
-            <input id="audience_name" name="audience_name" type="text" placeholder="ejemplo: vecinos K1 zona norte" value="{{ form_data.get('audience_name', '') }}" required>
+            <input id="audience_name" name="audience_name" type="text" placeholder="ejemplo: padres de familia secundaria" value="{{ form_data.get('audience_name', '') }}" required>
             <div class="hint">Describe aquí el grupo de personas que recibirán el mensaje.</div>
           </div>
           <div class="field">
@@ -213,7 +213,7 @@
           </div>
           <div class="field">
             <label for="created_by">Responsable de la campaña</label>
-            <input id="created_by" name="created_by" type="text" placeholder="ejemplo: Atención Ciudadana" value="{{ form_data.get('created_by', '') }}">
+            <input id="created_by" name="created_by" type="text" placeholder="ejemplo: Colegio Militarizado" value="{{ form_data.get('created_by', '') }}">
             <div class="hint">Opcional. Sirve para saber quién dejó preparada la campaña.</div>
           </div>
           <div class="field full">
@@ -222,8 +222,8 @@
           </div>
           <div class="field full">
             <label for="recipients_text">Lista de destinatarios</label>
-            <textarea id="recipients_text" name="recipients_text" placeholder="Una persona por línea. Ejemplo: Nombre: Juan Pérez Número:+528188888888 K:1&#10;Nombre: María López Número:+528177777777 K:2" required>{{ form_data.get('recipients_text', '') }}</textarea>
-            <div class="hint">Cada línea debe incluir por lo menos el nombre y el número. Puedes agregar más datos como K, colonia, calle o cualquier otro criterio en formato <strong>Campo: valor</strong>.</div>
+            <textarea id="recipients_text" name="recipients_text" placeholder="Una persona por línea. Ejemplo: Nombre: Juan Pérez Número:+528188888888 Grado: 1A&#10;Nombre: María López Número:+528177777777 Matrícula: 240015" required>{{ form_data.get('recipients_text', '') }}</textarea>
+            <div class="hint">Cada línea debe incluir por lo menos el nombre y el número. Puedes agregar más datos como grado, grupo, matrícula o cualquier otro criterio en formato <strong>Campo: valor</strong>.</div>
           </div>
         </div>
         <div class="actions">
@@ -231,7 +231,7 @@
         </div>
       </form>
 
-      <form method="POST" action="/admin/ciac/mensajes-proactivos" style="margin-top: 14px;">
+      <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales" style="margin-top: 14px;">
         <input type="hidden" name="action" value="logout">
         <div class="actions">
           <button class="secondary" type="submit">Salir</button>
@@ -258,7 +258,7 @@
           </div>
           {% endif %}
           <div>{{ campaign.message }}</div>
-          <form method="POST" action="/admin/ciac/mensajes-proactivos" style="margin-top: 12px;">
+          <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales" style="margin-top: 12px;">
             <input type="hidden" name="action" value="send_now">
             <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
             <div class="actions">

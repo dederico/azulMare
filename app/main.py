@@ -2,6 +2,7 @@ import os
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from urllib.parse import quote
 from app.util.database import LocalStorage
 from app.util.logger import logger
@@ -50,6 +51,20 @@ async def app_lifespan(app_instance: FastAPI):
 
 logger.info("[BOOT] Creando instancia FastAPI")
 app = FastAPI(title=APP_NAME, version="0.1.0", lifespan=app_lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://colegiomilitarizadonl.com",
+        "https://www.colegiomilitarizadonl.com",
+        "http://localhost:4321",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 logger.info("[BOOT] Montando archivos estáticos")
 app.mount("/static", StaticFiles(directory="app/frontend/static"), name="static")
 

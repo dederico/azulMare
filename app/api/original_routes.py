@@ -630,28 +630,50 @@ async def send_wati_message_direct(phone_number, text):
             recent_direct_message_keys.remove(dedup_key)
         return False
 
-    headers_variants = [
-        {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
-        {"Authorization": api_token, "Content-Type": "application/json"},
-    ]
-    body_variants = [
-        {"json": {"messageText": text}},
-        {"json": {"text": text}},
-        {"params": {"messageText": text}},
-    ]
-
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            for headers in headers_variants:
-                for payload_variant in body_variants:
-                    response = await client.post(endpoint, headers=headers, **payload_variant)
-                    logger.info(
-                        f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
-                        f"body_keys={list(payload_variant.keys())} response={response.text[:300]}"
-                    )
-                    if 200 <= response.status_code < 300:
-                        logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
-                        return True
+            request_variants = [
+                {
+                    "label": "bearer-form",
+                    "headers": {"Authorization": f"Bearer {api_token}"},
+                    "data": {"messageText": text},
+                },
+                {
+                    "label": "token-form",
+                    "headers": {"Authorization": api_token},
+                    "data": {"messageText": text},
+                },
+                {
+                    "label": "bearer-urlencoded",
+                    "headers": {
+                        "Authorization": f"Bearer {api_token}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    "data": {"messageText": text},
+                },
+                {
+                    "label": "token-urlencoded",
+                    "headers": {
+                        "Authorization": api_token,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    "data": {"messageText": text},
+                },
+            ]
+
+            for request_variant in request_variants:
+                response = await client.post(
+                    endpoint,
+                    headers=request_variant["headers"],
+                    data=request_variant["data"],
+                )
+                logger.info(
+                    f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
+                    f"variant={request_variant['label']} response={response.text[:300]}"
+                )
+                if 200 <= response.status_code < 300:
+                    logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
+                    return True
     except Exception as e:
         logger.error(f"❌ [WATI] Error enviando mensaje directo: {str(e)}")
 

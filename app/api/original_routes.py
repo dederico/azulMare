@@ -559,6 +559,106 @@ async def send_chat2desk_message_direct(client_id, channel_id, text, transport="
             recent_direct_message_keys.remove(dedup_key)
         return False
 
+def detect_whatsapp_provider(payload):
+    if isinstance(payload, dict) and payload.get("waId") and payload.get("eventType"):
+        return "wati"
+    return "chat2desk"
+
+
+def normalize_wati_payload(payload):
+    raw_type = (payload.get("type") or "").lower()
+    is_inbound_message = (
+        payload.get("owner") is False
+        and payload.get("eventType") == "message"
+        and raw_type in {"text", "image", "audio", "document", "video", "sticker", "button", "interactive"}
+    )
+
+    from_number = payload.get("waId")
+    sender_name = payload.get("senderName") or from_number or "Usuario"
+
+    normalized_payload = dict(payload)
+    normalized_payload["_provider"] = "wati"
+    normalized_payload["_wati_payload"] = dict(payload)
+    normalized_payload["chat_id"] = payload.get("conversationId")
+    normalized_payload["client"] = {
+        "phone": from_number,
+        "name": sender_name,
+        "id": payload.get("conversationId") or from_number,
+    }
+    normalized_payload["text"] = payload.get("text") or ""
+    normalized_payload["type"] = "from_client" if is_inbound_message else "wati_ignored"
+    normalized_payload["message_id"] = payload.get("id") or payload.get("whatsappMessageId") or ""
+    normalized_payload["client_id"] = payload.get("conversationId") or from_number
+    normalized_payload["channel_id"] = payload.get("channelId") or payload.get("channelPhoneNumber")
+    normalized_payload["hook_type"] = "wati"
+    normalized_payload["operator_id"] = payload.get("assignedId")
+    normalized_payload["transport"] = "wa_direct"
+    normalized_payload["request_id"] = payload.get("ticketId") or payload.get("id")
+    return normalized_payload
+
+
+async def send_wati_message_direct(phone_number, text):
+    normalized_text = re.sub(r"\s+", " ", (text or "").strip())
+    dedup_key = None
+    if normalized_text:
+        dedup_key = f"wati:{phone_number}:{normalized_text}"
+        if recent_direct_message_keys.contains(dedup_key):
+            logger.warning(f"🚫 [WATI DIRECT DEDUP] Mensaje directo duplicado bloqueado: {normalized_text[:80]}...")
+            return False
+        recent_direct_message_keys.add(dedup_key)
+
+    api_token = os.getenv("WATI_API_TOKEN")
+    endpoint_template = os.getenv("WATI_SEND_MESSAGE_URL_TEMPLATE")
+    base_url = (os.getenv("WATI_API_BASE_URL") or "").rstrip("/")
+    tenant_id = os.getenv("WATI_TENANT_ID")
+
+    if endpoint_template:
+        endpoint = endpoint_template.format(phone=phone_number)
+    elif base_url:
+        endpoint = f"{base_url}/sendSessionMessage/{phone_number}"
+    elif tenant_id:
+        endpoint = f"https://live.wati.io/{tenant_id}/api/v1/sendSessionMessage/{phone_number}"
+    else:
+        logger.error("❌ [WATI] Falta configuración WATI_API_TOKEN y/o WATI_API_BASE_URL/WATI_SEND_MESSAGE_URL_TEMPLATE/WATI_TENANT_ID")
+        if dedup_key:
+            recent_direct_message_keys.remove(dedup_key)
+        return False
+
+    if not api_token:
+        logger.error("❌ [WATI] Falta WATI_API_TOKEN para enviar respuesta")
+        if dedup_key:
+            recent_direct_message_keys.remove(dedup_key)
+        return False
+
+    headers_variants = [
+        {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
+        {"Authorization": api_token, "Content-Type": "application/json"},
+    ]
+    body_variants = [
+        {"json": {"messageText": text}},
+        {"json": {"text": text}},
+        {"params": {"messageText": text}},
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for headers in headers_variants:
+                for payload_variant in body_variants:
+                    response = await client.post(endpoint, headers=headers, **payload_variant)
+                    logger.info(
+                        f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
+                        f"body_keys={list(payload_variant.keys())} response={response.text[:300]}"
+                    )
+                    if 200 <= response.status_code < 300:
+                        logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
+                        return True
+    except Exception as e:
+        logger.error(f"❌ [WATI] Error enviando mensaje directo: {str(e)}")
+
+    if dedup_key:
+        recent_direct_message_keys.remove(dedup_key)
+    return False
+
 async def send_chat2desk_image_direct(client_id, channel_id, image_url, transport="wa_direct"):
     """
     VERSIÓN CORREGIDA según documentación Chat2Desk
@@ -3345,6 +3445,12 @@ async def whatsapp(request: Request):
     
     try:
         payload = await request.json()  # Recibimos el payload como JSON
+        provider = detect_whatsapp_provider(payload)
+        if provider == "wati":
+            payload = normalize_wati_payload(payload)
+        else:
+            payload["_provider"] = "chat2desk"
+
         print(f"Payload recibido: {payload}")
         #reply_context = extract_reply_context(payload)
 
@@ -3365,7 +3471,7 @@ async def whatsapp(request: Request):
         transport = payload.get('transport', 'wa_direct')  # Extract transport: wa_direct or widget
         request_id = payload.get('request_id')
 
-        if transport == 'widget':
+        if provider == "chat2desk" and transport == 'widget':
             log_widget_request_metadata(request)
             should_block, widget_guard_metadata = evaluate_widget_abuse(payload)
             if should_block:
@@ -4721,7 +4827,7 @@ async def whatsapp(request: Request):
         return JSONResponse(content={"error": f"Error al generar respuesta: {str(e)}"}, status_code=500)
     
     
-    # Enviar la respuesta a través de Chat2Desk
+    # Enviar la respuesta a través del mismo proveedor por el que entró
     current_time = datetime.now().timestamp()
 
     # Verificar si ya se envió una respuesta a este número recientemente 
@@ -4736,14 +4842,6 @@ async def whatsapp(request: Request):
     last_response_time[from_number] = current_time
 
     try:
-        api_token = os.getenv("CHAT2DESK_API_TOKEN")
-        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-        
-        headers = {
-            "Authorization": api_token,
-            "Content-Type": "application/json"
-        }
-        
         # Check if the response contains phrases that could trigger finalization
         blocked_phrases = [
                 "ya terminé", "ya termine", "listo", "finalizar reporte", 
@@ -4819,56 +4917,73 @@ async def whatsapp(request: Request):
             else:
                 response_content = "Estoy procesando tu solicitud. Dame un momento por favor."
 
-        data = {
-            "client_id": client_id,
-            "channel_id": channel_id,
-            "transport": transport,
-            "text": response_content
-        }
-        
-        # Envío robusto con manejo de errores específicos
-        response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
-        
-        if response.status_code == 200:
-            response_data = response.json()
-            if response_data.get("status") == "success":
-                logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
-                content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
+        if provider == "wati":
+            sent = await send_wati_message_direct(from_number, response_content)
+            if sent:
+                logger.debug(f"Respuesta enviada exitosamente a Wati para {from_number}")
+                content = {"status": True, "message": "Respuesta enviada por Wati"}
             else:
-                logger.error(f"Error en respuesta Chat2Desk: {response_data}")
-                content = {"status": False, "error": "Error en la respuesta de Chat2Desk"}
-                
-        elif response.status_code == 400:
-            # Manejar errores específicos de cliente
-            try:
-                error_data = response.json()
-                errors = error_data.get("errors", {})
-                client_errors = errors.get("client_id", [])
-                
-                # Cliente bloqueado
-                if any("blocked" in str(error).lower() for error in client_errors):
-                    logger.warning(f"Cliente {from_number} está bloqueado en Chat2Desk")
-                    content = {"status": True, "message": "Cliente bloqueado - no se envió mensaje"}
-                    
-                # Cliente no existe  
-                elif any("does not exist" in str(error) for error in client_errors):
-                    logger.warning(f"Cliente {from_number} no existe en Chat2Desk")
-                    content = {"status": False, "error": "Cliente no existe"}
-                else:
-                    logger.error(f"Error 400 no manejado: {error_data}")
-                    content = {"status": False, "error": f"Error 400: {str(error_data)[:100]}"}
-                    
-            except json.JSONDecodeError:
-                logger.error(f"Error 400 - respuesta no JSON: {response.text}")
-                content = {"status": False, "error": "Error 400 - respuesta inválida"}
-                
-        elif response.status_code == 429:
-            logger.warning(f"Rate limit en Chat2Desk para {from_number}")
-            content = {"status": False, "error": "Rate limit - reintenta más tarde"}
-            
+                logger.error(f"Error enviando respuesta por Wati a {from_number}")
+                content = {"status": False, "error": "Error enviando respuesta por Wati"}
         else:
-            logger.error(f"Error HTTP {response.status_code}: {response.text}")
-            content = {"status": False, "error": f"Error HTTP {response.status_code}"}
+            api_token = os.getenv("CHAT2DESK_API_TOKEN")
+            chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+            
+            headers = {
+                "Authorization": api_token,
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "client_id": client_id,
+                "channel_id": channel_id,
+                "transport": transport,
+                "text": response_content
+            }
+            
+            # Envío robusto con manejo de errores específicos
+            response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                if response_data.get("status") == "success":
+                    logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
+                    content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
+                else:
+                    logger.error(f"Error en respuesta Chat2Desk: {response_data}")
+                    content = {"status": False, "error": "Error en la respuesta de Chat2Desk"}
+                    
+            elif response.status_code == 400:
+                # Manejar errores específicos de cliente
+                try:
+                    error_data = response.json()
+                    errors = error_data.get("errors", {})
+                    client_errors = errors.get("client_id", [])
+                    
+                    # Cliente bloqueado
+                    if any("blocked" in str(error).lower() for error in client_errors):
+                        logger.warning(f"Cliente {from_number} está bloqueado en Chat2Desk")
+                        content = {"status": True, "message": "Cliente bloqueado - no se envió mensaje"}
+                        
+                    # Cliente no existe  
+                    elif any("does not exist" in str(error) for error in client_errors):
+                        logger.warning(f"Cliente {from_number} no existe en Chat2Desk")
+                        content = {"status": False, "error": "Cliente no existe"}
+                    else:
+                        logger.error(f"Error 400 no manejado: {error_data}")
+                        content = {"status": False, "error": f"Error 400: {str(error_data)[:100]}"}
+                        
+                except json.JSONDecodeError:
+                    logger.error(f"Error 400 - respuesta no JSON: {response.text}")
+                    content = {"status": False, "error": "Error 400 - respuesta inválida"}
+                    
+            elif response.status_code == 429:
+                logger.warning(f"Rate limit en Chat2Desk para {from_number}")
+                content = {"status": False, "error": "Rate limit - reintenta más tarde"}
+                
+            else:
+                logger.error(f"Error HTTP {response.status_code}: {response.text}")
+                content = {"status": False, "error": f"Error HTTP {response.status_code}"}
             
     except requests.Timeout:
         logger.error(f"Timeout enviando mensaje a {from_number}")

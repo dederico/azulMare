@@ -597,7 +597,7 @@ def normalize_wati_payload(payload):
     return normalized_payload
 
 
-async def send_wati_message_direct(phone_number, text):
+async def send_wati_message_direct(phone_number, text, channel_phone_number=None, reply_context_id=None):
     normalized_text = re.sub(r"\s+", " ", (text or "").strip())
     dedup_key = None
     if normalized_text:
@@ -613,11 +613,11 @@ async def send_wati_message_direct(phone_number, text):
     tenant_id = os.getenv("WATI_TENANT_ID")
 
     if endpoint_template:
-        endpoint = endpoint_template.format(phone=phone_number)
+        endpoint = endpoint_template.format(phone=phone_number, tenant_id=tenant_id or "")
     elif base_url:
         endpoint = f"{base_url}/sendSessionMessage/{phone_number}"
     elif tenant_id:
-        endpoint = f"https://live.wati.io/{tenant_id}/api/v1/sendSessionMessage/{phone_number}"
+        endpoint = f"https://live-mt-server.wati.io/{tenant_id}/api/v1/sendSessionMessage/{phone_number}"
     else:
         logger.error("❌ [WATI] Falta configuración WATI_API_TOKEN y/o WATI_API_BASE_URL/WATI_SEND_MESSAGE_URL_TEMPLATE/WATI_TENANT_ID")
         if dedup_key:
@@ -630,50 +630,34 @@ async def send_wati_message_direct(phone_number, text):
             recent_direct_message_keys.remove(dedup_key)
         return False
 
+    if not channel_phone_number:
+        logger.error("❌ [WATI] Falta channelPhoneNumber para enviar respuesta")
+        if dedup_key:
+            recent_direct_message_keys.remove(dedup_key)
+        return False
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            request_variants = [
-                {
-                    "label": "bearer-form",
-                    "headers": {"Authorization": f"Bearer {api_token}"},
-                    "data": {"messageText": text},
-                },
-                {
-                    "label": "token-form",
-                    "headers": {"Authorization": api_token},
-                    "data": {"messageText": text},
-                },
-                {
-                    "label": "bearer-urlencoded",
-                    "headers": {
-                        "Authorization": f"Bearer {api_token}",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    "data": {"messageText": text},
-                },
-                {
-                    "label": "token-urlencoded",
-                    "headers": {
-                        "Authorization": api_token,
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    "data": {"messageText": text},
-                },
-            ]
+            form_data = {
+                "messageText": text,
+                "channelPhoneNumber": channel_phone_number,
+            }
+            if reply_context_id:
+                form_data["replyContextId"] = reply_context_id
 
-            for request_variant in request_variants:
-                response = await client.post(
-                    endpoint,
-                    headers=request_variant["headers"],
-                    data=request_variant["data"],
-                )
-                logger.info(
-                    f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
-                    f"variant={request_variant['label']} response={response.text[:300]}"
-                )
-                if 200 <= response.status_code < 300:
-                    logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
-                    return True
+            response = await client.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {api_token}"},
+                data=form_data,
+            )
+            logger.info(
+                f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
+                f"channelPhoneNumber={channel_phone_number} hasReplyContext={bool(reply_context_id)} "
+                f"response={response.text[:300]}"
+            )
+            if 200 <= response.status_code < 300:
+                logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
+                return True
     except Exception as e:
         logger.error(f"❌ [WATI] Error enviando mensaje directo: {str(e)}")
 
@@ -4940,7 +4924,12 @@ async def whatsapp(request: Request):
                 response_content = "Estoy procesando tu solicitud. Dame un momento por favor."
 
         if provider == "wati":
-            sent = await send_wati_message_direct(from_number, response_content)
+            sent = await send_wati_message_direct(
+                from_number,
+                response_content,
+                channel_phone_number=channel_id,
+                reply_context_id=message_id,
+            )
             if sent:
                 logger.debug(f"Respuesta enviada exitosamente a Wati para {from_number}")
                 content = {"status": True, "message": "Respuesta enviada por Wati"}

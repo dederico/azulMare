@@ -612,13 +612,30 @@ async def send_wati_message_direct(phone_number, text, channel_phone_number=None
     base_url = (os.getenv("WATI_API_BASE_URL") or "").rstrip("/")
     tenant_id = os.getenv("WATI_TENANT_ID")
 
+    endpoint_candidates = []
+
     if endpoint_template:
-        endpoint = endpoint_template.format(phone=phone_number, tenant_id=tenant_id or "")
-    elif base_url:
-        endpoint = f"{base_url}/sendSessionMessage/{phone_number}"
+        endpoint_candidates.append(
+            endpoint_template.format(phone=phone_number, tenant_id=tenant_id or "")
+        )
+
+    if base_url:
+        endpoint_candidates.append(f"{base_url}/sendSessionMessage/{phone_number}")
+
+        if tenant_id and "app-server.wati.io" in base_url:
+            endpoint_candidates.append(
+                f"https://live-mt-server.wati.io/{tenant_id}/api/v1/sendSessionMessage/{phone_number}"
+            )
+
     elif tenant_id:
-        endpoint = f"https://live-mt-server.wati.io/{tenant_id}/api/v1/sendSessionMessage/{phone_number}"
-    else:
+        endpoint_candidates.append(
+            f"https://live-mt-server.wati.io/{tenant_id}/api/v1/sendSessionMessage/{phone_number}"
+        )
+
+    # Elimina duplicados preservando orden para soportar migraciones de WATI
+    endpoint_candidates = list(dict.fromkeys(endpoint_candidates))
+
+    if not endpoint_candidates:
         logger.error("❌ [WATI] Falta configuración WATI_API_TOKEN y/o WATI_API_BASE_URL/WATI_SEND_MESSAGE_URL_TEMPLATE/WATI_TENANT_ID")
         if dedup_key:
             recent_direct_message_keys.remove(dedup_key)
@@ -638,26 +655,70 @@ async def send_wati_message_direct(phone_number, text, channel_phone_number=None
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            form_data = {
-                "messageText": text,
-                "channelPhoneNumber": channel_phone_number,
-            }
-            if reply_context_id:
-                form_data["replyContextId"] = reply_context_id
+            last_status_code = None
+            for endpoint in endpoint_candidates:
+                send_attempts = [bool(reply_context_id)] if reply_context_id else [False]
+                if reply_context_id:
+                    send_attempts.append(False)
 
-            response = await client.post(
-                endpoint,
-                headers={"Authorization": f"Bearer {api_token}"},
-                data=form_data,
+                for use_reply_context in send_attempts:
+                    form_data = {
+                        "messageText": text,
+                        "channelPhoneNumber": channel_phone_number,
+                    }
+                    if use_reply_context and reply_context_id:
+                        form_data["replyContextId"] = reply_context_id
+
+                    response = await client.post(
+                        endpoint,
+                        headers={"Authorization": f"Bearer {api_token}"},
+                        data=form_data,
+                    )
+                    last_status_code = response.status_code
+                    response_info = {}
+                    try:
+                        response_info = response.json()
+                    except ValueError:
+                        response_info = {}
+
+                    logger.info(
+                        f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
+                        f"channelPhoneNumber={channel_phone_number} hasReplyContext={use_reply_context} "
+                        f"response={response.text[:300]}"
+                    )
+                    if 200 <= response.status_code < 300:
+                        if response_info.get("result") is False:
+                            info_message = (response_info.get("info") or "").lower()
+                            if use_reply_context and "remove reply" in info_message:
+                                logger.warning(
+                                    "⚠️ [WATI] replyContextId rechazado por WATI; reintentando sin reply context"
+                                )
+                                continue
+
+                            logger.error(
+                                f"❌ [WATI] API respondió 2xx pero rechazó el mensaje: {response.text[:300]}"
+                            )
+                            break
+
+                        logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
+                        return True
+
+                    if response.status_code not in {404, 405}:
+                        logger.error(
+                            f"❌ [WATI] Envío rechazado con status={response.status_code}; no se intenta otro endpoint"
+                        )
+                        break
+
+                if last_status_code not in {404, 405}:
+                    logger.error(
+                        f"❌ [WATI] Envío rechazado con status={last_status_code}; no se intenta otro endpoint"
+                    )
+                    break
+
+            logger.error(
+                f"❌ [WATI] No se pudo enviar mensaje a {phone_number}. "
+                f"Último status={last_status_code}, endpoints_probados={endpoint_candidates}"
             )
-            logger.info(
-                f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
-                f"channelPhoneNumber={channel_phone_number} hasReplyContext={bool(reply_context_id)} "
-                f"response={response.text[:300]}"
-            )
-            if 200 <= response.status_code < 300:
-                logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
-                return True
     except Exception as e:
         logger.error(f"❌ [WATI] Error enviando mensaje directo: {str(e)}")
 
@@ -4928,7 +4989,6 @@ async def whatsapp(request: Request):
                 from_number,
                 response_content,
                 channel_phone_number=channel_id,
-                reply_context_id=message_id,
             )
             if sent:
                 logger.debug(f"Respuesta enviada exitosamente a Wati para {from_number}")

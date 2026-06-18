@@ -3713,12 +3713,18 @@ async def whatsapp(request: Request):
             except Exception as e:
                 logger.error(f"Error sending AI greeting after return from human agent: {str(e)}")
 
-        # 🎯 TERCERO: Detección automática por operator_id
-        if (message_type == 'to_client' and 
-            payload.get('operator_id') and 
-            payload.get('operator_id') != BOT_OPERATOR_ID and 
+        # Chat2Desk reporta operator_id también en mensajes salientes del propio bot/API,
+        # así que no sirve como señal confiable de takeover humano automático.
+        auto_handoff_enabled = provider != "chat2desk"
+
+        if (
+            message_type == 'to_client' and
+            payload.get('operator_id') and
+            payload.get('operator_id') != BOT_OPERATOR_ID and
             from_number not in transferred_numbers and
-            from_number not in recently_returned_to_bot):
+            from_number not in recently_returned_to_bot and
+            auto_handoff_enabled
+        ):
             
             logger.info(f"Detección automática: Agente humano (ID {payload.get('operator_id')}) tomó la conversación con {from_number}")
             
@@ -3739,14 +3745,22 @@ async def whatsapp(request: Request):
                 db.Insert(system_notification)
             except Exception as e:
                 logger.error(f"Error registrando transferencia automática: {str(e)}")
-        elif (message_type == 'to_client' and 
-            payload.get('operator_id') and 
-            payload.get('operator_id') != BOT_OPERATOR_ID and 
+        elif (
+            message_type == 'to_client' and
+            payload.get('operator_id') and
+            payload.get('operator_id') != BOT_OPERATOR_ID and
             from_number not in transferred_numbers and
-            from_number in recently_returned_to_bot):
+            from_number in recently_returned_to_bot and
+            auto_handoff_enabled
+        ):
 
             grace_time = int(BOT_GRACE_PERIOD - (datetime.now().timestamp() - recently_returned_to_bot[from_number]))
             logger.info(f"Ignorando detección automática para {from_number} - en período de gracia ({grace_time} segundos restantes)")
+        elif message_type == 'to_client' and payload.get('operator_id') and provider == "chat2desk":
+            logger.debug(
+                f"🔕 [CHAT2DESK AUTO-HANDOFF DISABLED] Ignorando operator_id={payload.get('operator_id')} "
+                f"en outbox para {from_number}"
+            )
 
         # 🎯 CUARTO: Verificar si ya está transferido
         if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:

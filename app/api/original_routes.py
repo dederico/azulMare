@@ -687,7 +687,16 @@ async def send_wati_message_direct(phone_number, text, channel_phone_number=None
                         f"response={response.text[:300]}"
                     )
                     if 200 <= response.status_code < 300:
-                        if response_info.get("result") is False:
+                        response_ok = response_info.get("ok")
+                        response_result = response_info.get("result")
+                        response_message = response_info.get("message") or {}
+                        whatsapp_message_id = response_message.get("whatsappMessageId")
+
+                        if (
+                            response_ok is False
+                            or response_result is False
+                            or (response_ok is not True and not whatsapp_message_id)
+                        ):
                             info_message = (response_info.get("info") or "").lower()
                             if use_reply_context and "remove reply" in info_message:
                                 logger.warning(

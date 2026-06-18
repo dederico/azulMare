@@ -670,11 +670,21 @@ async def send_wati_message_direct(phone_number, text, channel_phone_number=None
             recent_direct_message_keys.remove(dedup_key)
         return False
 
-    if not channel_phone_number:
-        logger.error("❌ [WATI] Falta channelPhoneNumber para enviar respuesta")
+    resolved_channel_number = str(channel_phone_number or os.getenv("WATI_CHANNEL_NUMBER") or "").strip()
+    if not resolved_channel_number:
+        logger.error("❌ [WATI] Falta channelPhoneNumber. Define WATI_CHANNEL_NUMBER o envíalo desde el webhook.")
         if dedup_key:
             recent_direct_message_keys.remove(dedup_key)
         return False
+
+    def build_form_fields(use_reply_context: bool):
+        fields = {
+            "messageText": (None, text),
+            "channelPhoneNumber": (None, resolved_channel_number),
+        }
+        if use_reply_context and reply_context_id:
+            fields["replyContextId"] = (None, str(reply_context_id))
+        return fields
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -685,60 +695,70 @@ async def send_wati_message_direct(phone_number, text, channel_phone_number=None
                     send_attempts.append(False)
 
                 for use_reply_context in send_attempts:
-                    form_data = {
-                        "messageText": text,
-                        "channelPhoneNumber": channel_phone_number,
-                    }
-                    if use_reply_context and reply_context_id:
-                        form_data["replyContextId"] = reply_context_id
+                    request_variants = [
+                        {
+                            "label": "bearer-multipart",
+                            "headers": {"Authorization": f"Bearer {api_token}"},
+                            "files": build_form_fields(use_reply_context),
+                        },
+                        {
+                            "label": "token-multipart",
+                            "headers": {"Authorization": api_token},
+                            "files": build_form_fields(use_reply_context),
+                        },
+                    ]
 
-                    response = await client.post(
-                        endpoint,
-                        headers={"Authorization": f"Bearer {api_token}"},
-                        data=form_data,
-                    )
-                    last_status_code = response.status_code
-                    response_info = {}
-                    try:
-                        response_info = response.json()
-                    except ValueError:
+                    for request_variant in request_variants:
+                        response = await client.post(
+                            endpoint,
+                            headers=request_variant["headers"],
+                            files=request_variant["files"],
+                        )
+                        last_status_code = response.status_code
                         response_info = {}
+                        try:
+                            response_info = response.json()
+                        except ValueError:
+                            response_info = {}
 
-                    logger.info(
-                        f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
-                        f"channelPhoneNumber={channel_phone_number} hasReplyContext={use_reply_context} "
-                        f"response={response.text[:300]}"
-                    )
-                    if 200 <= response.status_code < 300:
-                        response_ok = response_info.get("ok")
-                        response_result = response_info.get("result")
-                        response_message = response_info.get("message") or {}
-                        whatsapp_message_id = response_message.get("whatsappMessageId")
+                        logger.info(
+                            f"📥 [WATI SEND] status={response.status_code} endpoint={endpoint} "
+                            f"variant={request_variant['label']} channelPhoneNumber={resolved_channel_number} "
+                            f"hasReplyContext={use_reply_context} response={response.text[:300]}"
+                        )
+                        if 200 <= response.status_code < 300:
+                            response_ok = response_info.get("ok")
+                            response_result = response_info.get("result")
+                            response_message = response_info.get("message") or {}
+                            whatsapp_message_id = response_message.get("whatsappMessageId")
 
-                        if (
-                            response_ok is False
-                            or response_result is False
-                            or (response_ok is not True and not whatsapp_message_id)
-                        ):
-                            info_message = (response_info.get("info") or "").lower()
-                            if use_reply_context and "remove reply" in info_message:
-                                logger.warning(
-                                    "⚠️ [WATI] replyContextId rechazado por WATI; reintentando sin reply context"
+                            if (
+                                response_ok is False
+                                or response_result is False
+                                or (response_ok is not True and not whatsapp_message_id)
+                            ):
+                                info_message = (response_info.get("info") or "").lower()
+                                if use_reply_context and "remove reply" in info_message:
+                                    logger.warning(
+                                        "⚠️ [WATI] replyContextId rechazado por WATI; reintentando sin reply context"
+                                    )
+                                    break
+
+                                logger.error(
+                                    f"❌ [WATI] API respondió 2xx pero rechazó el mensaje: {response.text[:300]}"
                                 )
-                                continue
+                                break
 
+                            logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
+                            return True
+
+                        if response.status_code not in {404, 405}:
                             logger.error(
-                                f"❌ [WATI] API respondió 2xx pero rechazó el mensaje: {response.text[:300]}"
+                                f"❌ [WATI] Envío rechazado con status={response.status_code}; no se intenta otro endpoint"
                             )
                             break
 
-                        logger.debug(f"✅ [WATI] Mensaje enviado a {phone_number}: {normalized_text[:50]}...")
-                        return True
-
-                    if response.status_code not in {404, 405}:
-                        logger.error(
-                            f"❌ [WATI] Envío rechazado con status={response.status_code}; no se intenta otro endpoint"
-                        )
+                    if last_status_code not in {404, 405}:
                         break
 
                 if last_status_code not in {404, 405}:
@@ -5052,6 +5072,11 @@ async def whatsapp(request: Request):
                 from_number,
                 response_content,
                 channel_phone_number=channel_id,
+                reply_context_id=(
+                    payload.get("_wati_payload", {}).get("whatsappMessageId")
+                    or payload.get("_wati_payload", {}).get("replyContextId")
+                    or None
+                ),
             )
             if sent:
                 logger.debug(f"Respuesta enviada exitosamente a Wati para {from_number}")

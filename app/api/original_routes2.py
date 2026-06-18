@@ -598,7 +598,7 @@ async def report_status_update(request: Request):
             )
             
         # Usar canal fijo
-        channel_id = 43388
+        channel_id = 43898
         logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
         
         # Preparar mensaje según el estado
@@ -905,7 +905,7 @@ async def simulate_hsm(request: Request):
             "type": "to_client",
             "text": f"@HSM@\nnotifica_conclusion\n\n{reporte_id}\nTest conclusion message",
             "client": {"id": "test_client_id"},
-            "channel_id": 43388
+            "channel_id": 43898
         }
         
         result = await handle_hsm_conclusion_notification(mock_payload, phone_number)
@@ -2559,7 +2559,7 @@ async def notify_user_timeout(phone_number, folio, image_count):
                 # Enviar mensaje
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,
+                    "channel_id": 43898,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -2603,7 +2603,7 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,
+                    "channel_id": 43898,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -2645,7 +2645,7 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
                 
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,
+                    "channel_id": 43898,
                     "transport": "wa_direct",
                     "text": message
                 }
@@ -2722,7 +2722,7 @@ async def check_inactivity():
                         client_data = response.json()
                         if client_data.get("status") == "success" and client_data.get("data"):
                             client_id = client_data["data"][0]["id"]
-                            channel_id = 43388
+                            channel_id = 43898
                             
                             message_data = {
                                 "client_id": client_id,
@@ -4424,7 +4424,7 @@ async def report_status_update(request: Request):
             )
             
         # Usar canal fijo
-        channel_id = 43388
+        channel_id = 43898
         logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
         
         # Preparar mensaje según el estado
@@ -4685,7 +4685,7 @@ async def simulate_hsm(request: Request):
             "type": "to_client",
             "text": f"@HSM@\nnotifica_conclusion\n\n{reporte_id}\nTest conclusion message",
             "client": {"id": "test_client_id"},
-            "channel_id": 43388
+            "channel_id": 43898
         }
         
         result = await handle_hsm_conclusion_notification(mock_payload, phone_number)

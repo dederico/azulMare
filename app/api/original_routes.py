@@ -102,6 +102,7 @@ EVALUATION_STATES = {
 CIAC_INTEGRATIONS_ENABLED = False
 HUMAN_HANDOFF_ENABLED = False
 SPECIAL_NUMBER_ROUTING_ENABLED = False
+CHAT2DESK_CHANNEL_ID = 43898
 
 
 def generate_local_report_folio() -> str:
@@ -116,6 +117,7 @@ async def create_local_report_folio(yoga_number: str, selection_data: dict, imag
         f"tipo={selection_data.get('selection1')} imagenes={len(images_list or [])}"
     )
     return folio
+
 
 async def handle_hsm_conclusion_notification(payload, from_number):
     """
@@ -2286,7 +2288,7 @@ async def notify_user_timeout(phone_number, folio, image_count):
                 # Enviar mensaje
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,
+                    "channel_id": CHAT2DESK_CHANNEL_ID,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -2330,7 +2332,7 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,
+                    "channel_id": CHAT2DESK_CHANNEL_ID,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -2379,7 +2381,7 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
                 # Enviar mensaje
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,  # Canal fijo
+                    "channel_id": CHAT2DESK_CHANNEL_ID,
                     "transport": "wa_direct",
                     "text": message
                 }
@@ -2629,7 +2631,7 @@ async def check_inactivity():
                         client_data = response.json()
                         if client_data.get("status") == "success" and client_data.get("data"):
                             client_id = client_data["data"][0]["id"]
-                            channel_id = 43388  # Canal fijo para WhatsApp
+                            channel_id = CHAT2DESK_CHANNEL_ID
                             
                             # Enviar mensaje de desconexión
                             message_data = {
@@ -5270,9 +5272,8 @@ async def report_status_update(request: Request):
                 status_code=500
             )
             
-        # En lugar de consultar los canales, usar un valor fijo
-        channel_id = 43388  # Valor fijo conocido para el canal de WhatsApp
-        logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
+        channel_id = CHAT2DESK_CHANNEL_ID
+        logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id={channel_id}")
         
         # Preparar y enviar el mensaje al cliente
         message_url = f"{chat2desk_base_url}/messages"

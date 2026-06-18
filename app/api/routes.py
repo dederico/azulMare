@@ -439,7 +439,7 @@ async def check_inactivity():
                         client_data = response.json()
                         if client_data.get("status") == "success" and client_data.get("data"):
                             client_id = client_data["data"][0]["id"]
-                            channel_id = 43347  # Canal fijo para WhatsApp
+                            channel_id = 43898  # Canal fijo para WhatsApp
                             
                             # Enviar mensaje de desconexión
                             message_data = {
@@ -921,7 +921,7 @@ async def report_status_update(request: Request):
             )
             
         # Use fixed channel value instead of querying channels
-        channel_id = 43347  # Fixed known value for WhatsApp channel
+        channel_id = 43898  # Fixed known value for WhatsApp channel
         
         # Prepare and send message to client
         message_url = f"{chat2desk_base_url}/messages"

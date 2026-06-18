@@ -33,7 +33,7 @@ RECIPIENT_FIELD_PATTERN = re.compile(
     r"([A-Za-zÁÉÍÓÚÑáéíóúñ0-9_ ]+?)\s*:\s*",
     re.UNICODE,
 )
-DEFAULT_CHAT2DESK_CHANNEL_ID = 43388
+DEFAULT_CHAT2DESK_CHANNEL_ID = 43898
 
 
 def _normalize_knowledge_function_name(raw_name: str) -> str:
@@ -537,7 +537,7 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
 
     sent_count = 0
     failed_count = 0
-    channel_id = int(os.getenv("CHAT2DESK_CHANNEL_ID") or DEFAULT_CHAT2DESK_CHANNEL_ID)
+    channel_id = DEFAULT_CHAT2DESK_CHANNEL_ID
 
     for recipient in pending_recipients:
         try:

@@ -2488,7 +2488,11 @@ async def websocket_endpoint(ws: WebSocket):
             call_sid=call_sid, 
             date2=date_string, 
             now=hour, 
-            folio="folio"),
+            folio="folio",
+            yoga_number="",
+            address="",
+            fotos="",
+        ),
         function_manager=function_manager
     )
     

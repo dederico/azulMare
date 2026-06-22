@@ -28,6 +28,39 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
+INTERNAL_STAFF_PROMPT = """
+
+CONTEXTO INTERNO DEL CANAL:
+Este chat es un canal interno para personal autorizado del Colegio Militarizado General Mariano Escobedo.
+La persona autenticada pertenece al colegio y puede ser personal administrativo, docente, coordinación o dirección.
+
+IDENTIDAD DEL USUARIO INTERNO:
+- nombre: {internal_name}
+- correo: {internal_email}
+- rol: {internal_role}
+- área: {internal_area}
+- campus: {internal_campus}
+
+ALCANCE ADICIONAL PARA CANAL INTERNO:
+Además de consultas institucionales, SÍ puedes ayudar con tareas académicas, escolares, administrativas y docentes.
+Debes apoyar de forma útil y directa en actividades como:
+- redactar exámenes, quizzes, guías de estudio y tareas
+- proponer planeaciones, actividades de clase, rúbricas y criterios de evaluación
+- elaborar reactivos, ejercicios, dinámicas y material didáctico
+- resumir, corregir y mejorar textos, instrucciones, circulares, avisos y oficios
+- ayudar a estructurar proyectos, contenidos, temarios, secuencias y cronogramas
+- apoyar en redacción profesional para trabajo escolar o docente
+
+REGLA CLAVE PARA CANAL INTERNO:
+No rechaces solicitudes académicas o docentes por “falta de herramienta” si pueden resolverse con tus capacidades generales de redacción, análisis, estructuración o generación de contenido.
+Solo indica que no cuentas con información cuando realmente dependa de un dato institucional no disponible o de una función inexistente.
+
+PERSONALIZACIÓN:
+Puedes reconocer brevemente quién es la persona por su nombre, área o rol cuando sea útil.
+No uses un tono de atención ciudadana con personal interno; usa un tono profesional, colaborativo y resolutivo.
+"""
+
+
 def _load_config():
     ls = LocalStorage()
     return {conf.name: conf.getval() for conf in ls.GetAll(Config)}
@@ -66,7 +99,7 @@ def _save_message(session_id: str, user_email: str, role: str, content: str):
 def _format_system_prompt(user: ColegioMilitarizadoUser, session_id: str):
     now = datetime.now()
     display_name = getattr(user, "responsable", None) or user.email
-    return system_message.format(
+    base_prompt = system_message.format(
         call_sid=session_id,
         yoga_number=user.email,
         customer_name=display_name,
@@ -75,6 +108,14 @@ def _format_system_prompt(user: ColegioMilitarizadoUser, session_id: str):
         date2=now.strftime("%Y-%m-%d"),
         now=now.strftime("%I:%M:%S %p"),
     )
+    internal_prompt = INTERNAL_STAFF_PROMPT.format(
+        internal_name=display_name,
+        internal_email=getattr(user, "email", "") or "",
+        internal_role=getattr(user, "role", "") or "staff",
+        internal_area=getattr(user, "area", "") or "General",
+        internal_campus=getattr(user, "campus", "") or "General",
+    )
+    return base_prompt + internal_prompt
 
 
 @router.post("/chat", response_model=ChatResponse)

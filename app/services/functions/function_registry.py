@@ -5,7 +5,9 @@ from .implementations.get_inscripciones_colegio_militarizado import get_inscripc
 from .implementations.get_planteles_colegio_militarizado import get_planteles_colegio_militarizado
 from .implementations.get_reinscripciones_colegio_militarizado import get_reinscripciones_colegio_militarizado
 from .implementations.get_requisitos_admision_colegio_militarizado import get_requisitos_admision_colegio_militarizado
-
+from .implementations.get_ley_educacion_nuevo_leon import get_ley_educacion_nuevo_leon
+from .implementations.get_protocolo_preventivo_hostigamiento import get_protocolo_preventivo_hostigamiento
+from .implementations.get_reglamento_oficial import get_reglamento_oficial
 
 registered_functions = [
     get_calificacion_alumno,
@@ -15,4 +17,7 @@ registered_functions = [
     get_planteles_colegio_militarizado,
     get_reinscripciones_colegio_militarizado,
     get_requisitos_admision_colegio_militarizado,
+    get_ley_educacion_nuevo_leon,
+    get_protocolo_preventivo_hostigamiento,
+    get_reglamento_oficial
 ]

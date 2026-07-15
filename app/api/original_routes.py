@@ -2387,7 +2387,7 @@ async def notify_user_timeout(phone_number, folio, image_count):
                 # Enviar mensaje
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,
+                    "channel_id": 43906,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -2431,7 +2431,7 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,
+                    "channel_id": 43906,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -2480,7 +2480,7 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
                 # Enviar mensaje
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43388,  # Canal fijo
+                    "channel_id": 43906,  # Canal fijo
                     "transport": "wa_direct",
                     "text": message
                 }
@@ -2730,7 +2730,7 @@ async def check_inactivity():
                         client_data = response.json()
                         if client_data.get("status") == "success" and client_data.get("data"):
                             client_id = client_data["data"][0]["id"]
-                            channel_id = 43388  # Canal fijo para WhatsApp
+                            channel_id = 43906  # Canal fijo para WhatsApp
                             
                             # Enviar mensaje de desconexión
                             message_data = {
@@ -5459,7 +5459,7 @@ async def report_status_update(request: Request):
             )
             
         # En lugar de consultar los canales, usar un valor fijo
-        channel_id = 43388  # Valor fijo conocido para el canal de WhatsApp
+        channel_id = 43906  # Valor fijo conocido para el canal de WhatsApp
         logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
         
         # Preparar y enviar el mensaje al cliente

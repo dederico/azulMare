@@ -33,7 +33,7 @@ RECIPIENT_FIELD_PATTERN = re.compile(
     r"([A-Za-zÁÉÍÓÚÑáéíóúñ0-9_ ]+?)\s*:\s*",
     re.UNICODE,
 )
-DEFAULT_CHAT2DESK_CHANNEL_ID = 43388
+DEFAULT_CHAT2DESK_CHANNEL_ID = 43906
 
 
 def _normalize_knowledge_function_name(raw_name: str) -> str:

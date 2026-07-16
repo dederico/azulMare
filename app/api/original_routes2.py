@@ -3241,7 +3241,7 @@ async def whatsapp(request: Request):
         # 9. DETECCIÓN AUTOMÁTICA POR OPERATOR_ID
         if (message_type == 'to_client' and 
             payload.get('operator_id') and 
-            payload.get('operator_id') != BOT_OPERATOR_ID and 
+            int(payload.get('operator_id')) not in BOT_OPERATOR_IDS and 
             from_number not in transferred_numbers and
             from_number not in recently_returned_to_bot):
             
@@ -3266,7 +3266,7 @@ async def whatsapp(request: Request):
                 logger.error(f"Error registrando transferencia automática: {str(e)}")
         elif (message_type == 'to_client' and 
             payload.get('operator_id') and 
-            payload.get('operator_id') != BOT_OPERATOR_ID and 
+            int(payload.get('operator_id')) not in BOT_OPERATOR_IDS and 
             from_number not in transferred_numbers and
             from_number in recently_returned_to_bot):
 

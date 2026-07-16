@@ -3617,7 +3617,7 @@ async def whatsapp(request: Request):
     # Check if this is a message from a human agent with the human takeover message
     HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana. Le atiende"
     BOT_RETURN_MESSAGE = "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot"
-    BOT_OPERATOR_ID = 228524
+    BOT_OPERATOR_IDS = {228522, 228524}
     
     
     try:
@@ -3821,7 +3821,7 @@ async def whatsapp(request: Request):
         # 🎯 TERCERO: Detección automática por operator_id
         if (message_type == 'to_client' and 
             payload.get('operator_id') and 
-            payload.get('operator_id') != BOT_OPERATOR_ID and 
+            int(payload.get('operator_id')) not in BOT_OPERATOR_IDSS and 
             from_number not in transferred_numbers and
             from_number not in recently_returned_to_bot):
             
@@ -3846,7 +3846,7 @@ async def whatsapp(request: Request):
                 logger.error(f"Error registrando transferencia automática: {str(e)}")
         elif (message_type == 'to_client' and 
             payload.get('operator_id') and 
-            payload.get('operator_id') != BOT_OPERATOR_ID and 
+            int(payload.get('operator_id')) not in BOT_OPERATOR_IDSS and 
             from_number not in transferred_numbers and
             from_number in recently_returned_to_bot):
 

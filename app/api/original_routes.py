@@ -3821,7 +3821,7 @@ async def whatsapp(request: Request):
         # 🎯 TERCERO: Detección automática por operator_id
         if (message_type == 'to_client' and 
             payload.get('operator_id') and 
-            int(payload.get('operator_id')) not in BOT_OPERATOR_IDSS and 
+            int(payload.get('operator_id')) not in BOT_OPERATOR_IDS and 
             from_number not in transferred_numbers and
             from_number not in recently_returned_to_bot):
             

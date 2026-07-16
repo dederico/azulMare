@@ -27,7 +27,7 @@ def determine_audio_type(url):
     logger.debug(f"Determinando tipo de archivo a partir de URL: {url}")
     if url.lower().endswith('.mp3'):
         return 'mp3'
-    elif url.lower().endswith('.ogg'):
+    elif url.lower().endswith('.ogg') or url.lower().endswith('.oga'):
         return 'ogg'
     else:
         logger.warning(f"No se pudo determinar el tipo de archivo por la extensión, usando mp3 por defecto: {url}")

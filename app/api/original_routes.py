@@ -3846,7 +3846,7 @@ async def whatsapp(request: Request):
                 logger.error(f"Error registrando transferencia automática: {str(e)}")
         elif (message_type == 'to_client' and 
             payload.get('operator_id') and 
-            int(payload.get('operator_id')) not in BOT_OPERATOR_IDSS and 
+            int(payload.get('operator_id')) not in BOT_OPERATOR_IDS and 
             from_number not in transferred_numbers and
             from_number in recently_returned_to_bot):
 

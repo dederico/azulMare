@@ -3617,7 +3617,7 @@ async def whatsapp(request: Request):
     # Check if this is a message from a human agent with the human takeover message
     HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana. Le atiende"
     BOT_RETURN_MESSAGE = "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot"
-    BOT_OPERATOR_ID = 227714
+    BOT_OPERATOR_ID = 228524
     
     
     try:

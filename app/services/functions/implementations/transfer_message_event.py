@@ -46,7 +46,7 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
     try:
         # Usar el valor por defecto si no se proporciona group_id
         if group_id is None:
-            group_id = 1772  # ID del grupo Envios por defecto
+            group_id = 1817  # ID del grupo Envios por defecto
         else:
             # Asegurar que group_id sea un entero
             try:

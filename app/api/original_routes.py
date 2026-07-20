@@ -5137,7 +5137,7 @@ async def whatsapp(request: Request):
                 #     logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA PARA: {phone_to_transfer}")
                 #     result = await transfer_to_group(
                 #         phone_number=phone_to_transfer,
-                #         group_id=1772,  # Grupo fijo
+                #         group_id=1817,  # Grupo fijo
                 #         reason="Transferencia automática por solicitud del LLM",
                 #         send_notification=True
                 #     )
@@ -5152,11 +5152,11 @@ async def whatsapp(request: Request):
                     else:
                         logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA:")
                         logger.critical(f"🚀   - message_id: {message_id} (del payload)")
-                        logger.critical(f"🚀   - group_id: 1772 (fijo)")
+                        logger.critical(f"🚀   - group_id: 1817 (fijo)")
                         
                         result = await transfer_to_group(
                             message_id=message_id,  # ✅ DEL PAYLOAD - SIEMPRE CORRECTO
-                            group_id=1772,          # ✅ FIJO - SIEMPRE CORRECTO
+                            group_id=1817,          # ✅ FIJO - SIEMPRE CORRECTO
                             reason="Transferencia automática por LLM sin conocimiento"
                         )
 

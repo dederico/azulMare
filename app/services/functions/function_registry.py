@@ -9,6 +9,8 @@ from .implementations.get_ley_educacion_nuevo_leon import get_ley_educacion_nuev
 from .implementations.get_protocolo_preventivo_hostigamiento import get_protocolo_preventivo_hostigamiento
 from .implementations.get_reglamento_oficial import get_reglamento_oficial
 from .implementations.get_disciplina import get_disciplina
+from .implementations.get_posicionamiento_caso_dafne import get_posicionamiento_caso_dafne
+
 
 registered_functions = [
     get_calificacion_alumno,
@@ -21,5 +23,6 @@ registered_functions = [
     get_ley_educacion_nuevo_leon,
     get_protocolo_preventivo_hostigamiento,
     get_reglamento_oficial,
-    get_disciplina
+    get_disciplina,
+    get_posicionamiento_caso_dafne
 ]

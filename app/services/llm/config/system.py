@@ -88,6 +88,7 @@ MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por planteles, campus, direcciones u oferta por plantel, usa get_planteles_colegio_militarizado()
 - si preguntan por información general institucional, usa get_info_general_colegio_militarizado()
 - si preguntan por la calificación de un alumno, usa get_calificacion_alumno()
+- si preguntan por FORJA, CECATI, la carta compromiso familiar, costos del programa, recurse, asistencia semanal o capacitación técnica certificada, usa get_cecati_forja()
 - si preguntan por el caso Dafne, usa get_posicionamiento_caso_dafne()
 - si preguntan por el comunicado de la SEP del 22 de julio de 2026 o por el oficio UR-100/OCSEP/0180/2026, usa get_posicionamiento_oficio_sep()
 

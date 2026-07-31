@@ -1,4 +1,5 @@
 from .implementations.get_calificacion_alumno import get_calificacion_alumno
+from .implementations.get_anexo_solo_director_forja import get_anexo_solo_director_forja
 from .implementations.get_cecati_forja import get_cecati_forja
 from .implementations.get_guion_forja_padres import get_guion_forja_padres
 from .implementations.get_admisiones_colegio_militarizado import get_admisiones_colegio_militarizado
@@ -17,6 +18,7 @@ from .implementations.get_disciplina import get_disciplina
 
 registered_functions = [
     get_calificacion_alumno,
+    get_anexo_solo_director_forja,
     get_cecati_forja,
     get_guion_forja_padres,
     get_admisiones_colegio_militarizado,

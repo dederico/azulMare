@@ -90,7 +90,6 @@ MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por la calificación de un alumno, usa get_calificacion_alumno()
 - si preguntan por el caso Dafne, por el comunicado de la SEP del 22 de julio de 2026, o por el oficio UR-100/OCSEP/0180/2026, usa get_posicionamiento_caso_dafne()
 
-
 REGLA SOBRE UBICACIÓN:
 - para preguntas sobre ubicación, dirección, horarios, campus, oficinas o instalaciones, usa la función correspondiente si existe
 - si no existe una función que respalde esa respuesta, di que no cuentas con esa información

@@ -4,6 +4,13 @@ from app.models.Config import Config
 ls = LocalStorage()
 configs = { c.name:c.value for c in ls.GetAll(Config) }
 
+
+def _append_once(base_text: str, snippet: str) -> str:
+    if snippet in base_text:
+        return base_text
+    separator = "\n\n" if base_text and not base_text.endswith("\n\n") else ""
+    return f"{base_text}{separator}{snippet}"
+
 hello_message = configs.get("greeting_message") or """
     "Hola! 
     Mi nombre es Julieta Perez, nos comunicamos de SWITCH en colaboración con AMERICAN EXPRESS. 
@@ -144,3 +151,26 @@ Responde de forma breve que no cuentas con esa información en este canal.
 CIERRE:
 Termina de forma breve, profesional y amable.
 """
+
+
+NON_REPEAT_GREETING_RULE = """
+REGLA ESTRICTA SOBRE EL SALUDO:
+- saluda solo en el primer mensaje real de la conversación
+- si el usuario ya escribió antes o ya hubo una respuesta previa del asistente, no vuelvas a presentarte ni repitas "¡Bienvenido! Soy GUERRERO..."
+- en mensajes posteriores responde directo a la pregunta del usuario
+- solo puedes volver a saludar si la conversación fue reiniciada explícitamente
+"""
+
+
+FORJA_KB_RULES = """
+MAPEO ADICIONAL OBLIGATORIO DE FUNCIONES:
+- si preguntan por FORJA, CECATI, la carta compromiso familiar, costos del programa, recurse, asistencia semanal o capacitación técnica certificada, usa get_cecati_forja()
+- si preguntan por el guion de la reunión con padres, discurso para directores, tabla de costos de transporte por plantel, reglas de mensaje de FORJA o cómo presentar FORJA ante familias, usa get_guion_forja_padres()
+- si preguntan por respuestas difíciles de FORJA para directores, objeciones de padres, garantía de empleo, beca Benito Juárez, quién cobra, seguridad del traslado o banco institucional de respuestas, usa get_anexo_solo_director_forja()
+- si preguntan por el caso Dafne, usa get_posicionamiento_caso_dafne()
+- si preguntan por el comunicado de la SEP del 22 de julio de 2026 o por el oficio UR-100/OCSEP/0180/2026, usa get_posicionamiento_oficio_sep()
+"""
+
+
+system_message = _append_once(system_message, NON_REPEAT_GREETING_RULE)
+system_message = _append_once(system_message, FORJA_KB_RULES)

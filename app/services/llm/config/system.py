@@ -89,6 +89,7 @@ MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por información general institucional, usa get_info_general_colegio_militarizado()
 - si preguntan por la calificación de un alumno, usa get_calificacion_alumno()
 - si preguntan por FORJA, CECATI, la carta compromiso familiar, costos del programa, recurse, asistencia semanal o capacitación técnica certificada, usa get_cecati_forja()
+- si preguntan por el guion de la reunión con padres, discurso para directores, tabla de costos de transporte por plantel, reglas de mensaje de FORJA o cómo presentar FORJA ante familias, usa get_guion_forja_padres()
 - si preguntan por el caso Dafne, usa get_posicionamiento_caso_dafne()
 - si preguntan por el comunicado de la SEP del 22 de julio de 2026 o por el oficio UR-100/OCSEP/0180/2026, usa get_posicionamiento_oficio_sep()
 

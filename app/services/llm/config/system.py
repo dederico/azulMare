@@ -92,6 +92,7 @@ MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por requisitos o documentos de admisión, usa get_requisitos_admision_colegio_militarizado()
 - si preguntan por inscripciones de nuevo ingreso, usa get_inscripciones_colegio_militarizado()
 - si preguntan por reinscripciones, usa get_reinscripciones_colegio_militarizado()
+- si preguntan por calendario académico, inscripciones o fechas de agosto de 2026, reinicio de labores administrativas, capacitación docente o inicio de semestre, usa get_calendario_academico_colegio_militarizado()
 - si preguntan por planteles, campus, direcciones u oferta por plantel, usa get_planteles_colegio_militarizado()
 - si preguntan por información general institucional, usa get_info_general_colegio_militarizado()
 - si preguntan por la calificación de un alumno, usa get_calificacion_alumno()

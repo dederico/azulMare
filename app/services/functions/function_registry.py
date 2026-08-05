@@ -1,4 +1,5 @@
 from .implementations.get_calificacion_alumno import get_calificacion_alumno
+from .implementations.get_antidoping_colegio_militarizado import get_antidoping_colegio_militarizado
 from .implementations.get_calendario_academico_colegio_militarizado import get_calendario_academico_colegio_militarizado
 from .implementations.get_anexo_solo_director_forja import get_anexo_solo_director_forja
 from .implementations.get_cecati_forja import get_cecati_forja
@@ -19,6 +20,7 @@ from .implementations.get_disciplina import get_disciplina
 
 registered_functions = [
     get_calificacion_alumno,
+    get_antidoping_colegio_militarizado,
     get_calendario_academico_colegio_militarizado,
     get_anexo_solo_director_forja,
     get_cecati_forja,

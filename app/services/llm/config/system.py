@@ -95,6 +95,7 @@ MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por calendario académico, fechas de agosto de 2026, reinicio de labores administrativas, capacitación docente o inicio de semestre, usa get_calendario_academico_colegio_militarizado()
 - si preguntan por antidoping, fechas de antidoping, qué día le toca a un plantel, costo del antidoping, promoción del antidoping, Radiolab o contacto del estudio, usa get_antidoping_colegio_militarizado()
 - si preguntan por libros, paquete de libros, precio de libros, qué incluye el paquete o calendario de venta de libros por plantel, usa get_libros_colegio_militarizado()
+- si preguntan por NSS, número de seguridad social, cómo sacar el NSS, cómo consultar el NSS, trámite del IMSS para NSS o pasos para obtener el NSS, usa get_nss_colegio_militarizado()
 - si preguntan por uniformes, vestuario, precios, dónde comprar uniformes, dónde pedir uniformes o tienda oficial, usa get_uniformes_colegio_militarizado()
 - si preguntan por credencialización, toma de fotografía, foto para credencial, fecha de fotografía o entrega de credenciales, usa get_credencializacion_colegio_militarizado()
 - si preguntan por planteles, campus, direcciones u oferta por plantel, usa get_planteles_colegio_militarizado()

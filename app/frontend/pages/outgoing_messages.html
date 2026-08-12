@@ -209,6 +209,15 @@
             <div class="hint">Describe aquí el grupo de personas que recibirán el mensaje.</div>
           </div>
           <div class="field">
+            <label for="message_mode">Tipo de envío</label>
+            {% set selected_mode = form_data.get('message_mode', 'free_text') %}
+            <select id="message_mode" name="message_mode">
+              <option value="free_text" {% if selected_mode == 'free_text' %}selected{% endif %}>Mensaje libre</option>
+              <option value="template_hsm" {% if selected_mode == 'template_hsm' %}selected{% endif %}>Plantilla / HSM</option>
+            </select>
+            <div class="hint">Usa <strong>Mensaje libre</strong> cuando ya exista ventana de 24 horas. Usa <strong>Plantilla / HSM</strong> cuando Meta exige plantilla aprobada.</div>
+          </div>
+          <div class="field">
             <label for="scheduled_at">Fecha y hora programada</label>
             <input id="scheduled_at" name="scheduled_at" type="datetime-local" value="{{ form_data.get('scheduled_at', '') }}">
             <div class="hint">Si lo dejas vacío, la campaña quedará guardada como borrador.</div>
@@ -221,6 +230,7 @@
           <div class="field full">
             <label for="message_body">Mensaje a enviar</label>
             <textarea id="message_body" name="message_body" placeholder="Escribe aquí el mensaje que recibirán todos los contactos de esta lista." required>{{ form_data.get('message_body', '') }}</textarea>
+            <div class="hint">Si eliges <strong>Plantilla / HSM</strong>, aquí debes pegar el payload exacto que Chat2Desk espera, iniciando con <strong>@HSM@</strong>.</div>
           </div>
           <div class="field full">
             <label for="recipients_text">Lista de destinatarios</label>
@@ -248,6 +258,7 @@
           <h3>{{ campaign.name }}</h3>
           <div class="meta">
             <span>Lista: {{ campaign.audienceName }}</span>
+            <span>Modo: {{ campaign.messageMode or 'free_text' }}</span>
             <span>Estatus: <span class="status-pill {{ campaign.status }}">{{ campaign.status }}</span></span>
             <span>Destinatarios: {{ campaign.recipientCount }}</span>
             <span>Programada: {{ campaign.scheduledAt or 'No programada' }}</span>

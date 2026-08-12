@@ -5,6 +5,7 @@ class OutgoingCampaign(metaclass=DirtyTrackingMeta):
     name: str
     audienceName: str
     message: str
+    messageMode: str
     status: str
     transport: str
     scheduledAt: str

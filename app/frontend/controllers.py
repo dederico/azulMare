@@ -405,6 +405,7 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
     campaign_name = (payload.get("campaign_name") or "").strip()
     audience_name = (payload.get("audience_name") or "").strip()
     message_body = (payload.get("message_body") or "").strip()
+    message_mode = (payload.get("message_mode") or "free_text").strip() or "free_text"
     scheduled_at = (payload.get("scheduled_at") or "").strip()
     created_by = (payload.get("created_by") or "").strip() or "atencion_ciudadana"
     transport = (payload.get("transport") or "wa_direct").strip() or "wa_direct"
@@ -416,6 +417,10 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
         raise ValueError("Debes indicar un nombre para la lista o segmento.")
     if not message_body:
         raise ValueError("Debes escribir el mensaje que recibirán los destinatarios.")
+    if message_mode not in {"free_text", "template_hsm"}:
+        raise ValueError("El tipo de envío seleccionado no es válido.")
+    if message_mode == "template_hsm" and not message_body.startswith("@HSM@"):
+        raise ValueError("Para campañas con plantilla/HSM, el mensaje debe iniciar con @HSM@.")
 
     normalized_scheduled_at = ""
     if scheduled_at:
@@ -433,6 +438,7 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
             name=campaign_name,
             audienceName=audience_name,
             message=message_body,
+            messageMode=message_mode,
             status=status,
             transport=transport,
             scheduledAt=normalized_scheduled_at,
@@ -691,9 +697,10 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
             local_storage.Update(recipient)
             sent_count += 1
             logger.info(
-                "Outgoing campaign %s sent to %s via Chat2Desk. client_id=%s channel_id=%s",
+                "Outgoing campaign %s sent to %s via Chat2Desk. mode=%s client_id=%s channel_id=%s",
                 campaign_id,
                 recipient.phone,
+                getattr(campaign, "messageMode", "free_text"),
                 client_id,
                 channel_id,
             )

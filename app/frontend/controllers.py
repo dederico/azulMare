@@ -38,6 +38,43 @@ RECIPIENT_FIELD_PATTERN = re.compile(
 DEFAULT_CHAT2DESK_CHANNEL_ID = 43906
 
 
+class OutgoingDeliveryError(Exception):
+    def __init__(self, source: str, message: str, *, payload: dict | None = None, status_code: int | None = None):
+        super().__init__(message)
+        self.source = source
+        self.message = message
+        self.payload = payload or {}
+        self.status_code = status_code
+
+
+def _safe_json_response(response):
+    try:
+        return response.json()
+    except Exception:
+        return {"raw_text": response.text[:2000] if getattr(response, "text", None) else ""}
+
+
+def _serialize_delivery_payload(payload) -> str:
+    try:
+        return json.dumps(payload or {}, ensure_ascii=True)
+    except Exception:
+        return json.dumps({"raw": str(payload)}, ensure_ascii=True)
+
+
+def _build_error_type(source: str, message: str, status_code: int | None = None) -> str:
+    base = source.upper()
+    detail = (message or "").lower()
+    if status_code:
+        return f"{base}_HTTP_{status_code}"
+    if "timeout" in detail:
+        return f"{base}_TIMEOUT"
+    if "authorization" in detail or "token" in detail:
+        return f"{base}_AUTH"
+    if "channel" in detail:
+        return f"{base}_CHANNEL"
+    return f"{base}_ERROR"
+
+
 def _normalize_knowledge_function_name(raw_name: str) -> str:
     normalized = (raw_name or "").strip().lower().replace("-", "_").replace(" ", "_")
     normalized = re.sub(r"^get_", "", normalized)
@@ -355,6 +392,7 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
                     {
                         **recipient,
                         "metadataParsed": json.loads(recipient.get("metadata") or "{}"),
+                        "providerPayloadParsed": json.loads(recipient.get("providerPayload") or "{}"),
                     }
                     for recipient in recipients
                 ],
@@ -400,6 +438,8 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
             scheduledAt=normalized_scheduled_at,
             createdAt=now,
             createdBy=created_by,
+            lastRunAt="",
+            lastError="",
         )
     )
 
@@ -415,6 +455,11 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
                 phone=recipient["phone"],
                 status="pending",
                 sentAt="",
+                lastAttemptAt="",
+                errorType="",
+                providerStatus="pending",
+                providerMessageId="",
+                providerPayload="",
                 errorMessage="",
                 metadata=json.dumps(recipient["metadata"], ensure_ascii=True),
             )
@@ -452,7 +497,7 @@ def delete_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> d
 def _get_chat2desk_headers() -> dict:
     api_token = os.getenv("CHAT2DESK_API_TOKEN")
     if not api_token:
-        raise ValueError("No existe CHAT2DESK_API_TOKEN en el entorno.")
+        raise OutgoingDeliveryError("config", "No existe CHAT2DESK_API_TOKEN en el entorno.")
     return {
         "Authorization": api_token.strip(),
         "Content-Type": "application/json",
@@ -481,7 +526,15 @@ def _resolve_chat2desk_client_id(phone: str, transport: str = "wa_direct") -> in
         headers=headers,
         timeout=30,
     )
-    search_response.raise_for_status()
+    try:
+        search_response.raise_for_status()
+    except requests.HTTPError as e:
+        raise OutgoingDeliveryError(
+            "chat2desk_search",
+            f"Chat2Desk devolvió HTTP {search_response.status_code} al buscar el cliente.",
+            payload=_safe_json_response(search_response),
+            status_code=search_response.status_code,
+        ) from e
     search_payload = search_response.json()
     data = search_payload.get("data") or []
     if search_payload.get("status") == "success" and data:
@@ -493,33 +546,78 @@ def _resolve_chat2desk_client_id(phone: str, transport: str = "wa_direct") -> in
         headers=headers,
         timeout=30,
     )
-    create_response.raise_for_status()
+    try:
+        create_response.raise_for_status()
+    except requests.HTTPError as e:
+        raise OutgoingDeliveryError(
+            "chat2desk_create_client",
+            f"Chat2Desk devolvió HTTP {create_response.status_code} al crear el cliente.",
+            payload=_safe_json_response(create_response),
+            status_code=create_response.status_code,
+        ) from e
     create_payload = create_response.json()
     if create_payload.get("status") != "success":
-        raise ValueError(f"No se pudo crear cliente en Chat2Desk para {formatted_phone}.")
+        raise OutgoingDeliveryError(
+            "chat2desk_create_client",
+            f"No se pudo crear cliente en Chat2Desk para {formatted_phone}.",
+            payload=create_payload,
+        )
 
     created = create_payload.get("data") or {}
     if not created.get("id"):
-        raise ValueError(f"Chat2Desk no devolvió client_id para {formatted_phone}.")
+        raise OutgoingDeliveryError(
+            "chat2desk_create_client",
+            f"Chat2Desk no devolvió client_id para {formatted_phone}.",
+            payload=create_payload,
+        )
     return int(created["id"])
 
 
-def _send_chat2desk_outgoing_message(client_id: int, channel_id: int, transport: str, text: str) -> None:
-    response = requests.post(
-        "https://api.chat2desk.com.mx/v1/messages",
-        headers=_get_chat2desk_headers(),
-        json={
-            "client_id": client_id,
-            "channel_id": channel_id,
-            "transport": transport,
-            "text": text,
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
+def _send_chat2desk_outgoing_message(client_id: int, channel_id: int, transport: str, text: str) -> dict:
+    request_payload = {
+        "client_id": client_id,
+        "channel_id": channel_id,
+        "transport": transport,
+        "text": text,
+    }
+    try:
+        response = requests.post(
+            "https://api.chat2desk.com.mx/v1/messages",
+            headers=_get_chat2desk_headers(),
+            json=request_payload,
+            timeout=30,
+        )
+    except requests.Timeout as e:
+        raise OutgoingDeliveryError(
+            "chat2desk_send",
+            "Timeout al enviar el mensaje a Chat2Desk.",
+            payload={"request": request_payload},
+        ) from e
+    except requests.RequestException as e:
+        raise OutgoingDeliveryError(
+            "render_or_network",
+            f"Error de red al comunicarse con Chat2Desk: {e}",
+            payload={"request": request_payload},
+        ) from e
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        raise OutgoingDeliveryError(
+            "chat2desk_send",
+            f"Chat2Desk devolvió HTTP {response.status_code} al enviar el mensaje.",
+            payload={"request": request_payload, "response": _safe_json_response(response)},
+            status_code=response.status_code,
+        ) from e
+
+    payload = _safe_json_response(response)
     if payload.get("status") != "success":
-        raise ValueError(f"Chat2Desk rechazó el envío: {payload}")
+        raise OutgoingDeliveryError(
+            "chat2desk_send",
+            "Chat2Desk rechazó el envío.",
+            payload={"request": request_payload, "response": payload},
+        )
+    return payload
 
 
 def _resolve_campaign_delivery_status(recipients) -> str:
@@ -558,12 +656,22 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
 
     sent_count = 0
     failed_count = 0
-    channel_id = int(os.getenv("CHAT2DESK_CHANNEL_ID") or DEFAULT_CHAT2DESK_CHANNEL_ID)
+    campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    campaign.lastError = ""
+    raw_channel_id = os.getenv("CHAT2DESK_CHANNEL_ID") or str(DEFAULT_CHAT2DESK_CHANNEL_ID)
+    try:
+        channel_id = int(raw_channel_id)
+    except ValueError as e:
+        campaign.status = "failed"
+        campaign.lastError = f"CHAT2DESK_CHANNEL_ID inválido: {raw_channel_id}"
+        local_storage.Update(campaign)
+        raise OutgoingDeliveryError("config", campaign.lastError) from e
 
     for recipient in pending_recipients:
+        recipient.lastAttemptAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             client_id = _resolve_chat2desk_client_id(recipient.phone, campaign.transport or "wa_direct")
-            _send_chat2desk_outgoing_message(
+            provider_payload = _send_chat2desk_outgoing_message(
                 client_id=client_id,
                 channel_id=channel_id,
                 transport=campaign.transport or "wa_direct",
@@ -571,17 +679,56 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
             )
             recipient.status = "sent"
             recipient.sentAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            recipient.errorType = ""
+            recipient.providerStatus = "sent"
+            recipient.providerMessageId = str(
+                (provider_payload.get("data") or {}).get("message_id")
+                or (provider_payload.get("data") or {}).get("id")
+                or ""
+            )
+            recipient.providerPayload = _serialize_delivery_payload(provider_payload)
             recipient.errorMessage = ""
             local_storage.Update(recipient)
             sent_count += 1
+            logger.info(
+                "Outgoing campaign %s sent to %s via Chat2Desk. client_id=%s channel_id=%s",
+                campaign_id,
+                recipient.phone,
+                client_id,
+                channel_id,
+            )
+        except OutgoingDeliveryError as e:
+            recipient.status = "failed"
+            recipient.errorType = _build_error_type(e.source, e.message, e.status_code)
+            recipient.providerStatus = e.source
+            recipient.providerMessageId = ""
+            recipient.providerPayload = _serialize_delivery_payload(e.payload)
+            recipient.errorMessage = e.message
+            local_storage.Update(recipient)
+            failed_count += 1
+            logger.error(
+                "Outgoing campaign %s failed for %s. type=%s source=%s detail=%s payload=%s",
+                campaign_id,
+                recipient.phone,
+                recipient.errorType,
+                e.source,
+                e.message,
+                recipient.providerPayload,
+            )
         except Exception as e:
             recipient.status = "failed"
+            recipient.errorType = _build_error_type("app", str(e))
+            recipient.providerStatus = "app"
+            recipient.providerMessageId = ""
+            recipient.providerPayload = _serialize_delivery_payload({"exception": str(e)})
             recipient.errorMessage = str(e)
             local_storage.Update(recipient)
             failed_count += 1
-            logger.error("Error sending campaign %s to %s: %s", campaign_id, recipient.phone, e)
+            logger.exception("Unexpected error sending campaign %s to %s", campaign_id, recipient.phone)
 
     campaign.status = _resolve_campaign_delivery_status(local_storage.Search(OutgoingRecipient(campaign_id=campaign_id), order="asc") or [])
+    if failed_count:
+        campaign.lastError = f"Envío con errores. Enviados: {sent_count}. Fallidos: {failed_count}."
     local_storage.Update(campaign)
 
     return {
@@ -634,6 +781,7 @@ def process_due_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
         except Exception as e:
             logger.error("Error processing scheduled campaign %s: %s", getattr(campaign, "id", "unknown"), e)
             campaign.status = "failed"
+            campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             local_storage.Update(campaign)
             processed.append({"campaign_id": campaign.id, "error": str(e)})
 

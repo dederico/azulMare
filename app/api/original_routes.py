@@ -28,6 +28,8 @@ from fastapi.responses import JSONResponse
 from app.util.database import LocalStorage
 from app.models.Config import Config
 from app.models.Message import Message
+from app.models.OutgoingCampaign import OutgoingCampaign
+from app.models.OutgoingRecipient import OutgoingRecipient
 # from app.services.llm.deepseek_service import DeepSeekService  # Not used
 from app.services.llm.openai_service import OpenAIService
 from app.services.functions.function_manager import FunctionManager
@@ -124,6 +126,102 @@ def log_chat2desk_outbound_response(context, response, from_number=None, message
         f"from_number={from_number} message_id={message_id} "
         f"status_code={getattr(response, 'status_code', 'unknown')} body={body_preview}"
     )
+
+
+def _normalize_campaign_phone(raw_phone: str) -> str:
+    digits = "".join(ch for ch in (raw_phone or "") if ch.isdigit())
+    if len(digits) == 10:
+        return f"+52{digits}"
+    if len(digits) == 12 and digits.startswith("52"):
+        return f"+{digits}"
+    if len(digits) == 13 and digits.startswith("521"):
+        return f"+52{digits[3:]}"
+    if raw_phone and raw_phone.strip().startswith("+"):
+        return "+" + digits
+    return f"+{digits}" if digits else ""
+
+
+def _resolve_campaign_delivery_status(recipients) -> str:
+    if not recipients:
+        return "failed"
+
+    sent_count = sum(1 for recipient in recipients if (getattr(recipient, "status", "") or "").lower() == "sent")
+    failed_count = sum(1 for recipient in recipients if (getattr(recipient, "status", "") or "").lower() == "failed")
+    pending_count = sum(1 for recipient in recipients if (getattr(recipient, "status", "pending") or "pending").lower() == "pending")
+
+    if pending_count > 0:
+        return "processing"
+    if sent_count > 0 and failed_count > 0:
+        return "completed_with_errors"
+    if sent_count > 0:
+        return "completed"
+    return "failed"
+
+
+def _classify_outgoing_system_error(text: str) -> tuple[str, str]:
+    message = (text or "").strip()
+    lowered = message.lower()
+    if "24 hours passed" in lowered or "approved whatsapp templates" in lowered:
+        return "WHATSAPP_WINDOW_24H", "whatsapp_system"
+    if "template" in lowered:
+        return "WHATSAPP_TEMPLATE_REQUIRED", "whatsapp_system"
+    return "WHATSAPP_SYSTEM", "whatsapp_system"
+
+
+def reconcile_outgoing_campaign_system_event(db: LocalStorage, payload: dict) -> bool:
+    message_type = payload.get("type", "")
+    hook_type = payload.get("hook_type", "")
+    if message_type != "system" or hook_type != "outbox":
+        return False
+
+    client_phone = payload.get("client", {}).get("phone", "")
+    normalized_phone = _normalize_campaign_phone(client_phone)
+    if not normalized_phone:
+        return False
+
+    system_text = payload.get("text", "") or ""
+    error_type, provider_status = _classify_outgoing_system_error(system_text)
+
+    recipients = db.Search(OutgoingRecipient(phone=normalized_phone), order="desc") or []
+    if not recipients:
+        logger.warning(f"📭 [OUTGOING SYSTEM] No se encontraron destinatarios de campaña para {normalized_phone}")
+        return False
+
+    target = None
+    for recipient in recipients:
+        status = (getattr(recipient, "status", "") or "").lower()
+        if status in {"sent", "pending"}:
+            target = recipient
+            break
+
+    if not target:
+        logger.warning(f"📭 [OUTGOING SYSTEM] No hay destinatario elegible para actualizar con {normalized_phone}")
+        return False
+
+    target.status = "failed"
+    target.errorType = error_type
+    target.providerStatus = provider_status
+    target.errorMessage = system_text.strip() or "WhatsApp rechazó el envío."
+    target.providerPayload = json.dumps(payload, ensure_ascii=True)
+    target.lastAttemptAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.Update(target)
+
+    campaign = db.GetByPK(OutgoingCampaign, target.campaign_id)
+    if campaign:
+        related = db.Search(OutgoingRecipient(campaign_id=campaign.id), order="asc") or []
+        campaign.status = _resolve_campaign_delivery_status(related)
+        campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        campaign.lastError = target.errorMessage
+        db.Update(campaign)
+
+    logger.error(
+        "📛 [OUTGOING SYSTEM] Campaña %s actualizada por rechazo real de WhatsApp para %s. type=%s detail=%s",
+        getattr(target, "campaign_id", "unknown"),
+        normalized_phone,
+        error_type,
+        target.errorMessage,
+    )
+    return True
 
 # Estados de evaluación
 EVALUATION_STATES = {
@@ -3650,6 +3748,9 @@ async def whatsapp(request: Request):
                     f"🛡️ [WIDGET GUARD] Bloqueando mensaje sospechoso: {json.dumps(widget_guard_metadata, ensure_ascii=False)}"
                 )
                 return JSONResponse(content={"status": True, "message": "Mensaje de widget bloqueado"})
+
+        if reconcile_outgoing_campaign_system_event(db, payload):
+            return JSONResponse(content={"status": True, "message": "Estado de campaña actualizado desde evento system"})
 
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============

@@ -10,8 +10,9 @@ class OutgoingCampaign(metaclass=DirtyTrackingMeta):
     scheduledAt: str
     createdAt: str
     createdBy: str
+    lastRunAt: str
+    lastError: str
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
-

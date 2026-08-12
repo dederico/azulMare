@@ -224,8 +224,8 @@
           </div>
           <div class="field full">
             <label for="recipients_text">Lista de destinatarios</label>
-            <textarea id="recipients_text" name="recipients_text" placeholder="Una persona por línea. Ejemplo: Nombre: Juan Pérez Número:+528188888888 K:1&#10;Nombre: María López Número:+528177777777 K:2" required>{{ form_data.get('recipients_text', '') }}</textarea>
-            <div class="hint">Cada línea debe incluir por lo menos el nombre y el número. Puedes agregar más datos como K, colonia, calle o cualquier otro criterio en formato <strong>Campo: valor</strong>.</div>
+            <textarea id="recipients_text" name="recipients_text" placeholder="Una persona por línea. Ejemplo: Nombre: Juan Pérez Numero:+528188888888 K:1&#10;Nombre: María López Numero:+528177777777 K:2" required>{{ form_data.get('recipients_text', '') }}</textarea>
+            <div class="hint">Cada línea debe incluir por lo menos el nombre y el número. Usa llaves simples sin espacios, por ejemplo <strong>Nombre</strong>, <strong>Numero</strong>, <strong>K</strong>, <strong>Colonia</strong> o <strong>Calle</strong>, siempre en formato <strong>Campo: valor</strong>.</div>
           </div>
         </div>
         <div class="actions">

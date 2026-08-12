@@ -29,8 +29,10 @@ PROMPT_DYNAMIC_START = "[KB_DYNAMIC_START]"
 PROMPT_DYNAMIC_END = "[KB_DYNAMIC_END]"
 PROMPT_PRIMARY_ANCHOR = "get_actividades_mayo_junio()"
 PROMPT_FALLBACK_PATTERN = re.compile(r"^\s*-\s+consultas\s+sobre.+Utiliza\s+get_[a-z0-9_]+\(\).*$", re.IGNORECASE)
+# Recipient field keys must be a single token like Nombre, Numero, K, Colonia or Calle.
+# Allowing spaces here caused values such as "Maria Felix Numero" to be parsed as a key.
 RECIPIENT_FIELD_PATTERN = re.compile(
-    r"([A-Za-zÁÉÍÓÚÑáéíóúñ0-9_ ]+?)\s*:\s*",
+    r"([A-Za-zÁÉÍÓÚÑáéíóúñ0-9_]+)\s*:\s*",
     re.UNICODE,
 )
 DEFAULT_CHAT2DESK_CHANNEL_ID = 43906

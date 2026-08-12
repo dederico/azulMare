@@ -21,7 +21,7 @@ Respuesta: 8186765367 de lunes a viernes de 09:00 a.m. a 03:00 p.m.
 """
 
 
-async def get_mochilas():
+async def get_utiles_escolares_agosto_2026():
     """Obtener información del paquete de útiles escolares de agosto de 2026.
 
     Returns:

@@ -61,6 +61,13 @@ def _serialize_delivery_payload(payload) -> str:
         return json.dumps({"raw": str(payload)}, ensure_ascii=True)
 
 
+def _build_text_preview(text: str, limit: int = 240) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[:limit]}... [truncated {len(cleaned) - limit} chars]"
+
+
 def _build_error_type(source: str, message: str, status_code: int | None = None) -> str:
     base = source.upper()
     detail = (message or "").lower()
@@ -586,6 +593,13 @@ def _send_chat2desk_outgoing_message(client_id: int, channel_id: int, transport:
         "transport": transport,
         "text": text,
     }
+    logger.critical(
+        "📤 [OUTGOING CAMPAIGN] attempt client_id=%s channel_id=%s transport=%s text_preview=%s",
+        client_id,
+        channel_id,
+        transport,
+        _build_text_preview(text),
+    )
     try:
         response = requests.post(
             "https://api.chat2desk.com.mx/v1/messages",
@@ -623,7 +637,17 @@ def _send_chat2desk_outgoing_message(client_id: int, channel_id: int, transport:
             "Chat2Desk rechazó el envío.",
             payload={"request": request_payload, "response": payload},
         )
-    return payload
+    provider_data = payload.get("data") or {}
+    logger.critical(
+        "📥 [OUTGOING CAMPAIGN] accepted client_id=%s channel_id=%s provider_message_id=%s request_id=%s dialog_id=%s status=%s",
+        client_id,
+        channel_id,
+        provider_data.get("message_id") or provider_data.get("id") or "",
+        provider_data.get("request_id") or "",
+        provider_data.get("dialog_id") or "",
+        payload.get("status"),
+    )
+    return {"request": request_payload, "response": payload}
 
 
 def _resolve_campaign_delivery_status(recipients) -> str:
@@ -687,15 +711,27 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
             recipient.sentAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             recipient.errorType = ""
             recipient.providerStatus = "sent"
+            provider_data = (provider_payload.get("response") or {}).get("data") or {}
             recipient.providerMessageId = str(
-                (provider_payload.get("data") or {}).get("message_id")
-                or (provider_payload.get("data") or {}).get("id")
+                provider_data.get("message_id")
+                or provider_data.get("id")
                 or ""
             )
             recipient.providerPayload = _serialize_delivery_payload(provider_payload)
             recipient.errorMessage = ""
             local_storage.Update(recipient)
             sent_count += 1
+            logger.critical(
+                "📨 [OUTGOING CAMPAIGN] campaign_id=%s phone=%s mode=%s client_id=%s channel_id=%s provider_message_id=%s request_id=%s text_preview=%s",
+                campaign_id,
+                recipient.phone,
+                getattr(campaign, "messageMode", "free_text"),
+                client_id,
+                channel_id,
+                recipient.providerMessageId,
+                provider_data.get("request_id") or "",
+                _build_text_preview(campaign.message),
+            )
             logger.info(
                 "Outgoing campaign %s sent to %s via Chat2Desk. mode=%s client_id=%s channel_id=%s",
                 campaign_id,

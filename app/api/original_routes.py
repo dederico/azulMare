@@ -168,6 +168,48 @@ def _classify_outgoing_system_error(text: str) -> tuple[str, str]:
     return "WHATSAPP_SYSTEM", "whatsapp_system"
 
 
+def reconcile_outgoing_campaign_outbox_event(db: LocalStorage, payload: dict) -> bool:
+    message_type = payload.get("type", "")
+    hook_type = payload.get("hook_type", "")
+    if message_type != "to_client" or hook_type != "outbox":
+        return False
+
+    webhook_message_id = str(payload.get("message_id") or "")
+    if not webhook_message_id:
+        return False
+
+    recipients = db.Search(OutgoingRecipient(providerMessageId=webhook_message_id), order="desc") or []
+    if not recipients:
+        return False
+
+    target = recipients[0]
+    target.status = "sent"
+    target.providerStatus = "chat2desk_outbox"
+    target.providerPayload = json.dumps(payload, ensure_ascii=True)
+    target.lastAttemptAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not getattr(target, "sentAt", ""):
+        target.sentAt = target.lastAttemptAt
+    db.Update(target)
+
+    campaign = db.GetByPK(OutgoingCampaign, target.campaign_id)
+    if campaign:
+        related = db.Search(OutgoingRecipient(campaign_id=campaign.id), order="asc") or []
+        campaign.status = _resolve_campaign_delivery_status(related)
+        campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.Update(campaign)
+
+    logger.critical(
+        "📬 [OUTGOING OUTBOX] campaign_id=%s phone=%s provider_message_id=%s request_id=%s channel_id=%s text=%s",
+        getattr(target, "campaign_id", "unknown"),
+        payload.get("client", {}).get("phone", ""),
+        webhook_message_id,
+        payload.get("request_id"),
+        payload.get("channel_id"),
+        _truncate_for_log(payload.get("text", ""), 240),
+    )
+    return True
+
+
 def reconcile_outgoing_campaign_system_event(db: LocalStorage, payload: dict) -> bool:
     message_type = payload.get("type", "")
     hook_type = payload.get("hook_type", "")
@@ -3751,6 +3793,8 @@ async def whatsapp(request: Request):
 
         if reconcile_outgoing_campaign_system_event(db, payload):
             return JSONResponse(content={"status": True, "message": "Estado de campaña actualizado desde evento system"})
+        if reconcile_outgoing_campaign_outbox_event(db, payload):
+            return JSONResponse(content={"status": True, "message": "Webhook de campaña saliente conciliado"})
 
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============

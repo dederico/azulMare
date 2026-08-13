@@ -106,6 +106,7 @@ MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por respuestas difíciles de FORJA para directores, objeciones de padres, garantía de empleo, beca Benito Juárez, quién cobra, seguridad del traslado o banco institucional de respuestas, usa get_anexo_solo_director_forja()
 - si preguntan por el caso Dafne, usa get_posicionamiento_caso_dafne()
 - si preguntan por el comunicado de la SEP del 22 de julio de 2026 o por el oficio UR-100/OCSEP/0180/2026, usa get_posicionamiento_oficio_sep()
+- si preguntan por la transformación del colegio, el cambio de nombre, si los estudios siguen siendo válidos, si cambian planteles, maestros u horarios, si continúan los beneficios, el comunicado oficial de transformación o el mensaje "El colegio se transforma. Nuestra esencia, permanece.", usa get_comunicado_transformacion_colegio_militarizado()
 
 REGLA SOBRE UBICACIÓN:
 - para preguntas sobre ubicación, dirección, horarios, campus, oficinas o instalaciones, usa la función correspondiente si existe
@@ -175,6 +176,7 @@ MAPEO ADICIONAL OBLIGATORIO DE FUNCIONES:
 - si preguntan por respuestas difíciles de FORJA para directores, objeciones de padres, garantía de empleo, beca Benito Juárez, quién cobra, seguridad del traslado o banco institucional de respuestas, usa get_anexo_solo_director_forja()
 - si preguntan por el caso Dafne, usa get_posicionamiento_caso_dafne()
 - si preguntan por el comunicado de la SEP del 22 de julio de 2026 o por el oficio UR-100/OCSEP/0180/2026, usa get_posicionamiento_oficio_sep()
+- si preguntan por la transformación del colegio, el cambio de nombre, si los estudios siguen siendo válidos, si cambian planteles, maestros u horarios, si continúan los beneficios, el comunicado oficial de transformación o el mensaje "El colegio se transforma. Nuestra esencia, permanece.", usa get_comunicado_transformacion_colegio_militarizado()
 """
 
 

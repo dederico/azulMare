@@ -16,6 +16,7 @@ from .implementations.get_reinscripciones_colegio_militarizado import get_reinsc
 from .implementations.get_requisitos_admision_colegio_militarizado import get_requisitos_admision_colegio_militarizado
 from .implementations.get_ley_educacion_nuevo_leon import get_ley_educacion_nuevo_leon
 from .implementations.get_posicionamiento_oficio_sep import get_posicionamiento_oficio_sep
+from .implementations.get_comunicado_transformacion_colegio_militarizado import get_comunicado_transformacion_colegio_militarizado
 from .implementations.get_protocolo_preventivo_hostigamiento import get_protocolo_preventivo_hostigamiento
 from .implementations.get_posicionamiento_caso_dafne import get_posicionamiento_caso_dafne
 from .implementations.get_reglamento_oficial import get_reglamento_oficial
@@ -41,6 +42,7 @@ registered_functions = [
     get_requisitos_admision_colegio_militarizado,
     get_ley_educacion_nuevo_leon,
     get_posicionamiento_oficio_sep,
+    get_comunicado_transformacion_colegio_militarizado,
     get_protocolo_preventivo_hostigamiento,
     get_posicionamiento_caso_dafne,
     get_reglamento_oficial,

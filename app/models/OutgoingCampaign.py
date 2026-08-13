@@ -6,6 +6,8 @@ class OutgoingCampaign(metaclass=DirtyTrackingMeta):
     audienceName: str
     message: str
     messageMode: str
+    attachmentUrl: str
+    attachmentFilename: str
     status: str
     transport: str
     scheduledAt: str

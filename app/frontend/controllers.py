@@ -413,6 +413,8 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
     audience_name = (payload.get("audience_name") or "").strip()
     message_body = (payload.get("message_body") or "").strip()
     message_mode = (payload.get("message_mode") or "free_text").strip() or "free_text"
+    attachment_url = (payload.get("attachment_url") or "").strip()
+    attachment_filename = (payload.get("attachment_filename") or "").strip()
     scheduled_at = (payload.get("scheduled_at") or "").strip()
     created_by = (payload.get("created_by") or "").strip() or "atencion_ciudadana"
     transport = (payload.get("transport") or "wa_direct").strip() or "wa_direct"
@@ -428,6 +430,8 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
         raise ValueError("El tipo de envío seleccionado no es válido.")
     if message_mode == "template_hsm" and not message_body.startswith("@HSM@"):
         raise ValueError("Para campañas con plantilla/HSM, el mensaje debe iniciar con @HSM@.")
+    if attachment_url and not attachment_filename:
+        raise ValueError("Si capturas una URL de adjunto, también debes indicar el nombre del archivo.")
 
     normalized_scheduled_at = ""
     if scheduled_at:
@@ -446,6 +450,8 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
             audienceName=audience_name,
             message=message_body,
             messageMode=message_mode,
+            attachmentUrl=attachment_url,
+            attachmentFilename=attachment_filename,
             status=status,
             transport=transport,
             scheduledAt=normalized_scheduled_at,
@@ -586,19 +592,31 @@ def _resolve_chat2desk_client_id(phone: str, transport: str = "wa_direct") -> in
     return int(created["id"])
 
 
-def _send_chat2desk_outgoing_message(client_id: int, channel_id: int, transport: str, text: str) -> dict:
+def _send_chat2desk_outgoing_message(
+    client_id: int,
+    channel_id: int,
+    transport: str,
+    text: str,
+    attachment_url: str = "",
+    attachment_filename: str = "",
+) -> dict:
     request_payload = {
         "client_id": client_id,
         "channel_id": channel_id,
         "transport": transport,
         "text": text,
     }
+    if attachment_url:
+        request_payload["attachment"] = attachment_url
+        request_payload["attachment_filename"] = attachment_filename or "attachment"
     logger.critical(
-        "📤 [OUTGOING CAMPAIGN] attempt client_id=%s channel_id=%s transport=%s text_preview=%s",
+        "📤 [OUTGOING CAMPAIGN] attempt client_id=%s channel_id=%s transport=%s text_preview=%s attachment=%s attachment_filename=%s",
         client_id,
         channel_id,
         transport,
         _build_text_preview(text),
+        attachment_url,
+        attachment_filename,
     )
     try:
         response = requests.post(
@@ -706,6 +724,8 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
                 channel_id=channel_id,
                 transport=campaign.transport or "wa_direct",
                 text=campaign.message,
+                attachment_url=getattr(campaign, "attachmentUrl", "") or "",
+                attachment_filename=getattr(campaign, "attachmentFilename", "") or "",
             )
             recipient.status = "sent"
             recipient.sentAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -70,6 +70,7 @@ from .implementations.get_presupuesto_participativo import get_presupuesto_parti
 from .implementations.get_actividades_mayo_junio import get_actividades_mayo_junio
 from .implementations.get_actividades_agosto_2026 import get_actividades_agosto_2026
 from .implementations.get_utiles_escolares_agosto_2026 import get_utiles_escolares_agosto_2026
+from .implementations.get_unibus import get_unibus
 
 
 registered_functions = [
@@ -143,5 +144,6 @@ registered_functions = [
     get_presupuesto_participativo,
     get_actividades_mayo_junio,
     get_actividades_agosto_2026,
-    get_utiles_escolares_agosto_2026
+    get_utiles_escolares_agosto_2026,
+    get_unibus
 ]

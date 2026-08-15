@@ -2072,7 +2072,10 @@ def should_create_report_session(body, response_content):
         "tengo un problema con", "reportar un bache", "reportar basura",
         "reportar luminaria", "hay un bache", "luz apagada", 
         "basura acumulada", "fuga de agua", "semáforo descompuesto",
-        "reporte de", "problema en la calle", "hacer reporte"
+        "reporte de", "problema en la calle", "hacer reporte",
+        "se fue la luz", "no hay luz", "sin luz", "sin energia",
+        "sin energía", "no tengo luz", "se fue la electricidad",
+        "no tengo electricidad"
     ]
     
     # 🎯 PALABRAS QUE INDICAN QUE NO ES REPORTE
@@ -5173,20 +5176,23 @@ async def whatsapp(request: Request):
     # Agregar mensaje actual del usuario al historial y guardarlo en la base de datos
     conversation_history.add_user_message(body)
 
+    if assistant_asked_for_optional_image(last_outbound_message):
+        create_or_update_report_session(from_number)
+        with report_sessions_lock:
+            report_sessions[from_number]["image_prompted"] = True
+
+            decision = classify_image_decision_response(body)
+            if decision:
+                report_sessions[from_number]["image_decision"] = decision
+                logger.critical(
+                    "🖼️ [IMAGE DECISION] %s respondió sobre imagen: %s",
+                    from_number,
+                    decision,
+                )
+
     if from_number in report_sessions:
         create_or_update_report_session(from_number)
         with report_sessions_lock:
-            if assistant_asked_for_optional_image(last_outbound_message):
-                report_sessions[from_number]["image_prompted"] = True
-
-                decision = classify_image_decision_response(body)
-                if decision:
-                    report_sessions[from_number]["image_decision"] = decision
-                    logger.critical(
-                        "🖼️ [IMAGE DECISION] %s respondió sobre imagen: %s",
-                        from_number,
-                        decision,
-                    )
 
             if assistant_asked_if_emergency(last_outbound_message):
                 emergency_answer = classify_emergency_response(body)

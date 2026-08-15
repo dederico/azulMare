@@ -1920,6 +1920,83 @@ def classify_image_decision_response(body: str) -> str | None:
 
     return None
 
+
+def is_explicit_human_handoff_request(body: str) -> bool:
+    if not body:
+        return False
+
+    normalized = body.strip().lower()
+    if not normalized:
+        return False
+
+    direct_phrases = [
+        "agente humano",
+        "asesor humano",
+        "operador humano",
+        "ejecutivo humano",
+        "hablar con un humano",
+        "hablar con humano",
+        "hablar con una persona",
+        "hablar con alguien",
+        "quiero un humano",
+        "quiero hablar con un humano",
+        "quiero hablar con una persona",
+        "pasame con un humano",
+        "pásame con un humano",
+        "pasame con humano",
+        "pásame con humano",
+        "pasame con una persona",
+        "pásame con una persona",
+        "pasame con alguien",
+        "pásame con alguien",
+        "pasame con un agente",
+        "pásame con un agente",
+        "pasame con un asesor",
+        "pásame con un asesor",
+        "pasame con un operador",
+        "pásame con un operador",
+        "pasame con un empleado",
+        "pásame con un empleado",
+        "me transfieres",
+        "me transferes",
+        "me trasfieres",
+        "me transfieres con alguien",
+        "me comunicas con alguien",
+    ]
+
+    if any(phrase in normalized for phrase in direct_phrases):
+        return True
+
+    person_terms = [
+        "humano",
+        "persona",
+        "alguien",
+        "agente",
+        "asesor",
+        "operador",
+        "empleado",
+        "ejecutivo",
+        "representante",
+    ]
+
+    contact_verbs = [
+        "transfer",
+        "transfier",
+        "trasfier",
+        "comunic",
+        "pas",
+        "habl",
+        "atend",
+        "escal",
+        "canaliz",
+    ]
+
+    has_person_term = any(term in normalized for term in person_terms)
+    has_contact_verb = any(verb in normalized for verb in contact_verbs)
+
+    return has_person_term and has_contact_verb
+
+
 def detect_report_intent(body, response_content):
     """
     Detecta si el usuario quiere hacer un reporte basándose en keywords.
@@ -5020,8 +5097,118 @@ async def whatsapp(request: Request):
     logger.debug(f"Guardando mensaje del usuario en BD: {body[:30]}...")
     db.Insert(user_message)
     await manage_message_history(db, from_number)
-    
+
     message_id = payload.get('message_id')
+
+    if is_explicit_human_handoff_request(body):
+        logger.critical(
+            "🔀 [DIRECT TRANSFER MATCH] %s solicitó atención humana con mensaje: %s",
+            from_number,
+            body,
+        )
+        response_content = "Claro, te transfiero con un agente humano, por favor espera un momento."
+        transfer_result = None
+
+        try:
+            if not message_id:
+                raise ValueError("No se encontró message_id en el payload para transferir")
+
+            expiration_time = datetime.now().timestamp() + transfer_timeout
+            transferred_numbers[from_number] = expiration_time
+
+            transfer_result = await transfer_to_group(
+                message_id=message_id,
+                group_id=1817,
+                reason="Solicitud explícita del usuario para hablar con humano",
+            )
+
+            logger.critical(
+                "✅ [DIRECT TRANSFER] %s solicitado por usuario. Resultado: %s",
+                from_number,
+                transfer_result,
+            )
+
+            transfer_note = Message(
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                senderName="System",
+                message=f"[SYSTEM] Transferencia directa ejecutada - message_id: {message_id}",
+                number=from_number,
+                uid=f"direct-transfer-{datetime.now().timestamp()}",
+                direction="system",
+                mtype="text",
+                source="whatsapp"
+            )
+            db.Insert(transfer_note)
+
+        except Exception as transfer_error:
+            logger.error(f"❌ [DIRECT TRANSFER] Error ejecutando transferencia: {str(transfer_error)}")
+            if from_number in transferred_numbers:
+                del transferred_numbers[from_number]
+            response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
+
+        assistant_message = Message(
+            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            senderName="Assistant",
+            message=response_content,
+            number=from_number,
+            uid=f"assistant-{datetime.now().timestamp()}",
+            direction="outbound",
+            mtype="text",
+            source="whatsapp"
+        )
+        db.Insert(assistant_message)
+        await manage_message_history(db, from_number)
+
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+        headers = {
+            "Authorization": api_token,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "client_id": client_id,
+            "channel_id": channel_id,
+            "transport": transport,
+            "text": response_content
+        }
+
+        log_chat2desk_outbound_attempt(
+            "whatsapp_main",
+            data,
+            from_number=from_number,
+            message_id=message_id,
+        )
+        response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
+        log_chat2desk_outbound_response(
+            "whatsapp_main",
+            response,
+            from_number=from_number,
+            message_id=message_id,
+        )
+
+        if response.status_code == 200:
+            logger.debug("Respuesta enviada exitosamente a Chat2Desk")
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Transferencia directa procesada",
+                    "transfer_result": transfer_result,
+                }
+            )
+
+        logger.error(
+            "Error al enviar mensaje de transferencia directa a Chat2Desk: %s - %s",
+            response.status_code,
+            response.text,
+        )
+        return JSONResponse(
+            content={
+                "status": False,
+                "error": "Error enviando respuesta de transferencia directa",
+                "transfer_result": transfer_result,
+            },
+            status_code=500,
+        )
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
@@ -5939,6 +6126,108 @@ async def clear_protection(phone_number: str):
             "status": "error", 
             "message": str(e),
             "phone": phone_number
+        }
+
+@router.post("/admin/reset-conversation/{phone_number}")
+async def reset_conversation(phone_number: str):
+    """
+    Endpoint administrativo para reiniciar por completo la conversación de un número.
+    Limpia historial en BD, sesiones en memoria y protecciones anti-duplicados.
+    """
+    try:
+        deleted_messages = db.delete_messages_by_number(phone_number)
+        dedup_items_cleared = dedup_manager.force_clear_protection(phone_number)
+
+        memory_cleanup = {
+            "report_sessions": False,
+            "user_answers": False,
+            "reports_in_progress": False,
+            "completed_reports": False,
+            "user_sessions": False,
+            "recently_completed_reports": False,
+            "transferred_numbers": False,
+            "last_response_time": False,
+            "recently_returned_to_bot": False,
+            "closed_by_inactivity": False,
+            "hsm_sent_reports": False,
+            "sent_evaluation_messages": False,
+            "finalized_report_numbers": False,
+        }
+
+        with report_sessions_lock:
+            if phone_number in report_sessions:
+                del report_sessions[phone_number]
+                memory_cleanup["report_sessions"] = True
+
+        if phone_number in user_answers:
+            del user_answers[phone_number]
+            memory_cleanup["user_answers"] = True
+
+        with reports_lock:
+            if phone_number in reports_in_progress:
+                del reports_in_progress[phone_number]
+                memory_cleanup["reports_in_progress"] = True
+
+        if phone_number in completed_reports:
+            del completed_reports[phone_number]
+            memory_cleanup["completed_reports"] = True
+
+        if phone_number in user_sessions:
+            del user_sessions[phone_number]
+            memory_cleanup["user_sessions"] = True
+
+        if phone_number in recently_completed_reports:
+            del recently_completed_reports[phone_number]
+            memory_cleanup["recently_completed_reports"] = True
+
+        if phone_number in transferred_numbers:
+            del transferred_numbers[phone_number]
+            memory_cleanup["transferred_numbers"] = True
+
+        if phone_number in last_response_time:
+            del last_response_time[phone_number]
+            memory_cleanup["last_response_time"] = True
+
+        if phone_number in recently_returned_to_bot:
+            del recently_returned_to_bot[phone_number]
+            memory_cleanup["recently_returned_to_bot"] = True
+
+        if phone_number in closed_by_inactivity:
+            del closed_by_inactivity[phone_number]
+            memory_cleanup["closed_by_inactivity"] = True
+
+        if phone_number in hsm_sent_reports:
+            del hsm_sent_reports[phone_number]
+            memory_cleanup["hsm_sent_reports"] = True
+
+        if phone_number in sent_evaluation_messages:
+            del sent_evaluation_messages[phone_number]
+            memory_cleanup["sent_evaluation_messages"] = True
+
+        if phone_number in finalized_report_numbers:
+            finalized_report_numbers.discard(phone_number)
+            memory_cleanup["finalized_report_numbers"] = True
+
+        logger.warning(
+            f"🧹 [ADMIN RESET] Conversación reiniciada para {phone_number}. "
+            f"Mensajes borrados: {deleted_messages}, protecciones: {dedup_items_cleared}, memoria: {memory_cleanup}"
+        )
+
+        return {
+            "status": "success",
+            "message": f"Conversación reiniciada para {phone_number}",
+            "phone": phone_number,
+            "deleted_messages": deleted_messages,
+            "dedup_items_cleared": dedup_items_cleared,
+            "memory_cleanup": memory_cleanup,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error resetting conversation for {phone_number}: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "phone": phone_number,
         }
 
 @router.get("/admin/dedup-status")

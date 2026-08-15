@@ -82,7 +82,6 @@ registered_functions = [
     get_consultas_multas_transito,
     get_denuncia_maltrato_animal,
     get_empleo,
-    get_parquimetros,
     get_gimnasios,
     get_voluntarios,
     get_urls,

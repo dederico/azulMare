@@ -234,8 +234,8 @@
           </div>
           <div class="field">
             <label for="attachment_url">URL pública de imagen/adjunto</label>
-            <input id="attachment_url" name="attachment_url" type="text" placeholder="https://..." value="{{ form_data.get('attachment_url', '') }}">
-            <div class="hint">Úsalo cuando la plantilla/HSM requiera imagen o archivo. Debe ser una URL pública directa.</div>
+            <input id="attachment_url" name="attachment_url" type="text" placeholder="https://drive.google.com/uc?export=download&id=1No-1ayfSMeFZ_JcGduygZDxZwcqEeeQy" value="{{ form_data.get('attachment_url', '') }}">
+            <div class="hint">Úsalo cuando la plantilla/HSM requiera imagen o archivo. Debe ser una URL pública directa; si pegas una liga común de Google Drive, el sistema la convertirá al formato correcto de descarga.</div>
           </div>
           <div class="field">
             <label for="attachment_filename">Nombre del archivo adjunto</label>

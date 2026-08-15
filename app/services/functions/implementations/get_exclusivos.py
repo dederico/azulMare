@@ -23,6 +23,8 @@ El refrendo se cobra proporcional a los meses que restan del año (por eso baja 
 Importante: Tu expediente catastral debe estar al corriente del impuesto predial.
 Pregunta: ¿Dónde se ubican las oficinas de Movilidad?
 Respuesta: Independencia 233 cruz con Corregidora, Casco Urbano
+Pregunta: ¿Cómo puedo conseguir una pensión de parquímetro?
+Respuesta: Las pensiones de parquímetros son únicamente para residentes, se puede comunicar al 8189881157 o acudir a las oficinas ubicadas en Independencia 233 cruz con Corregidora, Casco Urbano
 
 
 """

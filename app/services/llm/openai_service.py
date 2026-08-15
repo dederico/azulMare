@@ -1,5 +1,4 @@
 import json
-import time
 import openai
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
@@ -21,8 +20,11 @@ class OpenAIService(LLMService):
         self.conversation_history = []
         self.conversation_history.append({"role": "system", "content": self.ensure_valid_message_content(system)})
         self.function_manager = function_manager
-        self.functions = {}
-        self.current_function_name = None
+        self.registered_functions_by_name = {
+            func.__name__: func
+            for func in self.function_manager.registered_functions
+        }
+        self.pending_tool_calls: dict[int, dict[str, Any]] = {}
         # if self.config.get("use_kb"):
         #     self.vectorbase = VectorBase(config.get("agent_name", None))
     def ensure_valid_message_content(self, content):
@@ -81,25 +83,56 @@ class OpenAIService(LLMService):
         if self.config.get("use_context_summarization", False) and len(self.conversation_history) > self.config.get("summarize_threshold", 15):
             await self.summarize_conversation_history()
             
-        generator = await self.llm_generator()
+        max_tool_rounds = int(self.config.get("max_tool_rounds", 8))
+        tool_round = 0
 
-        full_message = ""
-        async for chunk in generator:
-            tool_call = chunk.choices[0].delta.tool_calls
-            if tool_call:
-                await self.handle_tool_call(tool_call)
+        while True:
+            self.pending_tool_calls = {}
+            generator = await self.llm_generator()
 
-            if chunk.choices[0].finish_reason == "tool_calls":
-                async for content in self.handle_tool_call_finish():
-                    yield content
+            full_message = ""
+            finish_reason = None
 
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
-                full_message += content
+            async for chunk in generator:
+                if not chunk.choices:
+                    continue
 
-        if full_message:
-            self.add_to_conversation("assistant", full_message)
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                if delta.tool_calls:
+                    self.handle_tool_call(delta.tool_calls)
+
+                if delta.content:
+                    yield delta.content
+                    full_message += delta.content
+
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+            if self.pending_tool_calls:
+                tool_round += 1
+
+                if tool_round > max_tool_rounds:
+                    raise RuntimeError(
+                        "Se excedió el máximo de "
+                        f"{max_tool_rounds} rondas de tools."
+                    )
+
+                await self.handle_tool_call_finish(
+                    assistant_content=full_message
+                )
+                continue
+
+            if full_message:
+                self.add_to_conversation("assistant", full_message)
+            elif finish_reason not in (None, "stop"):
+                logger.warning(
+                    "El modelo terminó sin contenido. finish_reason=%s",
+                    finish_reason,
+                )
+
+            break
 
     async def summarize_conversation_history(self):
         """Resumir el historial de conversación cuando se vuelve demasiado largo"""
@@ -123,7 +156,8 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         try:
             # Crear una solicitud separada para resumir el contexto
             summary_response = await self.client.chat.completions.create(
-                model=self.config.get("model") or "gpt-3.5-turbo-1106",
+                model="gpt-5.4-mini-2026-03-17",  # Puedes cambiar el modelo si es necesario
+                #model=self.config.get("model") or "gpt-3.5-turbo-1106",
                 messages=[{"role": "user", "content": summary_prompt}],
                 temperature=0.1,
             )
@@ -152,7 +186,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
     async def llm_generator(self):
         # Usar o3-mini si está configurado
         model = "gpt-5.4-mini-2026-03-17"
-        #model = self.config.get("model") or "gpt-3.5-turbo-1106"
+        #model = self.config.get("model") or "gpt-5.4-mini-2026-03-17"
         
         # Comprobar si estamos usando un modelo de razonamiento (o3-mini)
         if model == "o3-mini":
@@ -177,58 +211,148 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             )
         return generator
 
-    async def handle_tool_call(self, tool_call_chunk):
-        tool_call = tool_call_chunk[0]
+    def handle_tool_call(self, tool_call_chunks) -> None:
+        for tool_call in tool_call_chunks:
+            index = tool_call.index
 
-        function_name = None
-        if tool_call.function and tool_call.function.name:
-            function_name = tool_call.function.name
+            if index not in self.pending_tool_calls:
+                self.pending_tool_calls[index] = {
+                    "id": None,
+                    "type": "function",
+                    "function": {
+                        "name": "",
+                        "arguments": "",
+                    },
+                }
 
-        arguments_chunk = ""
-        if tool_call.function.arguments:
-            arguments_chunk = tool_call.function.arguments
+            current = self.pending_tool_calls[index]
 
-        if function_name:
-            self.current_function_name = function_name
-            self.functions[self.current_function_name] = ""
+            if tool_call.id:
+                current["id"] = tool_call.id
 
-        if self.current_function_name:
-            self.functions[self.current_function_name] += arguments_chunk
+            if tool_call.type:
+                current["type"] = tool_call.type
 
-    async def handle_tool_call_finish(self):
-        for k, v in self.functions.items():
-            logger.debug(f"Call: {k} with arguments: {v}")
-            
+            if tool_call.function:
+                if tool_call.function.name:
+                    current["function"]["name"] = tool_call.function.name
+
+                if tool_call.function.arguments:
+                    current["function"]["arguments"] += tool_call.function.arguments
+
+    def _get_complete_tool_calls(self) -> list[dict[str, Any]]:
+        tool_calls = []
+
+        for index in sorted(self.pending_tool_calls):
+            tool_call = self.pending_tool_calls[index]
+            tool_call_id = tool_call.get("id")
+            function_name = tool_call.get("function", {}).get("name")
+            arguments = tool_call.get("function", {}).get("arguments", "")
+
+            if not tool_call_id:
+                raise RuntimeError(
+                    f"Tool call index={index} llegó sin tool_call.id."
+                )
+
+            if not function_name:
+                raise RuntimeError(
+                    f"Tool call index={index} llegó sin function.name."
+                )
+
+            tool_calls.append(
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "arguments": arguments,
+                    },
+                }
+            )
+
+        return tool_calls
+
+    async def handle_tool_call_finish(
+        self,
+        assistant_content: str = "",
+    ) -> None:
+        tool_calls = self._get_complete_tool_calls()
+
+        self.conversation_history.append(
+            {
+                "role": "assistant",
+                "content": assistant_content or None,
+                "tool_calls": tool_calls,
+            }
+        )
+
+        for tool_call in tool_calls:
+            tool_call_id = tool_call["id"]
+            function_name = tool_call["function"]["name"]
+            raw_arguments = tool_call["function"]["arguments"]
+
+            logger.debug(
+                "Call id=%s: %s with arguments: %s",
+                tool_call_id,
+                function_name,
+                raw_arguments,
+            )
+
             try:
-                arguments = json.loads(v)
+                arguments = json.loads(raw_arguments or "{}")
             except json.decoder.JSONDecodeError as e:
-                logger.error(f"Error decoding JSON for function {k}: {e},{e.message} Input was: {v}.")
+                logger.error(
+                    "Error decoding JSON for function %s: %s Input was: %s.",
+                    function_name,
+                    e,
+                    raw_arguments,
+                )
+                self.conversation_history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": (
+                            "Error: argumentos JSON inválidos para "
+                            f"{function_name}: {str(e)}"
+                        ),
+                    }
+                )
                 continue
 
-            for func in self.function_manager.registered_functions:
-                if func.__name__ == k:
-                    try:
-                        response = await func(**arguments)
-                    except Exception as e:
-                        logger.error(f"Error calling function {k} with arguments {arguments}: {e}")
-                        continue
-                    
-                    self.add_to_conversation(
-                        "function", content=response, name=func.__name__
-                    )
+            func = self.registered_functions_by_name.get(function_name)
+            if func is None:
+                self.conversation_history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": (
+                            f"Error: la función '{function_name}' no está registrada."
+                        ),
+                    }
+                )
+                continue
 
-        generator = await self.llm_generator()
+            try:
+                response = await func(**arguments)
+                tool_response = self.ensure_valid_message_content(response)
+            except Exception as e:
+                logger.error(
+                    "Error calling function %s with arguments %s: %s",
+                    function_name,
+                    arguments,
+                    e,
+                )
+                tool_response = (
+                    f"Error ejecutando '{function_name}': {str(e)}"
+                )
 
-        full_message = ""
-        async for chunk in generator:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
-                full_message += content
-
-        self.add_to_conversation("assistant", full_message)
-        self.functions = {}
-        self.current_function_name = None
+            self.conversation_history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": tool_response,
+                }
+            )
 
     def clear_conversation_history(self) -> None:
         """Limpia el historial de conversación pero conserva los mensajes del sistema"""

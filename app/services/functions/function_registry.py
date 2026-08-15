@@ -7,7 +7,6 @@ from .implementations.get_centros_reciclaje import get_centros_reciclaje
 from .implementations.get_consulta_multas_transito import get_consultas_multas_transito
 from .implementations.get_denuncia_maltrato_animal import get_denuncia_maltrato_animal
 from .implementations.get_empleo import get_empleo
-from .implementations.get_parquimetros import get_parquimetros
 from .implementations.get_gimnasios import get_gimnasios
 from .implementations.transfer_message_event import transfer_to_group
 from .implementations.get_voluntarios import get_voluntarios

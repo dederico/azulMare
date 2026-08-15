@@ -1839,13 +1839,86 @@ def create_or_update_report_session(from_number):
                 "images": [],
                 "image_descriptions": [],
                 "location": None,
-                "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
+                "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
+                "image_prompted": False,
+                "image_decision": None,
             }
             logger.critical(f"🎯 [NEW SESSION] Sesión de reporte creada para {from_number}")
         else:
             # Actualizar timestamp si ya existe
             report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
             logger.critical(f"🎯 [UPDATE SESSION] Timestamp actualizado para {from_number}")
+
+
+def assistant_asked_for_optional_image(message: str) -> bool:
+    if not message:
+        return False
+
+    normalized = message.lower()
+    patterns = [
+        "deseas agregar una imagen",
+        "deseas agregar imagen",
+        "agregar una imagen para complementar tu reporte",
+        "agregar imagen para complementar tu reporte",
+        "¿deseas agregar una imagen",
+        "quieres agregar una imagen",
+    ]
+    return any(pattern in normalized for pattern in patterns)
+
+
+def classify_image_decision_response(body: str) -> str | None:
+    if not body:
+        return None
+
+    normalized = body.strip().lower()
+    if not normalized:
+        return None
+
+    no_patterns = [
+        "no",
+        "no gracias",
+        "sin imagen",
+        "sin foto",
+        "no tengo foto",
+        "no tengo imagen",
+        "no deseo agregar imagen",
+        "no deseo agregar una imagen",
+        "prefiero no",
+        "continua sin imagen",
+        "continúa sin imagen",
+        "sigue sin imagen",
+        "no puedo tomar foto",
+        "no puedo tomar una foto",
+        "no puedo enviar foto",
+        "no puedo enviar una foto",
+        "es peligroso tomar foto",
+        "es riesgoso tomar foto",
+    ]
+
+    yes_patterns = [
+        "si",
+        "sí",
+        "si deseo",
+        "sí deseo",
+        "quiero agregar imagen",
+        "quiero agregar una imagen",
+        "te envio foto",
+        "te envío foto",
+        "te mando foto",
+        "voy a mandar foto",
+        "voy a enviar foto",
+    ]
+
+    if normalized in ("no", "sí", "si"):
+        return "no" if normalized == "no" else "yes"
+
+    if any(pattern in normalized for pattern in no_patterns):
+        return "no"
+
+    if any(pattern in normalized for pattern in yes_patterns):
+        return "yes"
+
+    return None
 
 def detect_report_intent(body, response_content):
     """
@@ -1979,6 +2052,93 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         dedup_manager.mark_report_creation_failure(yoga_number)
         logger.error(f"💥 [ERROR] Error creando reporte para {yoga_number}: {str(e)}")
         raise
+
+
+async def save_client_selection2_guarded(
+    yoga_number: str,
+    selection1: str,
+    selection2: str,
+    selection3: str,
+    selection4: str,
+    selection5: str,
+    selection6: str,
+    selection7: str,
+    selection8: str = None,
+    images_list: list = None,
+    descriptions_list: list = None,
+):
+    """
+    Guardar la información de las preguntas según las respuestas del cliente.
+    yoga_number (string): El número de teléfono del cliente.
+    selection1 (string): ID numérico del asunto (ej: "984" para baches) o "0" para auto-clasificación.
+    selection2 (string): Nombre del cliente.
+    selection3 (string): SIEMPRE debe ser una cadena vacía "".
+    selection4 (string): Razón del reporte.
+    selection5 (string): Calle.
+    selection6 (string): Número (default: 000).
+    selection7 (string): Colonia.
+    selection8 (string, optional): URL o ruta de la imagen para la pregunta 8.
+    images_list (array[string], optional): Lista de URLs de imágenes.
+    descriptions_list (array[string], optional): Lista de descripciones correspondientes a las imágenes.
+    """
+    emergency_codes = {"891", "892", "893", "894", "895", "896", "964"}
+    normalized_type = str(selection1 or "").strip()
+    normalized_colony = str(selection7 or "").strip().lower()
+
+    if not normalized_colony or normalized_colony in {"0000", "sin especificar"}:
+        logger.warning(
+            "🚫 [GUARD] save_client_selection2 bloqueado para %s por colonia inválida: %s",
+            yoga_number,
+            selection7,
+        )
+        return (
+            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener una colonia válida. "
+            "La colonia es obligatoria y no puede ser '0000'."
+        )
+
+    session = report_sessions.get(yoga_number, {})
+    has_images = bool(images_list) or bool(session.get("images")) or bool(str(selection8 or "").strip())
+
+    if normalized_type not in emergency_codes:
+        image_prompted = bool(session.get("image_prompted"))
+        image_decision = session.get("image_decision")
+
+        if not image_prompted and not has_images and image_decision is None:
+            logger.warning(
+                "🚫 [GUARD] save_client_selection2 bloqueado para %s: falta preguntar imagen",
+                yoga_number,
+            )
+            return (
+                "VALIDATION_BLOCK: Antes de crear el reporte, pregunta al usuario si desea agregar "
+                "una imagen para complementar su reporte. La imagen es opcional."
+            )
+
+        if image_prompted and image_decision is None and not has_images:
+            logger.warning(
+                "🚫 [GUARD] save_client_selection2 bloqueado para %s: falta respuesta sobre imagen",
+                yoga_number,
+            )
+            return (
+                "VALIDATION_BLOCK: Aún falta la respuesta del usuario sobre si desea agregar "
+                "imagen. Debes esperar su respuesta antes de crear el reporte."
+            )
+
+    return await save_client_selection2_protected(
+        yoga_number=yoga_number,
+        selection1=selection1,
+        selection2=selection2,
+        selection3=selection3,
+        selection4=selection4,
+        selection5=selection5,
+        selection6=selection6,
+        selection7=selection7,
+        selection8=selection8,
+        images_list=images_list,
+        descriptions_list=descriptions_list,
+    )
+
+
+save_client_selection2_guarded.__name__ = "save_client_selection2"
 
 def clear_user_answers(from_number):
     """Limpia todas las respuestas guardadas de un usuario"""
@@ -3751,7 +3911,11 @@ async def whatsapp(request: Request):
     db = LocalStorage()
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
-    function_manager = FunctionManager(registered_functions)
+    whatsapp_functions = [
+        save_client_selection2_guarded if func.__name__ == "save_client_selection2" else func
+        for func in registered_functions
+    ]
+    function_manager = FunctionManager(whatsapp_functions)
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     # Check if this is a message from a human agent with the human takeover message
@@ -4804,6 +4968,10 @@ async def whatsapp(request: Request):
         
         # Obtener mensajes ordenados por tiempo (los más antiguos primero)
         messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        last_outbound_message = next(
+            (msg.message for msg in reversed(messages_db) if msg.direction == "outbound" and msg.message),
+            "",
+        )
         
         # Limpiar el historial antes de agregar mensajes para evitar duplicados
         conversation_history.messages.clear()
@@ -4822,6 +4990,21 @@ async def whatsapp(request: Request):
 
     # Agregar mensaje actual del usuario al historial y guardarlo en la base de datos
     conversation_history.add_user_message(body)
+
+    if from_number in report_sessions and assistant_asked_for_optional_image(last_outbound_message):
+        create_or_update_report_session(from_number)
+        with report_sessions_lock:
+            report_sessions[from_number]["image_prompted"] = True
+
+            decision = classify_image_decision_response(body)
+            if decision:
+                report_sessions[from_number]["image_decision"] = decision
+                logger.critical(
+                    "🖼️ [IMAGE DECISION] %s respondió sobre imagen: %s",
+                    from_number,
+                    decision,
+                )
+
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName=sender_name,
@@ -4965,6 +5148,12 @@ async def whatsapp(request: Request):
             response_content = " ".join([str(item) for item in response_content])
         elif not isinstance(response_content, str):
             response_content = str(response_content)
+
+        if from_number in report_sessions and assistant_asked_for_optional_image(response_content):
+            with report_sessions_lock:
+                report_sessions[from_number]["image_prompted"] = True
+                report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+            logger.critical(f"🖼️ [IMAGE PROMPTED] Pregunta de imagen registrada para {from_number}")
         
         # Guardar la respuesta en el historial y en la base de datos
         conversation_history.add_ai_message(response_content)

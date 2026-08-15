@@ -1842,6 +1842,7 @@ def create_or_update_report_session(from_number):
                 "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
                 "image_prompted": False,
                 "image_decision": None,
+                "declared_emergency": None,
             }
             logger.critical(f"🎯 [NEW SESSION] Sesión de reporte creada para {from_number}")
         else:
@@ -1864,6 +1865,53 @@ def assistant_asked_for_optional_image(message: str) -> bool:
         "quieres agregar una imagen",
     ]
     return any(pattern in normalized for pattern in patterns)
+
+
+def assistant_asked_if_emergency(message: str) -> bool:
+    if not message:
+        return False
+
+    normalized = message.lower()
+    patterns = [
+        "es una emergencia",
+        "esto lo considerarías una emergencia",
+        "esto lo considerarias una emergencia",
+        "consideras que es una emergencia",
+        "considerarías que es una emergencia",
+    ]
+    return any(pattern in normalized for pattern in patterns)
+
+
+def classify_emergency_response(body: str) -> bool | None:
+    if not body:
+        return None
+
+    normalized = body.strip().lower()
+    if not normalized:
+        return None
+
+    yes_patterns = {
+        "si",
+        "sí",
+        "si es",
+        "sí es",
+        "claro",
+        "asi es",
+        "así es",
+        "correcto",
+    }
+    no_patterns = {
+        "no",
+        "no es",
+        "negativo",
+    }
+
+    if normalized in yes_patterns:
+        return True
+    if normalized in no_patterns:
+        return False
+
+    return None
 
 
 def classify_image_decision_response(body: str) -> str | None:
@@ -2160,7 +2208,63 @@ async def save_client_selection2_guarded(
     """
     emergency_codes = {"891", "892", "893", "894", "895", "896", "964"}
     normalized_type = str(selection1 or "").strip()
+    normalized_name = str(selection2 or "").strip().lower()
+    normalized_reason = str(selection4 or "").strip().lower()
+    normalized_street = str(selection5 or "").strip().lower()
+    normalized_number = str(selection6 or "").strip().lower()
     normalized_colony = str(selection7 or "").strip().lower()
+
+    if not normalized_type or normalized_type in {"0"}:
+        logger.warning(
+            "🚫 [GUARD] save_client_selection2 bloqueado para %s por tipo inválido: %s",
+            yoga_number,
+            selection1,
+        )
+        return (
+            "VALIDATION_BLOCK: Antes de crear el reporte, debes identificar correctamente el tipo de reporte."
+        )
+
+    if not normalized_name or normalized_name in {"ciudadano", "sin especificar"}:
+        logger.warning(
+            "🚫 [GUARD] save_client_selection2 bloqueado para %s por nombre inválido: %s",
+            yoga_number,
+            selection2,
+        )
+        return (
+            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener un nombre válido del ciudadano."
+        )
+
+    if not normalized_reason or normalized_reason in {"sin especificar"}:
+        logger.warning(
+            "🚫 [GUARD] save_client_selection2 bloqueado para %s por motivo inválido: %s",
+            yoga_number,
+            selection4,
+        )
+        return (
+            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener el motivo o descripción del problema."
+        )
+
+    if not normalized_street or normalized_street in {"sin especificar"}:
+        logger.warning(
+            "🚫 [GUARD] save_client_selection2 bloqueado para %s por calle inválida: %s",
+            yoga_number,
+            selection5,
+        )
+        return (
+            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener una calle válida. "
+            "La calle es obligatoria."
+        )
+
+    if not normalized_number or normalized_number in {"sin especificar"}:
+        logger.warning(
+            "🚫 [GUARD] save_client_selection2 bloqueado para %s por número inválido: %s",
+            yoga_number,
+            selection6,
+        )
+        return (
+            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener el número. "
+            "Si el usuario no lo sabe o no existe numeración, usa '0000' solo en ese caso."
+        )
 
     if not normalized_colony or normalized_colony in {"0000", "sin especificar"}:
         logger.warning(
@@ -2175,8 +2279,9 @@ async def save_client_selection2_guarded(
 
     session = report_sessions.get(yoga_number, {})
     has_images = bool(images_list) or bool(session.get("images")) or bool(str(selection8 or "").strip())
+    declared_emergency = session.get("declared_emergency") is True
 
-    if normalized_type not in emergency_codes:
+    if normalized_type not in emergency_codes and not declared_emergency:
         image_prompted = bool(session.get("image_prompted"))
         image_decision = session.get("image_decision")
 
@@ -5068,19 +5173,30 @@ async def whatsapp(request: Request):
     # Agregar mensaje actual del usuario al historial y guardarlo en la base de datos
     conversation_history.add_user_message(body)
 
-    if from_number in report_sessions and assistant_asked_for_optional_image(last_outbound_message):
+    if from_number in report_sessions:
         create_or_update_report_session(from_number)
         with report_sessions_lock:
-            report_sessions[from_number]["image_prompted"] = True
+            if assistant_asked_for_optional_image(last_outbound_message):
+                report_sessions[from_number]["image_prompted"] = True
 
-            decision = classify_image_decision_response(body)
-            if decision:
-                report_sessions[from_number]["image_decision"] = decision
-                logger.critical(
-                    "🖼️ [IMAGE DECISION] %s respondió sobre imagen: %s",
-                    from_number,
-                    decision,
-                )
+                decision = classify_image_decision_response(body)
+                if decision:
+                    report_sessions[from_number]["image_decision"] = decision
+                    logger.critical(
+                        "🖼️ [IMAGE DECISION] %s respondió sobre imagen: %s",
+                        from_number,
+                        decision,
+                    )
+
+            if assistant_asked_if_emergency(last_outbound_message):
+                emergency_answer = classify_emergency_response(body)
+                if emergency_answer is not None:
+                    report_sessions[from_number]["declared_emergency"] = emergency_answer
+                    logger.critical(
+                        "🚨 [EMERGENCY FLAG] %s respondió emergencia=%s",
+                        from_number,
+                        emergency_answer,
+                    )
 
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

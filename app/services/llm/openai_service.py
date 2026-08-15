@@ -151,7 +151,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
 
     async def llm_generator(self):
         # Usar o3-mini si está configurado
-        model = "gpt-4.1-2025-04-14"
+        model = "gpt-5.4-mini-2026-03-17"
         #model = self.config.get("model") or "gpt-3.5-turbo-1106"
         
         # Comprobar si estamos usando un modelo de razonamiento (o3-mini)

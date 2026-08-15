@@ -72,6 +72,34 @@ class OpenAIService(LLMService):
             # Reorganizar el historial: primero mensajes del sistema, luego los recientes
             self.conversation_history = system_messages + recent_messages
 
+    def seed_conversation_history(self, messages: list[dict[str, Any]]) -> None:
+        """
+        Reemplaza el historial no-system por mensajes ya estructurados.
+        Mantiene intacto el system prompt actual del servicio.
+        """
+        system_messages = [
+            msg for msg in self.conversation_history
+            if msg.get("role") == "system"
+        ]
+
+        seeded_messages = []
+        for message in messages:
+            role = message.get("role")
+            if role == "system":
+                # El system prompt efectivo se controla al construir el servicio.
+                continue
+
+            seeded_messages.append(
+                {
+                    "role": role,
+                    "content": self.ensure_valid_message_content(
+                        message.get("content", "")
+                    ),
+                }
+            )
+
+        self.conversation_history = system_messages + seeded_messages
+
     async def generate_response(self, user_input: str) -> AsyncGenerator[str, None]:
         if self.config.get("use_kb"):
             kb_context = self.vectorbase.Query(user_input)

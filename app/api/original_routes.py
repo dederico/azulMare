@@ -4936,20 +4936,26 @@ async def whatsapp(request: Request):
             # No es necesario añadirlo otra vez ya que el cuerpo del mensaje ya contiene esta info
             # conversation_history.add_user_message(image_message)
 
-        # Formatear el historial de mensajes para el modelo
+        # Formatear el historial de mensajes para el modelo.
+        # El último mensaje ya es el input actual del usuario y se enviará
+        # por separado a generate_response para evitar duplicarlo.
         formatted_history = [
             {"role": "user", "content": message.content} if isinstance(message, HumanMessage)
             else {"role": "system", "content": message.content} if isinstance(message, SystemMessage)
             else {"role": "assistant", "content": message.content}
             for message in conversation_history.messages
         ]
-        
-        # Convertir formatted_history en un solo string para user_input
-        user_input = "\n".join(f"{msg['role']}: {msg['content']}" for msg in formatted_history)
-        logger.debug(f"Input preparado para el modelo (primeros 100 caracteres): {user_input[:100]}...")
 
-        # Generar la respuesta del modelo usando el historial completo
-        model_response = llm_service.generate_response(user_input=user_input)
+        structured_history = formatted_history[:-1] if formatted_history else []
+        llm_service.seed_conversation_history(structured_history)
+        logger.debug(
+            "Historial estructurado preparado para el modelo: %s mensajes previos",
+            len(structured_history),
+        )
+
+        # Generar la respuesta del modelo con historial estructurado y el
+        # mensaje actual como nuevo input del usuario.
+        model_response = llm_service.generate_response(user_input=body)
         response_content = ""
         async for response in model_response:
             response_content += str(response)

@@ -70,6 +70,8 @@ from .implementations.get_actividades_mayo_junio import get_actividades_mayo_jun
 from .implementations.get_actividades_agosto_2026 import get_actividades_agosto_2026
 from .implementations.get_utiles_escolares_agosto_2026 import get_utiles_escolares_agosto_2026
 from .implementations.get_unibus import get_unibus
+from .implementations.get_exclusivos import get_exclusivos
+from .implementations.get_evento_festival_flores import get_evento_festival_flores
 
 
 registered_functions = [
@@ -143,5 +145,7 @@ registered_functions = [
     get_actividades_mayo_junio,
     get_actividades_agosto_2026,
     get_utiles_escolares_agosto_2026,
-    get_unibus
+    get_unibus,
+    get_exclusivos,
+    get_evento_festival_flores
 ]

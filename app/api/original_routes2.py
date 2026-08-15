@@ -4189,7 +4189,7 @@ async def whatsapp(request: Request):
                     logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA PARA: {phone_to_transfer}")
                     result = await transfer_to_group(
                         phone_number=phone_to_transfer,
-                        group_id=1772,
+                        group_id=1817,
                         reason="Transferencia automática por solicitud del LLM",
                         send_notification=True
                     )
@@ -4199,7 +4199,7 @@ async def whatsapp(request: Request):
                     transfer_note = Message(
                         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         senderName="System",
-                        message=f"[SYSTEM] Transferencia ejecutada para {phone_to_transfer} a grupo 1772",
+                        message=f"[SYSTEM] Transferencia ejecutada para {phone_to_transfer} a grupo 1817",
                         number=from_number,
                         uid=f"transfer-exec-{datetime.now().timestamp()}",
                         direction="system",

@@ -52,8 +52,8 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
             try:
                 group_id = int(float(group_id))
             except (ValueError, TypeError):
-                logger.warning(f"group_id no válido: {group_id}, usando valor por defecto 1772")
-                group_id = 1772
+                logger.warning(f"group_id no válido: {group_id}, usando valor por defecto 1817")
+                group_id = 1817
 
         # Configurar encabezados
         api_token = os.environ.get("CHAT2DESK_API_TOKEN")

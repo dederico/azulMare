@@ -107,6 +107,23 @@ def _truncate_for_log(value, limit=500):
     return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
 
 
+def parse_chat2desk_event_timestamp(event_time: str | None) -> float | None:
+    if not event_time:
+        return None
+
+    try:
+        return datetime.fromisoformat(event_time.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        logger.warning("⚠️ [EVENT TIME] No se pudo parsear event_time=%s", event_time)
+        return None
+
+
+def format_event_timestamp_for_log(timestamp: float | None) -> str:
+    if timestamp is None:
+        return "None"
+    return datetime.fromtimestamp(timestamp, tz=ZoneInfo("UTC")).isoformat()
+
+
 def log_chat2desk_outbound_attempt(context, payload, from_number=None, message_id=None):
     safe_payload = dict(payload or {})
     if "text" in safe_payload:
@@ -317,7 +334,7 @@ async def handle_hsm_conclusion_notification(payload, from_number):
         user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
     
     session = user_sessions[from_number]
-    session.evaluation_state = "WAITING_OK_CLICK"  # Nuevo estado
+    session.evaluation_state = EVALUATION_STATES["WAITING_OK_CLICK"]
     session.evaluation_folio = reporte_id
     session.last_hsm_time = current_time
     session.evaluation_client_id = client_id  # Guardar para uso posterior
@@ -375,61 +392,52 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
         return False
     
     logger.critical(f"🎯 [EVAL] Procesando respuesta '{text}' en estado '{evaluation_state}'")
+    normalized_text = text.strip()
+    respuesta = normalized_text.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace(" ", "")
+
+    # Compatibilidad con estados legacy guardados como clave simbólica.
+    if evaluation_state == "WAITING_OK_CLICK":
+        evaluation_state = EVALUATION_STATES["WAITING_OK_CLICK"]
+        session.evaluation_state = evaluation_state
+        session.update_activity()
     
-    # 🆕 ESTADO 0: Esperando click de OK (se maneja en flujo HSM+OK)
+    # ESTADO 0: Esperando confirmación OK para iniciar evaluación.
     if evaluation_state == EVALUATION_STATES["WAITING_OK_CLICK"]:
-        logger.critical(f"🎯 [EVAL] Estado WAITING_OK_CLICK detectado - Se maneja en HSM + OK")
-        return False
-        # CAMBIAR ESTADO A WAITING_RESOLUTION_RESPONSE
-        # session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]
-        # session.update_activity()
-        
-        # # Obtener folio y datos guardados
-        # folio = getattr(session, 'evaluation_folio', 'UNKNOWN')
-        
-        # # Usar los client_id y channel_id guardados
-        # if hasattr(session, 'evaluation_client_id') and hasattr(session, 'evaluation_channel_id'):
-        #     try:
-        #         # Enviar comentario de conclusión
-        #         await send_conclusion_comment_and_image(
-        #             session.evaluation_client_id, 
-        #             session.evaluation_channel_id, 
-        #             folio
-        #         )
-                
-        #         # Esperar un momento
-        #         await asyncio.sleep(2)
-                
-        #         # Enviar pregunta de evaluación
-        #         validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-        #         await send_chat2desk_message_direct(
-        #             session.evaluation_client_id, 
-        #             session.evaluation_channel_id, 
-        #             validation_message
-        #         )
-                
-        #         logger.critical(f"✅ [EVAL] Evaluación activada para folio {folio}")
-        #         return True
-                
-        #     except Exception as e:
-        #         logger.error(f"Error activando evaluación: {str(e)}")
-        #         # Fallback: solo enviar pregunta
-        #         try:
-        #             validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-        #             await send_chat2desk_message_direct(
-        #                 session.evaluation_client_id, 
-        #                 session.evaluation_channel_id, 
-        #                 validation_message
-        #             )
-        #             return True
-        #         except:
-        #             return False
-        # else:
-        #     logger.error(f"❌ [EVAL] Faltan client_id o channel_id para evaluación")
-        #     return False
-        
-    # Normalizar respuesta del usuario
-    respuesta = text.strip().lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace(" ", "")
+        logger.critical("🎯 [EVAL] Estado WAITING_OK_CLICK detectado")
+        if respuesta != "ok":
+            clarification_message = "Para continuar con la evaluación, por favor responde *OK*."
+            await send_chat2desk_message_direct(client_id, channel_id, clarification_message, transport)
+            return True
+
+        folio = getattr(session, 'evaluation_folio', 'UNKNOWN')
+        evaluation_client_id = getattr(session, 'evaluation_client_id', client_id)
+        evaluation_channel_id = getattr(session, 'evaluation_channel_id', channel_id)
+
+        session.evaluation_state = EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]
+        session.evaluation_client_id = evaluation_client_id
+        session.evaluation_channel_id = evaluation_channel_id
+        session.update_activity()
+
+        try:
+            await send_conclusion_comment_and_image(
+                evaluation_client_id,
+                evaluation_channel_id,
+                folio,
+                transport,
+            )
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"❌ [EVAL] Error enviando conclusión para folio {folio}: {str(e)}")
+
+        validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+        await send_chat2desk_message_direct(
+            evaluation_client_id,
+            evaluation_channel_id,
+            validation_message,
+            transport,
+        )
+        logger.critical(f"✅ [EVAL] Evaluación activada para folio {folio} desde WAITING_OK_CLICK")
+        return True
     
     # ESTADO 1: Esperando respuesta sobre resolución (Sí/No)
     if evaluation_state == EVALUATION_STATES["WAITING_RESOLUTION_RESPONSE"]:
@@ -1053,6 +1061,8 @@ completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio:
 finalized_report_numbers = set()
 # Ahora, añade esta nueva función para verificar si un número ya tiene un reporte reciente
 recently_returned_to_bot = {}
+bot_returned_at = {}
+STALE_RETURN_EVENT_TOLERANCE_SECONDS = 1.0
 BOT_GRACE_PERIOD = 10
 user_answers = {}
 closed_by_inactivity = {}  # key: phone_number, value: expiration_timestamp
@@ -2071,7 +2081,14 @@ def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = N
         "8189882000",
     }
     customer_digits = "".join(ch for ch in (customer_phone or "") if ch.isdigit())
+    url_pattern = re.compile(r"https?://[^\s]+", re.IGNORECASE)
     phone_pattern = re.compile(r"(?<![\w/])(?:\+?\d[\d\-\s\(\)]{8,}\d)")
+
+    protected_urls = []
+
+    def protect_url(match):
+        protected_urls.append(match.group(0))
+        return f"__URLTOKEN_{len(protected_urls) - 1}__"
 
     def replace_phone(match):
         raw = match.group(0)
@@ -2093,7 +2110,13 @@ def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = N
 
         return raw
 
-    return phone_pattern.sub(replace_phone, message)
+    protected_message = url_pattern.sub(protect_url, message)
+    sanitized_message = phone_pattern.sub(replace_phone, protected_message)
+
+    for index, original_url in enumerate(protected_urls):
+        sanitized_message = sanitized_message.replace(f"__URLTOKEN_{index}__", original_url)
+
+    return sanitized_message
 
 
 def normalize_user_facing_response(message: str, customer_phone: str | None = None) -> str:
@@ -2577,6 +2600,9 @@ async def remove_from_recently_returned(number, delay_seconds):
         if number in recently_returned_to_bot:
             del recently_returned_to_bot[number]
             logger.info(f"Removed {number} from recently returned to bot tracking")
+        if number in bot_returned_at:
+            del bot_returned_at[number]
+            logger.info(f"Removed {number} from bot_returned_at tracking")
     except Exception as e:
         logger.error(f"Error removing {number} from recently returned tracking: {str(e)}")
 
@@ -4455,7 +4481,9 @@ async def whatsapp(request: Request):
                 del transferred_numbers[from_number]
                 logger.debug(f"Removed {from_number} from transferred_numbers dictionary")
                 
-            recently_returned_to_bot[from_number] = datetime.now().timestamp()
+            return_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time")) or datetime.now().timestamp()
+            recently_returned_to_bot[from_number] = return_timestamp
+            bot_returned_at[from_number] = return_timestamp
             logger.info(f"Added {from_number} to recently_returned_to_bot with grace period of {BOT_GRACE_PERIOD} seconds")
             
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
@@ -4465,6 +4493,7 @@ async def whatsapp(request: Request):
                 operator_id=operator_id,
                 message_preview=message_text[:240],
                 action="release_control_without_autogreeting",
+                return_timestamp=return_timestamp,
             )
             return JSONResponse(content={"status": True, "message": "Control released to AI for next inbound message"})
 
@@ -4599,6 +4628,52 @@ async def whatsapp(request: Request):
         if message_type != 'from_client':
             logger.debug(f"Ignorando mensaje con type={message_type} que no es from_client")
             return JSONResponse(content={"status": True, "message": "Mensaje del sistema ignorado"})
+
+        inbound_event_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time"))
+        if from_number in bot_returned_at and inbound_event_timestamp is not None:
+            return_timestamp = bot_returned_at[from_number]
+            delta_seconds = inbound_event_timestamp - return_timestamp
+            if inbound_event_timestamp <= (return_timestamp + STALE_RETURN_EVENT_TOLERANCE_SECONDS):
+                logger.warning(
+                    "🧭 [RETURN FILTER] decision=stale from_number=%s uid=%s "
+                    "return_event_time=%s inbound_event_time=%s delta_seconds=%.3f tolerance_seconds=%.3f",
+                    from_number,
+                    uid,
+                    format_event_timestamp_for_log(return_timestamp),
+                    format_event_timestamp_for_log(inbound_event_timestamp),
+                    delta_seconds,
+                    STALE_RETURN_EVENT_TOLERANCE_SECONDS,
+                )
+                logger.warning(
+                    "🚫 [RETURN STALE EVENT] Ignorando inbound viejo/reentregado para %s "
+                    "(event_time=%s, return_to_bot=%s, uid=%s)",
+                    from_number,
+                    payload.get("event_time"),
+                    datetime.fromtimestamp(return_timestamp).isoformat(),
+                    uid,
+                )
+                log_operational_decision_trace(
+                    from_number,
+                    "stale_inbound_after_return_to_bot",
+                    uid=uid,
+                    inbound_event_time=payload.get("event_time"),
+                    return_timestamp=return_timestamp,
+                    body_preview=(body or "")[:240],
+                )
+                return JSONResponse(content={"status": True, "message": "Mensaje viejo ignorado tras return-to-bot"})
+
+            del bot_returned_at[from_number]
+            logger.info(
+                "🧭 [RETURN FILTER] decision=fresh from_number=%s uid=%s "
+                "return_event_time=%s inbound_event_time=%s delta_seconds=%.3f tolerance_seconds=%.3f",
+                from_number,
+                uid,
+                format_event_timestamp_for_log(return_timestamp),
+                format_event_timestamp_for_log(inbound_event_timestamp),
+                delta_seconds,
+                STALE_RETURN_EVENT_TOLERANCE_SECONDS,
+            )
+            logger.info(f"✅ [RETURN FRESH EVENT] Primer inbound nuevo aceptado para {from_number} después de -bot")
 
         # Deduplicar mensajes entrantes antes de cualquier flujo que pueda responder o disparar efectos.
         if processed_message_ids.contains(uid):

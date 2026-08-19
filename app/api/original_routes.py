@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import hashlib
 import httpx
 import requests
@@ -122,6 +123,36 @@ def format_event_timestamp_for_log(timestamp: float | None) -> str:
     if timestamp is None:
         return "None"
     return datetime.fromtimestamp(timestamp, tz=ZoneInfo("UTC")).isoformat()
+
+
+def normalize_operator_message_text(text: str | None) -> str:
+    if not text:
+        return ""
+
+    normalized = unicodedata.normalize("NFKD", text)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = normalized.lower()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def is_human_takeover_message(text: str | None) -> bool:
+    normalized = normalize_operator_message_text(text)
+    return (
+        "buen dia" in normalized
+        and "atencion ciudadana" in normalized
+        and "le atiende" in normalized
+    )
+
+
+def is_bot_return_message(text: str | None) -> bool:
+    normalized = normalize_operator_message_text(text)
+    return (
+        "gracias por comunicarse" in normalized
+        and "atencion ciudadana" in normalized
+        and "reiniciar el chatbot" in normalized
+        and "sam" in normalized
+    )
 
 
 def log_chat2desk_outbound_attempt(context, payload, from_number=None, message_id=None):
@@ -2156,6 +2187,9 @@ def resolve_fixed_security_phone_response(message: str) -> str | None:
 
     if "c2" in normalized:
         return "Claro: C2 San Pedro: 81 89 88 11 00 Ext. 6011."
+
+    if "ciac" in normalized or "atencion ciudadana" in normalized:
+        return "Claro: Atención Ciudadana / CIAC: 81 84 00 44 00 Ext. 2762."
 
     return None
 
@@ -4349,8 +4383,6 @@ async def whatsapp(request: Request):
     )
 
     # Check if this is a message from a human agent with the human takeover message
-    HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana. Le atiende"
-    BOT_RETURN_MESSAGE = "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot"
     BOT_OPERATOR_IDS = {228522, 228524}
     
     
@@ -4457,11 +4489,11 @@ async def whatsapp(request: Request):
             logger.debug("Message with None body detected, setting to empty string")
         
         # LOG EXPLÍCITO para verificar mensajes con el texto detonante
-        if message_text and BOT_RETURN_MESSAGE in message_text:
+        if is_bot_return_message(message_text):
             logger.critical(f"MENSAJE CON TEXTO DETONANTE DETECTADO - Type: {message_type}, Operator: {operator_id}, Text: {message_text[:50]}")
 
         # 🎯 PRIMERO: Verificar mensajes de takeover ANTES de filtrar
-        if message_type == 'to_client' and message_text and message_text.startswith(HUMAN_TAKEOVER_MESSAGE):
+        if message_type == 'to_client' and is_human_takeover_message(message_text):
             logger.info(f"Human agent takeover detected for {from_number}")
             
             expiration_time = datetime.now().timestamp() + (30 * 60)
@@ -4485,7 +4517,7 @@ async def whatsapp(request: Request):
             return JSONResponse(content={"status": True, "message": "Human agent takeover registered"})
 
         # 🎯 SEGUNDO: Verificar return to AI
-        if message_type == 'to_client' and message_text and BOT_RETURN_MESSAGE in message_text:
+        if message_type == 'to_client' and is_bot_return_message(message_text):
             logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Releasing control to AI for next inbound message on {from_number}")
             
             if from_number in transferred_numbers:

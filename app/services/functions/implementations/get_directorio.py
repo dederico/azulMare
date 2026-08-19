@@ -162,7 +162,7 @@ Respuesta: Puedes comunicarte vía telefónica o correo electrónico entre las 8
 
 
 async def get_funcionarios():
-    """Obtener información del directorio de personal del municipio.
+    """Obtener directorio municipal con nombres, cargos, telefonos, extensiones, correos y contactos de Atencion Ciudadana, CIAC, funcionarios, direcciones y secretarias del municipio.
 
     Returns:
         string: Información del directorio de personal del municipio.

@@ -27,7 +27,7 @@ class FunctionManager:
     def _get_schema_openai(self, func: Callable):
         signature = inspect.signature(func)
         description_lines = func.__doc__.strip().split("\n")  # type: ignore
-        description = description_lines[0]
+        description = self._build_description(description_lines)
 
         parameters = {"type": "object", "properties": {}, "required": []}
 
@@ -106,3 +106,30 @@ class FunctionManager:
             "string": "string"
         }
         return type_mapping.get(param_type.lower(), "string")  # Default to string if unknown
+
+    def _build_description(self, description_lines: list[str]) -> str:
+        """
+        Construye una descripción más rica a partir del docstring.
+        Toma el primer párrafo útil y omite bloques técnicos como Returns.
+        """
+        collected_lines: list[str] = []
+
+        for raw_line in description_lines:
+            line = raw_line.strip()
+            if not line:
+                if collected_lines:
+                    break
+                continue
+
+            if line.endswith(":") and line.lower() in {"returns:", "args:", "arguments:", "parameters:"}:
+                break
+
+            if re.match(r"^\w+ \(([^)]+)\):", line):
+                break
+
+            collected_lines.append(line)
+
+        if not collected_lines:
+            return description_lines[0].strip()
+
+        return " ".join(collected_lines)

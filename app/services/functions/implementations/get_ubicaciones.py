@@ -128,7 +128,7 @@ Zona Oriente: P.º Esperanza 980, Ampliación Valle del Mirador, 66260 San Pedro
 """
 
 async def get_ubicaciones():
-    """Obtener ubicaciones importantes en caso de ser necesario.
+    """Obtener direcciones, ubicaciones fisicas, horarios de oficinas, telefonos de C4/C2 y datos de dependencias municipales de San Pedro.
 
     Returns:
         string: Informacion de ubicaciones importantes.

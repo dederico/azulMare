@@ -31,7 +31,7 @@ Canchas de Tenis Parque Clouthier: https://playtomic.io/parque-clouthier/0bdc6e4
 
 
 async def get_urls():
-    """Obtener URLS importantes en caso de ser necesario.
+    """Obtener URLs, ligas, paginas web, portales y enlaces oficiales del municipio, incluyendo Atencion Ciudadana y tramites.
 
     Returns:
         string: Informacion de URLS importantes.

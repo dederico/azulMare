@@ -44,7 +44,7 @@ Respuesta: 81 89 88 20 00
 """
 
 async def get_seguridad():
-    """Obtener informacion de los servicios de la secreatria de seguridad caso de ser necesario.
+    """Obtener informacion de seguridad, tramites y telefonos de C2, C4 y dependencias de la Secretaria de Seguridad del municipio.
 
     Returns:
         string: Informacion de los trámites de la Secretaria de Seguridad.

@@ -71,6 +71,42 @@ class OpenAIService(LLMService):
         
         # Para cualquier otro tipo, convertir a string
         return str(content)
+
+    def _serialize_for_log(self, value: Any, limit: int = 12000) -> str:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            text = str(value)
+
+        if len(text) <= limit:
+            return text
+
+        return text[:limit] + f"... [truncated {len(text) - limit} chars]"
+
+    def _log_tools_payload(self, model: str, tools_payload: list[dict[str, Any]]) -> None:
+        tools_summary = []
+
+        for tool in tools_payload:
+            function_block = tool.get("function", {})
+            tools_summary.append(
+                {
+                    "name": function_block.get("name"),
+                    "description": function_block.get("description"),
+                    "required": function_block.get("parameters", {}).get("required", []),
+                }
+            )
+
+        logger.critical(
+            "🧰 [TOOLS SUMMARY] model=%s tools_count=%s tools=%s",
+            model,
+            len(tools_summary),
+            self._serialize_for_log(tools_summary, limit=8000),
+        )
+        logger.critical(
+            "🧰 [TOOLS PAYLOAD] model=%s payload=%s",
+            model,
+            self._serialize_for_log(tools_payload),
+        )
     
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         """Añadir mensaje al historial con optimización de contexto"""
@@ -127,7 +163,8 @@ class OpenAIService(LLMService):
         self.add_to_conversation("user", user_input)
         logger.critical(
             "🧠 [LLM TRACE] start model=%s history_messages=%s user_input=%s",
-            "gpt-5.4-mini-2026-03-17",
+            "gpt-5.6-luna",
+            # "gpt-5.4-mini-2026-03-17",
             len(self.conversation_history),
             self._preview_text(user_input),
         )
@@ -215,7 +252,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         try:
             # Crear una solicitud separada para resumir el contexto
             summary_response = await self.client.chat.completions.create(
-                model="gpt-5.4-mini-2026-03-17",  # Puedes cambiar el modelo si es necesario
+                model="gpt-5.6-luna",  # model="gpt-5.4-mini-2026-03-17"
                 #model=self.config.get("model") or "gpt-3.5-turbo-1106",
                 messages=[{"role": "user", "content": summary_prompt}],
                 temperature=0.1,
@@ -244,8 +281,11 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
 
     async def llm_generator(self):
         # Usar o3-mini si está configurado
-        model = "gpt-5.4-mini-2026-03-17"
+        model = "gpt-5.6-luna"
+        # model = "gpt-5.4-mini-2026-03-17"
         #model = self.config.get("model") or "gpt-5.4-mini-2026-03-17"
+        tools_payload = self.function_manager.get_function_definition()
+        self._log_tools_payload(model, tools_payload)
         
         # Comprobar si estamos usando un modelo de razonamiento (o3-mini)
         if model == "o3-mini":
@@ -256,7 +296,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                 stream=True,
                 reasoning_effort=self.config.get("reasoning_effort", "medium"),
                 tool_choice="auto",
-                tools=self.function_manager.get_function_definition(),
+                tools=tools_payload,
             )
         else:
             # Para modelos regulares, incluir temperature
@@ -266,7 +306,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                 stream=True,
                 tool_choice="auto",
                 #temperature=0.1,
-                tools=self.function_manager.get_function_definition(),
+                tools=tools_payload,
             )
         return generator
 

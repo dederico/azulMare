@@ -2045,6 +2045,72 @@ def is_explicit_human_handoff_request(body: str) -> bool:
     return has_person_term and has_contact_verb
 
 
+def is_non_bot_operator(operator_id, bot_operator_ids) -> bool:
+    try:
+        return bool(operator_id) and int(operator_id) not in bot_operator_ids
+    except (TypeError, ValueError):
+        return False
+
+
+def normalize_validation_block_message(message: str) -> str:
+    if not message:
+        return ""
+
+    if message.startswith("VALIDATION_BLOCK:"):
+        return message.replace("VALIDATION_BLOCK:", "", 1).strip()
+
+    return message
+
+
+def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = None) -> str:
+    if not message:
+        return message
+
+    allowed_phone_digits = {
+        "8189882000",
+    }
+    customer_digits = "".join(ch for ch in (customer_phone or "") if ch.isdigit())
+    phone_pattern = re.compile(r"(?<![\w/])(?:\+?\d[\d\-\s\(\)]{8,}\d)")
+
+    def replace_phone(match):
+        raw = match.group(0)
+        digits = "".join(ch for ch in raw if ch.isdigit())
+
+        if len(digits) < 10:
+            return raw
+
+        if customer_digits and digits.endswith(customer_digits[-10:]):
+            logger.warning("📵 [SANITIZE] Ocultando teléfono del cliente en respuesta: %s", raw)
+            return "[teléfono oculto]"
+
+        if digits in allowed_phone_digits:
+            return raw
+
+        if len(digits) >= 11:
+            logger.warning("📵 [SANITIZE] Ocultando teléfono no verificado en respuesta: %s", raw)
+            return "[contacto disponible con Atención Ciudadana]"
+
+        return raw
+
+    return phone_pattern.sub(replace_phone, message)
+
+
+def normalize_user_facing_response(message: str, customer_phone: str | None = None) -> str:
+    normalized = normalize_validation_block_message(message or "")
+
+    low = normalized.lower()
+    if low.startswith("error: no se pudo obtener el id del mensaje"):
+        normalized = "Estoy teniendo problemas técnicos para canalizarte en este momento. Por favor, intenta nuevamente."
+    elif low.startswith("error: argumentos json inválidos"):
+        normalized = "Estoy teniendo problemas técnicos para procesar tu solicitud. Por favor, intenta nuevamente."
+    elif low.startswith("error: la función"):
+        normalized = "Estoy teniendo problemas técnicos para procesar tu solicitud. Por favor, intenta nuevamente."
+
+    normalized = normalized.replace("call_sid =", "").strip()
+    normalized = sanitize_outbound_phone_numbers(normalized, customer_phone=customer_phone)
+    return normalized
+
+
 def detect_report_intent(body, response_content):
     """
     Detecta si el usuario quiere hacer un reporte basándose en keywords.
@@ -2093,21 +2159,73 @@ def should_create_report_session(body, response_content):
     # Solo crear sesión si hay indicadores claros de reporte
     return any(indicator in combined_text for indicator in report_indicators)
 
+def normalize_selection_key(question_key):
+    """Normaliza llaves legacy ('1') y canónicas ('selection1')."""
+    if question_key is None:
+        return None
+
+    key = str(question_key).strip()
+    if not key:
+        return key
+
+    if key.startswith("selection"):
+        return key
+
+    if key.isdigit():
+        return f"selection{key}"
+
+    return key
+
 def save_user_answer(from_number, question_number, selection_text):
     """Guarda respuesta del usuario para una pregunta específica"""
     if from_number not in user_answers:
         user_answers[from_number] = {}
-    user_answers[from_number][question_number] = selection_text
-    logger.debug(f"💾 [SAVE] {from_number} - {question_number}: {selection_text}")
+    normalized_key = normalize_selection_key(question_number)
+    user_answers[from_number][normalized_key] = selection_text
+    logger.debug(f"💾 [SAVE] {from_number} - {normalized_key}: {selection_text}")
     
     # 🎯 NUEVA LÍNEA: Crear sesión de reporte automáticamente
     #create_or_update_report_session(from_number)
 
 def get_user_answer(from_number, question_number):
     """Obtiene respuesta guardada del usuario para una pregunta específica"""
-    answer = user_answers.get(from_number, {}).get(question_number, "")
-    logger.debug(f"💾 [GET] {from_number} - {question_number}: {answer}")
+    normalized_key = normalize_selection_key(question_number)
+    answers = user_answers.get(from_number, {})
+    legacy_key = str(question_number).strip() if question_number is not None else None
+    answer = answers.get(normalized_key, "")
+    if not answer and legacy_key and legacy_key != normalized_key:
+        answer = answers.get(legacy_key, "")
+    logger.debug(f"💾 [GET] {from_number} - {normalized_key}: {answer}")
     return answer
+
+def build_report_state_snapshot(from_number: str) -> dict:
+    session = report_sessions.get(from_number, {}) if from_number else {}
+    answer_map = user_answers.get(from_number, {}) if from_number else {}
+    return {
+        "has_report_session": from_number in report_sessions,
+        "image_prompted": session.get("image_prompted"),
+        "image_decision": session.get("image_decision"),
+        "declared_emergency": session.get("declared_emergency"),
+        "images_count": len(session.get("images", []) or []),
+        "has_location": bool(session.get("location")),
+        "selection1": answer_map.get("selection1", ""),
+        "selection2": answer_map.get("selection2", ""),
+        "selection4": answer_map.get("selection4", ""),
+        "selection5": answer_map.get("selection5", ""),
+        "selection6": answer_map.get("selection6", ""),
+        "selection7": answer_map.get("selection7", ""),
+    }
+
+def log_operational_decision_trace(from_number: str, stage: str, **details) -> None:
+    payload = {
+        "phone": from_number,
+        "stage": stage,
+        **details,
+    }
+    try:
+        logger.critical("🧠 [DECISION TRACE] %s", json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        logger.critical("🧠 [DECISION TRACE] %s", payload)
 
 async def save_client_selection2_protected(yoga_number: str, selection1: str, selection2: str, 
                                           selection3: str, selection4: str, selection5: str, 
@@ -2758,7 +2876,7 @@ async def check_report_timeouts():
                     
                     # Crear el reporte con manejo de errores
                     try:
-                        folio = await save_client_selection2_protected(
+                        folio = await save_client_selection2_guarded(
                             yoga_number=number,
                             selection1=saved_selection1,
                             selection2=saved_selection2,
@@ -2772,7 +2890,7 @@ async def check_report_timeouts():
                             descriptions_list=descriptions
                         )
                         
-                        if folio:
+                        if isinstance(folio, str) and folio.startswith("Folio:"):
                             # 💾 Registrar en completed_reports para evitar duplicados futuros
                             completed_reports[number] = {
                                 'timestamp': datetime.now().timestamp(),
@@ -2792,8 +2910,12 @@ async def check_report_timeouts():
                             asyncio.create_task(complete_cleanup_after_report(number, 5))
                             
                             logger.critical(f"✅ [TIMEOUT COMPLETE] Proceso completo para {number}")
+                        elif isinstance(folio, str) and folio.startswith("VALIDATION_BLOCK:"):
+                            logger.warning(f"🚫 [TIMEOUT BLOCKED] Reporte automático bloqueado para {number}: {folio}")
+                            asyncio.create_task(complete_cleanup_after_report(number, 1))
                         else:
-                            logger.error(f"💥 [FOLIO ERROR] No se pudo obtener folio para {number}")
+                            logger.error(f"💥 [FOLIO ERROR] Resultado inválido para {number}: {folio}")
+                            asyncio.create_task(complete_cleanup_after_report(number, 1))
                             
                     except Exception as e:
                         logger.error(f"💥 [SAVE ERROR] Error creando reporte para {number}: {str(e)}")
@@ -3710,6 +3832,13 @@ async def process_and_save_report(from_number, location, images=None, descriptio
         descriptions (list): List of image descriptions
     """
     logger.debug(f"process_and_save_report: Processing report for {from_number}")
+    log_operational_decision_trace(
+        from_number,
+        "process_and_save_report_start",
+        location=location,
+        images_count=len(images or []),
+        descriptions_count=len(descriptions or []),
+    )
     
     # Initialize with empty lists if None
     images = images or []
@@ -3761,14 +3890,21 @@ async def process_and_save_report(from_number, location, images=None, descriptio
                 street = location
 
         selections = {
-            "selection1": get_user_answer(from_number, 1),
-            "selection2": get_user_answer(from_number, 2),
+            "selection1": get_user_answer(from_number, "selection1"),
+            "selection2": get_user_answer(from_number, "selection2"),
             "selection3": "",  # siempre vacío
-            "selection4": get_user_answer(from_number, 4),
-            "selection5": get_user_answer(from_number, 5),
-            "selection6": get_user_answer(from_number, 6),
-            "selection7": get_user_answer(from_number, 7),
+            "selection4": get_user_answer(from_number, "selection4"),
+            "selection5": get_user_answer(from_number, "selection5"),
+            "selection6": get_user_answer(from_number, "selection6"),
+            "selection7": get_user_answer(from_number, "selection7"),
         }
+
+        log_operational_decision_trace(
+            from_number,
+            "process_and_save_report_payload",
+            selections=selections,
+            report_state=build_report_state_snapshot(from_number),
+        )
 
         logger.critical(f"PASANDO {len(images)} IMÁGENES A save_client_selection2_protected")
         for i, img in enumerate(images):
@@ -3782,22 +3918,41 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             **selections
         )
 
-        # Record successful report
         current_time = datetime.now().timestamp()
-        # completed_reports[from_number] = {
-        #     'timestamp': current_time,
-        #     'folio': folio,
-        # }
-        
-        # Schedule cleanup
-        # asyncio.create_task(remove_from_completed_reports(from_number, 1800))
-        
-        logger.info(f"Report successfully created for {from_number}, folio: {folio}")
-        
+        log_operational_decision_trace(
+            from_number,
+            "process_and_save_report_result",
+            raw_result=folio,
+            current_time=current_time,
+        )
+
+        if isinstance(folio, str) and folio.startswith("Folio:"):
+            logger.info(f"Report successfully created for {from_number}, folio: {folio}")
+            return {
+                'status': 'success',
+                'message': f"Reporte creado exitosamente. Folio: {folio}",
+                'folio': folio
+            }
+
+        if isinstance(folio, str) and folio.startswith("VALIDATION_BLOCK:"):
+            logger.warning(f"Report validation blocked for {from_number}: {folio}")
+            return {
+                'status': 'validation_block',
+                'message': folio.replace("VALIDATION_BLOCK:", "", 1).strip() or folio,
+                'raw_result': folio
+            }
+
+        if isinstance(folio, str) and folio.startswith("Error:"):
+            logger.error(f"Report creation returned error for {from_number}: {folio}")
+            return {
+                'status': 'error',
+                'message': folio
+            }
+
+        logger.error(f"Unexpected report creation result for {from_number}: {folio}")
         return {
-            'status': 'success',
-            'message': f"Reporte creado exitosamente. Folio: {folio}",
-            'folio': folio
+            'status': 'error',
+            'message': f"Resultado inesperado al crear el reporte: {folio}"
         }
         
     except Exception as e:
@@ -4313,17 +4468,22 @@ async def whatsapp(request: Request):
                 logger.error(f"Error sending AI greeting after return from human agent: {str(e)}")
 
         # 🎯 TERCERO: Detección automática por operator_id
-        if (message_type == 'to_client' and 
-            payload.get('operator_id') and 
-            int(payload.get('operator_id')) not in BOT_OPERATOR_IDS and 
-            from_number not in transferred_numbers and
-            from_number not in recently_returned_to_bot):
-            
-            logger.info(f"Detección automática: Agente humano (ID {payload.get('operator_id')}) tomó la conversación con {from_number}")
-            
+        human_operator_active = (
+            message_type in {'to_client', 'from_client'} and
+            is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
+            from_number not in recently_returned_to_bot
+        )
+
+        if human_operator_active:
             expiration_time = datetime.now().timestamp() + (30 * 60)
             transferred_numbers[from_number] = expiration_time
+
+        if (message_type == 'to_client' and 
+            hook_type == 'outbox' and
+            human_operator_active):
             
+            logger.info(f"Detección automática: Agente humano (ID {payload.get('operator_id')}) tomó la conversación con {from_number}")
+
             try:
                 system_notification = Message(
                     time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -4339,9 +4499,8 @@ async def whatsapp(request: Request):
             except Exception as e:
                 logger.error(f"Error registrando transferencia automática: {str(e)}")
         elif (message_type == 'to_client' and 
-            payload.get('operator_id') and 
-            int(payload.get('operator_id')) not in BOT_OPERATOR_IDS and 
-            from_number not in transferred_numbers and
+            hook_type == 'outbox' and
+            is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
             from_number in recently_returned_to_bot):
 
             grace_time = int(BOT_GRACE_PERIOD - (datetime.now().timestamp() - recently_returned_to_bot[from_number]))
@@ -4795,25 +4954,13 @@ async def whatsapp(request: Request):
                     # Analizar la imagen con rate limiting
                     image_description = await analyze_image_with_rate_limit(client, photo_url)
 
-                    # Almacenar en la sesión de reporte
-                    if from_number not in report_sessions:
-                        report_sessions[from_number] = {
-                            "images": [],
-                            "image_descriptions": [],
-                            "location": None,
-                            "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
-                        }
+                    # Almacenar en la sesión de reporte usando la estructura centralizada
+                    create_or_update_report_session(from_number)
                     
                     # Añadir esta imagen al reporte en progreso - con verificación
                     if isinstance(photo_url, str) and (photo_url.startswith("http") or "storage.chat2desk.com" in photo_url):
-                        # Inicializar session de reporte si no existe
-                        if from_number not in report_sessions:
-                            report_sessions[from_number] = {
-                                "images": [],
-                                "image_descriptions": [],
-                                "location": None,
-                                "timestamp": datetime.now(pytz.timezone('America/Mexico_City'))
-            }
+                        # Asegurar que la sesión tenga la estructura completa
+                        create_or_update_report_session(from_number)
                         # Asegurarse de que la imagen no esté duplicada
                         if photo_url not in report_sessions[from_number]["images"]:
                             report_sessions[from_number]["images"].append(photo_url)
@@ -5003,6 +5150,8 @@ async def whatsapp(request: Request):
                 elif result['status'] == 'duplicate':
                     body = result['message']
                 elif result['status'] == 'no_images':
+                    body = result['message']
+                elif result['status'] == 'validation_block':
                     body = result['message']
                 elif result['status'] == 'error':
                     body = f"Lo siento, hubo un error al finalizar tu reporte: {result['message']}. Por favor, intenta nuevamente."
@@ -5444,6 +5593,14 @@ async def whatsapp(request: Request):
             "Historial estructurado preparado para el modelo: %s mensajes previos",
             len(structured_history),
         )
+        log_operational_decision_trace(
+            from_number,
+            "before_llm_generation",
+            body=body[:240],
+            reply_context=reply_context,
+            history_messages=len(structured_history),
+            report_state=build_report_state_snapshot(from_number),
+        )
 
         # Generar la respuesta del modelo con historial estructurado y el
         # mensaje actual como nuevo input del usuario.
@@ -5457,6 +5614,18 @@ async def whatsapp(request: Request):
             response_content = " ".join([str(item) for item in response_content])
         elif not isinstance(response_content, str):
             response_content = str(response_content)
+
+        response_content = normalize_user_facing_response(
+            response_content,
+            customer_phone=from_number,
+        )
+        log_operational_decision_trace(
+            from_number,
+            "after_llm_generation",
+            response_preview=response_content[:400],
+            should_create_report_session=should_create_report_session(body, response_content),
+            report_state=build_report_state_snapshot(from_number),
+        )
 
         if from_number in report_sessions and assistant_asked_for_optional_image(response_content):
             with report_sessions_lock:
@@ -5748,88 +5917,34 @@ async def whatsapp(request: Request):
         # If this looks like a function call instruction or system message, replace it
         if is_function_call:
             logger.warning(f"Detected function call in response: {response_content}")
+            log_operational_decision_trace(
+                from_number,
+                "function_call_text_detected",
+                response_preview=response_content[:300],
+            )
             
-            # Detectar y EJECUTAR transferencias (no solo limpiar)
+            # Detectar texto residual de transfer_to_group del LLM.
+            # La transferencia real debe ocurrir por el flujo explícito o vía tool call,
+            # no por parseo textual del mensaje.
             if "transfer_to_group" in response_content:
-                logger.warning(f"🔄 TRANSFERENCIA DETECTADA EN RESPUESTA: {response_content[:100]}")
+                logger.warning(f"🔄 TEXTO DE TRANSFERENCIA DETECTADO EN RESPUESTA: {response_content[:100]}")
 
-                # 1. EXTRAER EL NÚMERO DE TELÉFONO del código literal
-                #phone_to_transfer = from_number  # Por defecto, usar el número del usuario actual
-
-                # Intentar extraer el número del código literal
                 import re as regex_module
-                # transfer_match = regex_module.search(r'transfer_to_group\s*\(\s*(["\']?)(\d+)\1\s*\)', response_content)
-                # if transfer_match:
-                #     extracted_phone = transfer_match.group(2)
-                #     logger.critical(f"📞 NÚMERO EXTRAÍDO DEL CÓDIGO: {extracted_phone}")
-                #     phone_to_transfer = extracted_phone
-
-                # 2. LIMPIAR el mensaje para el usuario (quitar código literal)
                 clean_message = regex_module.sub(r'transfer_to_group\s*\([^)]*\)', "", response_content)
                 clean_message = clean_message.replace("transfer_to_group", "")
                 clean_message = clean_message.strip()
 
-                # Si el mensaje queda vacío, usar uno genérico
                 if not clean_message or len(clean_message.strip()) < 10:
                     clean_message = "Te voy a conectar con un agente humano que podrá ayudarte mejor. Un momento por favor."
 
                 response_content = clean_message
-                logger.critical(f"🧹 MENSAJE LIMPIADO PARA USUARIO: {response_content}")
-
-                # 3. MARCAR COMO TRANSFERIDO
-                expiration_time = datetime.now().timestamp() + transfer_timeout
-                transferred_numbers[from_number] = expiration_time
-                logger.critical(f"📝 NÚMERO MARCADO COMO TRANSFERIDO: {from_number}")
-
-                # 4. EJECUTAR LA TRANSFERENCIA REAL
-                # try:
-                #     logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA PARA: {phone_to_transfer}")
-                #     result = await transfer_to_group(
-                #         phone_number=phone_to_transfer,
-                #         group_id=1817,  # Grupo fijo
-                #         reason="Transferencia automática por solicitud del LLM",
-                #         send_notification=True
-                #     )
-
-                try:
-                    # ✅ USAR DIRECTAMENTE EL message_id DEL PAYLOAD (ya lo tienes arriba)
-                    # No importa lo que venga en transfer_to_group() del LLM
-                    
-                    if not message_id:
-                        logger.error("❌ No se encontró message_id en el payload")
-                        response_content = "Error: No se pudo obtener el ID del mensaje"
-                    else:
-                        logger.critical(f"🚀 EJECUTANDO TRANSFERENCIA:")
-                        logger.critical(f"🚀   - message_id: {message_id} (del payload)")
-                        logger.critical(f"🚀   - group_id: 1817 (fijo)")
-                        
-                        result = await transfer_to_group(
-                            message_id=message_id,  # ✅ DEL PAYLOAD - SIEMPRE CORRECTO
-                            group_id=1817,          # ✅ FIJO - SIEMPRE CORRECTO
-                            reason="Transferencia automática por LLM sin conocimiento"
-                        )
-
-                        logger.critical(f"✅ RESULTADO: {result}")
-
-                        # Registrar en base de datos
-                        transfer_note = Message(
-                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            senderName="System",
-                            message=f"[SYSTEM] Transferencia automática ejecutada - message_id: {message_id}",
-                            number=from_number,
-                            uid=f"auto-transfer-{datetime.now().timestamp()}",
-                            direction="system",
-                            mtype="text",
-                            source="whatsapp"
-                        )
-                        db.Insert(transfer_note)
-
-                except Exception as transfer_error:
-                    logger.error(f"❌ ERROR EJECUTANDO TRANSFERENCIA: {str(transfer_error)}")
-                    # Si falla la transferencia, quitar de la lista de transferidos
-                    if from_number in transferred_numbers:
-                        del transferred_numbers[from_number]
-                    response_content = "Estoy teniendo problemas técnicos para conectarte. Por favor, intenta contactar directamente a atención ciudadana."
+                logger.critical(f"🧹 MENSAJE LIMPIADO PARA USUARIO (sin ejecutar transferencia textual): {response_content}")
+                log_operational_decision_trace(
+                    from_number,
+                    "transfer_text_sanitized",
+                    response_preview=response_content[:300],
+                    reason="legacy_textual_transfer_disabled",
+                )
             
             # Check if it's a hangup or farewell
             elif any(p in response_content for p in ["functions.hangup", "call_sid ="]):
@@ -5918,55 +6033,14 @@ async def whatsapp(request: Request):
         logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
         content = {"status": False, "error": f"Error inesperado: {str(e)}"}
 
-    # Después de enviar la respuesta a través de Chat2Desk y justo antes de return JSONResponse
-    # Verificar si el mensaje del usuario indica despedida y la respuesta del bot también
     farewell_keywords = ["gracias", "adiós", "adios", "hasta luego", "chao", "bye", "es todo", "terminar"]
     bot_farewell_indicators = ["que tengas", "hasta luego", "adiós", "adios", "buen día", "hasta pronto"]
-
-    # # Helper function to remove number from transferred set after timeout
-    async def remove_from_transferred(number, delay_seconds):
-        await asyncio.sleep(delay_seconds)
-        if number in transferred_numbers:
-            transferred_numbers.remove(number)
-            logger.debug(f"Removed {number} from transferred numbers list after {delay_seconds} seconds")
-
-    # Función de limpieza definida fuera del bloque if para evitar problemas de acceso
-    async def delayed_cleanup_msgs(phone_number):
-        try:
-            await asyncio.sleep(5)  # Esperar 5 segundos para asegurar que el mensaje se entregó
-            db = LocalStorage()
-            
-            # Usar el método para eliminar mensajes por número
-            # Implementa este método en la clase LocalStorage
-            conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
-            cursor = conn.cursor()
-            
-            # SQL directo para eliminar mensajes por número
-            cursor.execute("DELETE FROM messages WHERE number = %s", [phone_number])
-            count = cursor.rowcount
-            
-            conn.commit()
-            conn.close()
-            
-            logger.debug(f"Se eliminaron {count} mensajes para el número {phone_number} por despedida.")
-            
-            # Eliminar la sesión también
-            if phone_number in user_sessions:
-                del user_sessions[phone_number]
-                logger.debug(f"Sesión de {phone_number} finalizada por despedida.")
-
-            if phone_number in report_sessions:
-                del report_sessions[phone_number]
-            logger.debug(f"Sesión de reporte de {phone_number} finalizada por despedida.")
-                
-        except Exception as e:
-            logger.error(f"Error al eliminar mensajes: {str(e)}")
-
-    if (any(keyword in body.lower() for keyword in farewell_keywords) and 
+    if (any(keyword in body.lower() for keyword in farewell_keywords) and
         any(indicator in response_content.lower() for indicator in bot_farewell_indicators)):
-        
-        # Crear tarea sin esperar a que termine
-        asyncio.create_task(delayed_cleanup_msgs(from_number))
+        logger.info(
+            "👋 [FAREWELL] Despedida detectada para %s, conservando sesión para evitar cierres prematuros",
+            from_number,
+        )
 
     return JSONResponse(content=content)
 

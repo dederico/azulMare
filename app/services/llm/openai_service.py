@@ -27,6 +27,16 @@ class OpenAIService(LLMService):
         self.pending_tool_calls: dict[int, dict[str, Any]] = {}
         # if self.config.get("use_kb"):
         #     self.vectorbase = VectorBase(config.get("agent_name", None))
+
+    def _preview_text(self, value: Any, limit: int = 400) -> str:
+        if value is None:
+            return ""
+        text = value if isinstance(value, str) else str(value)
+        text = text.replace("\n", " ").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "..."
+
     def ensure_valid_message_content(self, content):
         """
         Asegura que el contenido del mensaje esté en un formato válido para la API de OpenAI.
@@ -106,6 +116,12 @@ class OpenAIService(LLMService):
             user_input = f"Context:\n{kb_context}\n\nQuery:\n{user_input}"
         
         self.add_to_conversation("user", user_input)
+        logger.critical(
+            "🧠 [LLM TRACE] start model=%s history_messages=%s user_input=%s",
+            "gpt-5.4-mini-2026-03-17",
+            len(self.conversation_history),
+            self._preview_text(user_input),
+        )
         
         # Verifica si es necesario resumir el contexto
         if self.config.get("use_context_summarization", False) and len(self.conversation_history) > self.config.get("summarize_threshold", 15):
@@ -154,6 +170,12 @@ class OpenAIService(LLMService):
 
             if full_message:
                 self.add_to_conversation("assistant", full_message)
+                logger.critical(
+                    "🧠 [LLM TRACE] final_response finish_reason=%s tool_rounds=%s response=%s",
+                    finish_reason,
+                    tool_round,
+                    self._preview_text(full_message),
+                )
             elif finish_reason not in (None, "stop"):
                 logger.warning(
                     "El modelo terminó sin contenido. finish_reason=%s",
@@ -325,6 +347,13 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                 function_name,
                 raw_arguments,
             )
+            logger.critical(
+                "🧠 [LLM TRACE] tool_selected id=%s name=%s args=%s assistant_context=%s",
+                tool_call_id,
+                function_name,
+                self._preview_text(raw_arguments),
+                self._preview_text(assistant_content),
+            )
 
             try:
                 arguments = json.loads(raw_arguments or "{}")
@@ -373,6 +402,13 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                 tool_response = (
                     f"Error ejecutando '{function_name}': {str(e)}"
                 )
+
+            logger.critical(
+                "🧠 [LLM TRACE] tool_result id=%s name=%s result=%s",
+                tool_call_id,
+                function_name,
+                self._preview_text(tool_response),
+            )
 
             self.conversation_history.append(
                 {

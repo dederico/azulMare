@@ -1,10 +1,15 @@
 import json
 import openai
+import httpx
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
 # from app.util.database import VectorBase
 from app.services.functions.function_manager import FunctionManager
+
+
+OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+OPENAI_MAX_RETRIES = 3
 
 
 class OpenAIService(LLMService):
@@ -16,7 +21,11 @@ class OpenAIService(LLMService):
         system: str = ""
     ):
         self.config = config
-        self.client = openai.AsyncClient(api_key=api_key)
+        self.client = openai.AsyncClient(
+            api_key=api_key,
+            timeout=OPENAI_HTTP_TIMEOUT,
+            max_retries=OPENAI_MAX_RETRIES,
+        )
         self.conversation_history = []
         self.conversation_history.append({"role": "system", "content": self.ensure_valid_message_content(system)})
         self.function_manager = function_manager

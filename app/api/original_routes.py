@@ -1042,8 +1042,15 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
 
+OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+OPENAI_MAX_RETRIES = 3
+
 # ========= EQUIPO CIAC ============================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=OPENAI_HTTP_TIMEOUT,
+    max_retries=OPENAI_MAX_RETRIES,
+)
 
 
 SPECIAL_NUMBER = "5218114660135"
@@ -4335,7 +4342,11 @@ async def whatsapp(request: Request):
         for func in registered_functions
     ]
     function_manager = FunctionManager(whatsapp_functions)
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        timeout=OPENAI_HTTP_TIMEOUT,
+        max_retries=OPENAI_MAX_RETRIES,
+    )
 
     # Check if this is a message from a human agent with the human takeover message
     HUMAN_TAKEOVER_MESSAGE = "Buen día, gracias por comunicarse a Atención Ciudadana. Le atiende"

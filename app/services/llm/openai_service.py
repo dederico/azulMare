@@ -304,6 +304,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                 model=model,
                 messages=self.conversation_history,
                 stream=True,
+                reasoning_effort="none",
                 tool_choice="auto",
                 #temperature=0.1,
                 tools=tools_payload,

@@ -1,4 +1,5 @@
 import re
+import hashlib
 import httpx
 import requests
 import json
@@ -2227,6 +2228,11 @@ def log_operational_decision_trace(from_number: str, stage: str, **details) -> N
     except Exception:
         logger.critical("🧠 [DECISION TRACE] %s", payload)
 
+def build_outbound_response_dedup_key(from_number: str, message_id: str | int | None, response_content: str) -> str:
+    normalized_text = " ".join((response_content or "").split()).strip().lower()
+    digest = hashlib.sha1(normalized_text.encode("utf-8")).hexdigest()
+    return f"{from_number}|{message_id}|{digest}"
+
 async def save_client_selection2_protected(yoga_number: str, selection1: str, selection2: str, 
                                           selection3: str, selection4: str, selection5: str, 
                                           selection6: str, selection7: str, selection8: str = None, 
@@ -2442,6 +2448,32 @@ async def save_client_selection2_guarded(
 
 
 save_client_selection2_guarded.__name__ = "save_client_selection2"
+
+async def transfer_to_group_guarded(message_id: int, group_id: int | None = None, reason: str | None = None):
+    """
+    Transfiere una conversación usando el message_id del payload.
+
+    message_id (number): ID del mensaje del payload. OBLIGATORIO.
+    group_id (number, optional): Se ignora cualquier valor solicitado y se usa el grupo configurado del bot.
+    reason (string, optional): Razón de la transferencia para logs.
+
+    Returns:
+        string: Mensaje de confirmación o error.
+    """
+    logger.critical(
+        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s",
+        message_id,
+        group_id,
+        reason,
+    )
+    return await transfer_to_group(
+        message_id=message_id,
+        group_id=1817,
+        reason=reason,
+    )
+
+
+transfer_to_group_guarded.__name__ = "transfer_to_group"
 
 def clear_user_answers(from_number):
     """Limpia todas las respuestas guardadas de un usuario"""
@@ -4015,6 +4047,7 @@ router = APIRouter()
 # Initialize the TTL cache - messages expire after 1 hour, max 1000 entries
 processed_message_ids = TTLCache(max_size=1000, ttl_seconds=3600)
 recent_direct_message_keys = TTLCache(max_size=2000, ttl_seconds=20)
+recent_outbound_response_keys = TTLCache(max_size=3000, ttl_seconds=90)
 widget_guard_lock = threading.RLock()
 widget_identity_events = OrderedDict()
 widget_fingerprint_events = OrderedDict()
@@ -4252,7 +4285,9 @@ async def whatsapp(request: Request):
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
     whatsapp_functions = [
-        save_client_selection2_guarded if func.__name__ == "save_client_selection2" else func
+        save_client_selection2_guarded if func.__name__ == "save_client_selection2"
+        else transfer_to_group_guarded if func.__name__ == "transfer_to_group"
+        else func
         for func in registered_functions
     ]
     function_manager = FunctionManager(whatsapp_functions)
@@ -5390,6 +5425,27 @@ async def whatsapp(request: Request):
             "transport": transport,
             "text": response_content
         }
+
+        outbound_dedup_key = build_outbound_response_dedup_key(
+            from_number=from_number,
+            message_id=message_id,
+            response_content=response_content,
+        )
+        if recent_outbound_response_keys.contains(outbound_dedup_key):
+            logger.warning(
+                "🚫 [OUTBOUND DEDUP] Respuesta duplicada bloqueada para %s con message_id=%s",
+                from_number,
+                message_id,
+            )
+            log_operational_decision_trace(
+                from_number,
+                "outbound_duplicate_blocked",
+                message_id=message_id,
+                response_preview=response_content[:300],
+            )
+            return JSONResponse(content={"status": True, "message": "Respuesta duplicada bloqueada"})
+
+        recent_outbound_response_keys.add(outbound_dedup_key)
 
         log_chat2desk_outbound_attempt(
             "whatsapp_main",

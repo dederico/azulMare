@@ -2112,6 +2112,24 @@ def normalize_user_facing_response(message: str, customer_phone: str | None = No
     return normalized
 
 
+def resolve_fixed_security_phone_response(message: str) -> str | None:
+    normalized = (message or "").strip().lower()
+    if not normalized:
+        return None
+
+    asks_for_phone = any(token in normalized for token in ("telefono", "teléfono", "numero", "número"))
+    if not asks_for_phone:
+        return None
+
+    if "c4" in normalized:
+        return "Claro: C4 San Pedro: 81 89 88 20 00."
+
+    if "c2" in normalized:
+        return "Claro: C2 San Pedro: 81 89 88 11 00 Ext. 6011."
+
+    return None
+
+
 def detect_report_intent(body, response_content):
     """
     Detecta si el usuario quiere hacer un reporte basándose en keywords.
@@ -5606,12 +5624,21 @@ async def whatsapp(request: Request):
             report_state=build_report_state_snapshot(from_number),
         )
 
-        # Generar la respuesta del modelo con historial estructurado y el
-        # mensaje actual como nuevo input del usuario.
-        model_response = llm_service.generate_response(user_input=body)
-        response_content = ""
-        async for response in model_response:
-            response_content += str(response)
+        fixed_phone_response = resolve_fixed_security_phone_response(body)
+        if fixed_phone_response:
+            response_content = fixed_phone_response
+            logger.critical(
+                "📞 [FIXED SECURITY PHONE] Respuesta fija aplicada para %s: %s",
+                from_number,
+                response_content,
+            )
+        else:
+            # Generar la respuesta del modelo con historial estructurado y el
+            # mensaje actual como nuevo input del usuario.
+            model_response = llm_service.generate_response(user_input=body)
+            response_content = ""
+            async for response in model_response:
+                response_content += str(response)
             
         # Asegurar que response_content sea un string
         if isinstance(response_content, list):

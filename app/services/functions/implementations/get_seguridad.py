@@ -35,6 +35,12 @@ Teléfono:
 81 89 88 11 00 Extensión 6011
 
 Link del trámite: https://tramites.sanpedro.gob.mx/gobierno_de_san_pedro_garza_garcia_be055859/solicitud_de_permiso_de_circulacion_de_vehiculos_de_carga_pesada_2efcdace-b94b-4b52-8a7c-7bd7b99ac2fa
+
+Pregunta: ¿Cuál es el teléfono del C2?
+Respuesta: 81 89 88 11 00 Extensión 6011
+
+Pregunta: ¿Cuál es el teléfono del C4?
+Respuesta: 81 89 88 20 00
 """
 
 async def get_seguridad():

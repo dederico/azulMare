@@ -58,8 +58,14 @@ Respuesta: Plaza Nativa.  Ave. Alfonso Reyes 901, Zona Valle Poniente, planta ba
 Pregunta: ¿Cuál es la ubicación del C4?
 Respuesta: Independencia 205-A, Col. Casco Urbano
 
+Pregunta: ¿Cuál es el teléfono del C4?
+Respuesta: 81 89 88 20 00
+
 Pregunta: ¿Cuál es la ubicación del C2?
 Respuesta: Av Lázaro Cárdenas 2232 cruz con Rufino Tamayo, Col. Valle Oriente. Horario: 8:00 am a 10:00 pm.
+
+Pregunta: ¿Cuál es el teléfono del C2?
+Respuesta: 81 89 88 11 00 Extensión 6011
 
 Pregunta: ¿Cuál es la ubicación de Justicia Cívica?
 Respuesta: Av Lázaro Cárdenas 2232 cruz con Rufino Tamayo, Col. Valle Oriente. Horario: 8:00 am a 4:00 pm.

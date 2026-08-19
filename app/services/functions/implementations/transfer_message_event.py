@@ -10,6 +10,7 @@ import re
 # Obtener token de API de Chat2Desk
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
 CHAT2DESK_BASE_URL = "https://api.chat2desk.com.mx/v1"
+DEFAULT_OPERATOR_GROUP_ID = int(os.environ.get("CHAT2DESK_OPERATOR_GROUP_ID", "1817"))
 
 def format_phone_number(phone):
     """
@@ -37,23 +38,35 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
     VERSIÓN SÚPER SIMPLE: Usa directamente el message_id del webhook.
 
     message_id (integer): ID del mensaje del payload. OBLIGATORIO.
-    group_id (number): ID del grupo de operadores. Por defecto 1772 (Envios).
+    group_id (number): ID del grupo de operadores. Se normaliza al grupo configurado del bot.
     reason (string): Razón de la transferencia (para logs).
 
     Returns:
         string: Mensaje de confirmación o error.
     """
     try:
-        # Usar el valor por defecto si no se proporciona group_id
-        if group_id is None:
-            group_id = 1817  # ID del grupo Envios por defecto
-        else:
-            # Asegurar que group_id sea un entero
+        requested_group_id = group_id
+        normalized_group_id = DEFAULT_OPERATOR_GROUP_ID
+
+        if group_id is not None:
             try:
-                group_id = int(float(group_id))
+                requested_group_id = int(float(group_id))
             except (ValueError, TypeError):
-                logger.warning(f"group_id no válido: {group_id}, usando valor por defecto 1817")
-                group_id = 1817
+                logger.warning(
+                    "group_id no válido: %s, usando grupo configurado %s",
+                    group_id,
+                    DEFAULT_OPERATOR_GROUP_ID,
+                )
+                requested_group_id = None
+
+        if requested_group_id not in (None, DEFAULT_OPERATOR_GROUP_ID):
+            logger.warning(
+                "Sobrescribiendo group_id solicitado=%s por grupo configurado=%s",
+                requested_group_id,
+                DEFAULT_OPERATOR_GROUP_ID,
+            )
+
+        group_id = normalized_group_id
 
         # Configurar encabezados
         api_token = os.environ.get("CHAT2DESK_API_TOKEN")
@@ -74,6 +87,13 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
         logger.debug(f"Transfiriendo mensaje {message_id} al grupo {group_id}")
         logger.debug(f"URL: {transfer_url}")
         logger.debug(f"Params: {transfer_params}")
+        logger.critical(
+            "🔀 [TRANSFER TRACE] message_id=%s requested_group_id=%s effective_group_id=%s reason=%s",
+            message_id,
+            requested_group_id,
+            group_id,
+            reason,
+        )
 
         async with httpx.AsyncClient() as client:
             transfer_response = await client.get(transfer_url, params=transfer_params, headers=headers)

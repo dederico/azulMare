@@ -4396,7 +4396,7 @@ async def whatsapp(request: Request):
 
         # 🎯 SEGUNDO: Verificar return to AI
         if message_type == 'to_client' and message_text and BOT_RETURN_MESSAGE in message_text:
-            logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Returning control to AI for {from_number}")
+            logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Releasing control to AI for next inbound message on {from_number}")
             
             if from_number in transferred_numbers:
                 del transferred_numbers[from_number]
@@ -4406,66 +4406,14 @@ async def whatsapp(request: Request):
             logger.info(f"Added {from_number} to recently_returned_to_bot with grace period of {BOT_GRACE_PERIOD} seconds")
             
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
-
-            ai_greeting = "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n" + \
-            "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
-            "¿En qué puedo ayudarte hoy?"
-            
-            if from_number in user_sessions:
-                conversation_history = user_sessions[from_number].history
-                conversation_history.add_ai_message(ai_greeting)
-            else:
-                user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
-                user_sessions[from_number].history.add_ai_message(ai_greeting)
-                
-            try:
-                api_token = os.getenv("CHAT2DESK_API_TOKEN")
-                chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-                
-                headers = {
-                    "Authorization": api_token,
-                    "Content-Type": "application/json"
-                }
-                
-                data = {
-                    "client_id": client_id,
-                    "channel_id": channel_id,
-                    "transport": transport,
-                    "text": ai_greeting
-                }
-
-                log_chat2desk_outbound_attempt(
-                    "return_to_ai",
-                    data,
-                    from_number=from_number,
-                    message_id=message_id,
-                )
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(chat2desk_url, json=data, headers=headers)
-                log_chat2desk_outbound_response(
-                    "return_to_ai",
-                    response,
-                    from_number=from_number,
-                    message_id=message_id,
-                )
-                
-                assistant_message = Message(
-                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    senderName="Assistant",
-                    message=ai_greeting,
-                    number=from_number,
-                    uid=f"return-to-ai-{datetime.now().timestamp()}",
-                    direction="outbound",
-                    mtype="text",
-                    source="whatsapp"
-                )
-                db.Insert(assistant_message)
-                await manage_message_history(db, from_number)
-                
-                return JSONResponse(content={"status": True, "message": "Control returned to AI"})
-            
-            except Exception as e:
-                logger.error(f"Error sending AI greeting after return from human agent: {str(e)}")
+            log_operational_decision_trace(
+                from_number,
+                "human_goodbye_release",
+                operator_id=operator_id,
+                message_preview=message_text[:240],
+                action="release_control_without_autogreeting",
+            )
+            return JSONResponse(content={"status": True, "message": "Control released to AI for next inbound message"})
 
         # 🎯 TERCERO: Detección automática por operator_id
         human_operator_active = (

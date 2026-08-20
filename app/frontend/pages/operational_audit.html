@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operational Audit</title>
+  <style>
+    :root {
+      --bg: #f6f5f0;
+      --panel: #ffffff;
+      --border: #d9d7ce;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --primary: #0f766e;
+      --primary-dark: #115e59;
+      --success: #166534;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 32px 16px;
+      background: linear-gradient(180deg, #f4f3ed 0%, #fbfbf8 100%);
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    h1 { margin: 0 0 10px; font-size: 32px; line-height: 1.1; }
+    p.lead { margin: 0 0 24px; color: var(--muted); font-size: 16px; }
+    .notice { margin-bottom: 16px; padding: 12px 14px; border-radius: 10px; font-size: 14px; }
+    .notice.error { background: #fef3f2; border: 1px solid #fecdca; color: var(--danger); }
+    .notice.success { background: #ecfdf3; border: 1px solid #abefc6; color: var(--success); }
+    .topbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+    .muted { color: var(--muted); font-size: 14px; }
+    form { display: grid; gap: 16px; }
+    .field { display: grid; gap: 8px; }
+    label { font-size: 14px; font-weight: 700; }
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font: inherit;
+      color: var(--text);
+      background: #fff;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: flex-end;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    button, a.link-button {
+      appearance: none;
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 18px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button.primary, a.link-button.primary { background: var(--primary); color: white; }
+    button.primary:hover, a.link-button.primary:hover { background: var(--primary-dark); }
+    button.secondary, a.link-button.secondary { background: #ecece7; color: var(--text); }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      background: #fcfcfa;
+    }
+    .card h2, .card h3 {
+      margin: 0 0 10px;
+      font-size: 22px;
+    }
+    .meta {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 14px;
+    }
+    pre {
+      margin: 0;
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid #d8d5c8;
+      background: #1f2430;
+      color: #eef2f7;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .report-list {
+      display: grid;
+      gap: 10px;
+    }
+    .report-item {
+      border: 1px solid #e7e3d7;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #fff;
+    }
+    .report-item strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+    .report-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .empty {
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      background: #fafaf8;
+    }
+    @media (max-width: 920px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .panel { padding: 20px; }
+      h1 { font-size: 26px; }
+      .actions { justify-content: stretch; }
+      .actions button, .actions a.link-button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>Operational Audit</h1>
+      <p class="lead">Consulta el último resumen operativo de SAM y copia el contenido para revisarlo en la terminal o compartirlo para análisis.</p>
+
+      {% if error %}
+      <div class="notice error">{{ error }}</div>
+      {% endif %}
+
+      {% if success %}
+      <div class="notice success">{{ success }}</div>
+      {% endif %}
+
+      {% if not authenticated %}
+      <form method="POST" action="/admin/ciac/operational-audit">
+        <input type="hidden" name="action" value="login">
+        <div class="field">
+          <label for="username">Usuario</label>
+          <input id="username" name="username" type="text" required>
+        </div>
+        <div class="field">
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" required>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">Entrar</button>
+        </div>
+      </form>
+      {% else %}
+      <div class="topbar">
+        <div class="muted">La vista muestra el último archivo retenido y el histórico reciente generado por el scheduler operativo.</div>
+        <form method="POST" action="/admin/ciac/operational-audit">
+          <input type="hidden" name="action" value="logout">
+          <div class="actions" style="margin-top: 0;">
+            <a class="link-button secondary" href="/admin/operational-audit/latest" target="_blank" rel="noopener noreferrer">Ver JSON</a>
+            <button class="secondary" type="submit">Salir</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h2>Último reporte</h2>
+          {% if latest_report %}
+          <div class="meta">
+            <span><strong>Archivo:</strong> {{ latest_report.name }}</span>
+            <span><strong>Modificado:</strong> {{ latest_report.modified_at }}</span>
+            <span><strong>Tamaño:</strong> {{ latest_report.size_bytes }} bytes</span>
+            <span><strong>Ruta:</strong> {{ latest_report.path }}</span>
+          </div>
+          <pre>{{ latest_report.content }}</pre>
+          {% else %}
+          <div class="empty">Todavía no hay un reporte operativo generado.</div>
+          {% endif %}
+        </div>
+
+        <div class="card">
+          <h3>Histórico reciente</h3>
+          {% if reports %}
+          <div class="report-list">
+            {% for report in reports %}
+            <div class="report-item">
+              <strong>{{ report.name }}</strong>
+              <span>Fecha: {{ report.modified_at }}</span>
+              <span>Tamaño: {{ report.size_bytes }} bytes</span>
+              <span>Ruta: {{ report.path }}</span>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="empty">No hay archivos retenidos todavía.</div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

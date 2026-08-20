@@ -8,6 +8,10 @@ from subprocess import check_output
 from app.models.Config import Config
 from app.models.File import File
 from app.util.database import LocalStorage
+from app.services.monitoring.operational_audit import (
+    read_latest_operational_audit_report,
+    list_operational_audit_reports,
+)
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.security import OAuth2PasswordBearer
@@ -68,6 +72,27 @@ def render_outgoing_messages_page(
             "success": success,
             "form_data": form_data or {},
             "campaigns": campaigns,
+        },
+    )
+
+
+def render_operational_audit_page(
+    request: Request,
+    authenticated: bool,
+    error: str = "",
+    success: str = "",
+):
+    latest_report = read_latest_operational_audit_report() if authenticated else None
+    reports = list_operational_audit_reports(limit=20) if authenticated else []
+    return templates.TemplateResponse(
+        request,
+        "operational_audit.html",
+        {
+            "authenticated": authenticated,
+            "error": error,
+            "success": success,
+            "latest_report": latest_report,
+            "reports": reports,
         },
     )
 
@@ -277,6 +302,50 @@ async def outgoing_messages_submit(request: Request):
         authenticated=authenticated,
         error="Acción no soportada.",
         form_data=payload,
+    )
+
+
+@router.get("/ciac/operational-audit", response_class=HTMLResponse)
+async def operational_audit_view(request: Request):
+    return render_operational_audit_page(
+        request=request,
+        authenticated=sam_kb_is_authenticated(request),
+        error=request.query_params.get("error", ""),
+        success=request.query_params.get("success", ""),
+    )
+
+
+@router.post("/ciac/operational-audit", response_class=HTMLResponse)
+async def operational_audit_submit(request: Request):
+    form = await request.form()
+    payload = {k: (v if isinstance(v, str) else str(v)) for k, v in form.items()}
+    action = payload.get("action", "").strip().lower()
+
+    if action == "login":
+        username = (payload.get("username") or "").strip()
+        password = payload.get("password") or ""
+        if username == SAM_KB_USERNAME and password == SAM_KB_PASSWORD:
+            response = RedirectResponse(
+                url="/admin/ciac/operational-audit?success=" + quote_plus("Acceso concedido."),
+                status_code=303,
+            )
+            response.set_cookie(SAM_KB_COOKIE, SAM_KB_COOKIE_VALUE, httponly=True, samesite="lax")
+            return response
+        return render_operational_audit_page(
+            request=request,
+            authenticated=False,
+            error="Credenciales inválidas.",
+        )
+
+    if action == "logout":
+        response = RedirectResponse(url="/admin/ciac/operational-audit", status_code=303)
+        response.delete_cookie(SAM_KB_COOKIE)
+        return response
+
+    return render_operational_audit_page(
+        request=request,
+        authenticated=sam_kb_is_authenticated(request),
+        error="Acción no soportada.",
     )
 
 @router.get("/{fragment}", response_class=HTMLResponse)

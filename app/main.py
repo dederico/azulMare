@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.frontend.routes import router as view_router
 from app.frontend.controllers import process_due_outgoing_campaigns
 import uvicorn
+from app.services.monitoring.operational_audit import operational_audit_scheduler
 
 
 logger.info("[BOOT] Import de app.main iniciado")
@@ -31,13 +32,21 @@ from app.frontend.auth import router as auth_router
 @asynccontextmanager
 async def app_lifespan(app_instance: FastAPI):
     disable_scheduler = os.environ.get("DISABLE_OUTGOING_SCHEDULER", "").strip().lower() in {"1", "true", "yes", "on"}
+    disable_operational_audit = os.environ.get("DISABLE_OPERATIONAL_AUDIT", "").strip().lower() in {"1", "true", "yes", "on"}
     scheduler_task = None
+    audit_task = None
     async with base_lifespan(app_instance):
         if disable_scheduler:
             logger.warning("[SCHEDULER] DISABLE_OUTGOING_SCHEDULER activo. No se iniciará el scheduler.")
         else:
             scheduler_task = asyncio.create_task(outgoing_campaign_scheduler())
             app_instance.state.outgoing_campaign_scheduler_task = scheduler_task
+
+        if disable_operational_audit:
+            logger.warning("[AUDIT] DISABLE_OPERATIONAL_AUDIT activo. No se iniciara el auditor operativo.")
+        else:
+            audit_task = asyncio.create_task(operational_audit_scheduler())
+            app_instance.state.operational_audit_task = audit_task
         try:
             yield
         finally:
@@ -46,6 +55,11 @@ async def app_lifespan(app_instance: FastAPI):
                 with suppress(asyncio.CancelledError):
                     await scheduler_task
                 logger.info("[SCHEDULER] Scheduler de campañas salientes cancelado")
+            if audit_task:
+                audit_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await audit_task
+                logger.info("[AUDIT] Scheduler operativo cancelado")
 
 logger.info("[BOOT] Creando instancia FastAPI")
 app = FastAPI(title=APP_NAME, version="0.1.0", lifespan=app_lifespan)

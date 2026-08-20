@@ -92,6 +92,10 @@ from app.api.colonies_array import SAN_PEDRO_COLONIES
 import difflib
 import re
 from app.services.deduplication import dedup_manager, dedup_cleanup_task
+from app.services.monitoring.operational_audit import (
+    read_latest_operational_audit_report,
+    list_operational_audit_reports,
+)
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 evaluated_reports = {}
@@ -6731,6 +6735,51 @@ async def dedup_status_phone(phone_number: str):
             "message": str(e),
             "phone": phone_number
         }
+
+
+@router.get("/admin/operational-audit/latest")
+async def operational_audit_latest():
+    try:
+        report = read_latest_operational_audit_report()
+        if not report:
+            return JSONResponse(
+                content={
+                    "status": "not_found",
+                    "message": "No hay reporte operativo generado todavía.",
+                },
+                status_code=404,
+            )
+
+        return {
+            "status": "success",
+            "data": report,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error getting latest operational audit: {str(e)}", exc_info=True)
+        return JSONResponse(
+            content={"status": "error", "message": str(e)},
+            status_code=500,
+        )
+
+
+@router.get("/admin/operational-audit/reports")
+async def operational_audit_reports(limit: int = 20):
+    try:
+        safe_limit = max(1, min(limit, 100))
+        reports = list_operational_audit_reports(limit=safe_limit)
+        return {
+            "status": "success",
+            "count": len(reports),
+            "data": reports,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error listing operational audit reports: {str(e)}", exc_info=True)
+        return JSONResponse(
+            content={"status": "error", "message": str(e)},
+            status_code=500,
+        )
 # ---------------------
 # Definición de la aplicación FastAPI
 # ---------------------

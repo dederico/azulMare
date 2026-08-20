@@ -134,6 +134,46 @@ def has_persisted_whatsapp_message_uid(db, uid) -> bool:
         return False
 
 
+def build_successful_delivery_marker_uid(uid) -> str:
+    return f"delivered-inbound-{uid}"
+
+
+def has_successful_delivery_marker_for_inbound_uid(db, uid) -> bool:
+    if uid in (None, ""):
+        return False
+
+    try:
+        delivery_marker = db.Search(
+            Message(uid=build_successful_delivery_marker_uid(uid), source="whatsapp"),
+            single=True,
+        )
+        return delivery_marker is not None
+    except Exception as e:
+        logger.error("Error consultando marker de entrega para uid=%s: %s", uid, str(e))
+        return False
+
+
+def persist_successful_delivery_marker(db, from_number: str, uid, message_id) -> None:
+    if uid in (None, ""):
+        return
+
+    marker_uid = build_successful_delivery_marker_uid(uid)
+    if has_successful_delivery_marker_for_inbound_uid(db, uid):
+        return
+
+    marker = Message(
+        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        senderName="System",
+        message=f"[SYSTEM] Successful outbound delivery confirmed for inbound uid={uid} message_id={message_id}",
+        number=from_number,
+        uid=marker_uid,
+        direction="system",
+        mtype="text",
+        source="whatsapp",
+    )
+    db.Insert(marker)
+
+
 def format_event_timestamp_for_log(timestamp: float | None) -> str:
     if timestamp is None:
         return "None"
@@ -4756,10 +4796,11 @@ async def whatsapp(request: Request):
             )
             logger.info(f"✅ [RETURN FRESH EVENT] Primer inbound nuevo aceptado para {from_number} después de -bot")
 
-        # Deduplicar mensajes entrantes antes de cualquier flujo que pueda responder o disparar efectos.
-        if has_persisted_whatsapp_message_uid(db, uid):
+        # Deduplicar mensajes entrantes solo cuando ya exista evidencia de entrega exitosa.
+        # Si el primer intento guardó el inbound pero falló antes de responder, debemos permitir el retry.
+        if has_successful_delivery_marker_for_inbound_uid(db, uid):
             logger.warning(
-                "🚫 [PERSISTED DUPLICATE] Ignorando inbound repetido para %s uid=%s event_time=%s body=%s",
+                "🚫 [PERSISTED DUPLICATE] Ignorando inbound repetido ya entregado para %s uid=%s event_time=%s body=%s",
                 from_number,
                 uid,
                 payload.get("event_time"),
@@ -4771,8 +4812,25 @@ async def whatsapp(request: Request):
                 uid=uid,
                 inbound_event_time=payload.get("event_time"),
                 body_preview=(body or "")[:240],
+                dedup_basis="successful_delivery_marker",
             )
             return JSONResponse(content={"status": True, "message": "Mensaje duplicado persistente ignorado"})
+
+        if has_persisted_whatsapp_message_uid(db, uid):
+            logger.warning(
+                "♻️ [PERSISTED RETRY] Reintentando inbound previamente guardado sin marker de entrega para %s uid=%s event_time=%s body=%s",
+                from_number,
+                uid,
+                payload.get("event_time"),
+                (body or "")[:120],
+            )
+            log_operational_decision_trace(
+                from_number,
+                "persisted_inbound_retry_allowed",
+                uid=uid,
+                inbound_event_time=payload.get("event_time"),
+                body_preview=(body or "")[:240],
+            )
 
         if processed_message_ids.contains(uid):
             logger.debug(f"Ignorando mensaje duplicado con id={uid} antes de procesar flujos")
@@ -5653,6 +5711,7 @@ async def whatsapp(request: Request):
         )
 
         if response.status_code == 200:
+            persist_successful_delivery_marker(db, from_number, uid, message_id)
             logger.debug("Respuesta enviada exitosamente a Chat2Desk")
             return JSONResponse(
                 content={
@@ -6183,6 +6242,7 @@ async def whatsapp(request: Request):
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":
+                persist_successful_delivery_marker(db, from_number, uid, message_id)
                 logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
                 content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
             else:

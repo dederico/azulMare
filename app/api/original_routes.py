@@ -119,6 +119,21 @@ def parse_chat2desk_event_timestamp(event_time: str | None) -> float | None:
         return None
 
 
+def has_persisted_whatsapp_message_uid(db, uid) -> bool:
+    if uid in (None, ""):
+        return False
+
+    try:
+        existing_message = db.Search(
+            Message(uid=str(uid), source="whatsapp"),
+            single=True,
+        )
+        return existing_message is not None
+    except Exception as e:
+        logger.error("Error consultando deduplicación persistente para uid=%s: %s", uid, str(e))
+        return False
+
+
 def format_event_timestamp_for_log(timestamp: float | None) -> str:
     if timestamp is None:
         return "None"
@@ -1101,6 +1116,7 @@ finalized_report_numbers = set()
 recently_returned_to_bot = {}
 bot_returned_at = {}
 STALE_RETURN_EVENT_TOLERANCE_SECONDS = 1.0
+STALE_INBOUND_EVENT_MAX_AGE_SECONDS = 30 * 60
 BOT_GRACE_PERIOD = 10
 user_answers = {}
 closed_by_inactivity = {}  # key: phone_number, value: expiration_timestamp
@@ -4673,6 +4689,28 @@ async def whatsapp(request: Request):
             return JSONResponse(content={"status": True, "message": "Mensaje del sistema ignorado"})
 
         inbound_event_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time"))
+        if inbound_event_timestamp is not None:
+            event_age_seconds = current_time - inbound_event_timestamp
+            if event_age_seconds > STALE_INBOUND_EVENT_MAX_AGE_SECONDS:
+                logger.warning(
+                    "🚫 [STALE INBOUND] Ignorando inbound viejo para %s uid=%s event_time=%s age_seconds=%.1f max_age_seconds=%s body=%s",
+                    from_number,
+                    uid,
+                    payload.get("event_time"),
+                    event_age_seconds,
+                    STALE_INBOUND_EVENT_MAX_AGE_SECONDS,
+                    (body or "")[:120],
+                )
+                log_operational_decision_trace(
+                    from_number,
+                    "stale_inbound_event_ignored",
+                    uid=uid,
+                    inbound_event_time=payload.get("event_time"),
+                    event_age_seconds=event_age_seconds,
+                    body_preview=(body or "")[:240],
+                )
+                return JSONResponse(content={"status": True, "message": "Mensaje viejo ignorado"})
+
         if from_number in bot_returned_at and inbound_event_timestamp is not None:
             return_timestamp = bot_returned_at[from_number]
             delta_seconds = inbound_event_timestamp - return_timestamp
@@ -4719,6 +4757,23 @@ async def whatsapp(request: Request):
             logger.info(f"✅ [RETURN FRESH EVENT] Primer inbound nuevo aceptado para {from_number} después de -bot")
 
         # Deduplicar mensajes entrantes antes de cualquier flujo que pueda responder o disparar efectos.
+        if has_persisted_whatsapp_message_uid(db, uid):
+            logger.warning(
+                "🚫 [PERSISTED DUPLICATE] Ignorando inbound repetido para %s uid=%s event_time=%s body=%s",
+                from_number,
+                uid,
+                payload.get("event_time"),
+                (body or "")[:120],
+            )
+            log_operational_decision_trace(
+                from_number,
+                "persisted_duplicate_inbound_ignored",
+                uid=uid,
+                inbound_event_time=payload.get("event_time"),
+                body_preview=(body or "")[:240],
+            )
+            return JSONResponse(content={"status": True, "message": "Mensaje duplicado persistente ignorado"})
+
         if processed_message_ids.contains(uid):
             logger.debug(f"Ignorando mensaje duplicado con id={uid} antes de procesar flujos")
             return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})

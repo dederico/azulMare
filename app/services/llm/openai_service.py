@@ -9,7 +9,7 @@ from .llm_service import LLMService
 from app.services.functions.function_manager import FunctionManager
 
 
-OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
+OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=25.0)
 OPENAI_MAX_RETRIES = 3
 OPENAI_LOCAL_RETRY_ATTEMPTS = 2
 OPENAI_LOCAL_RETRY_BACKOFF_SECONDS = 1.0

@@ -1,6 +1,7 @@
 import json
 import openai
 import httpx
+import asyncio
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
@@ -10,6 +11,8 @@ from app.services.functions.function_manager import FunctionManager
 
 OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 OPENAI_MAX_RETRIES = 3
+OPENAI_LOCAL_RETRY_ATTEMPTS = 2
+OPENAI_LOCAL_RETRY_BACKOFF_SECONDS = 1.0
 
 
 class OpenAIService(LLMService):
@@ -107,6 +110,50 @@ class OpenAIService(LLMService):
             model,
             self._serialize_for_log(tools_payload),
         )
+
+    def _is_retryable_connectivity_error(self, error: Exception) -> bool:
+        return (
+            isinstance(error, httpx.TimeoutException)
+            or isinstance(error, openai.APITimeoutError)
+            or isinstance(error, openai.APIConnectionError)
+            or "ConnectTimeout" in type(error).__name__
+        )
+
+    async def _create_chat_completion_with_local_retry(self, **kwargs: Any):
+        last_error: Exception | None = None
+
+        for attempt in range(1, OPENAI_LOCAL_RETRY_ATTEMPTS + 1):
+            try:
+                if attempt > 1:
+                    logger.warning(
+                        "🔁 [OPENAI RETRY] attempt=%s/%s model=%s",
+                        attempt,
+                        OPENAI_LOCAL_RETRY_ATTEMPTS,
+                        kwargs.get("model"),
+                    )
+                return await self.client.chat.completions.create(**kwargs)
+            except Exception as error:
+                last_error = error
+                retryable = self._is_retryable_connectivity_error(error)
+                logger.warning(
+                    "⚠️ [OPENAI REQUEST FAILURE] attempt=%s/%s model=%s retryable=%s error_type=%s error=%s",
+                    attempt,
+                    OPENAI_LOCAL_RETRY_ATTEMPTS,
+                    kwargs.get("model"),
+                    retryable,
+                    type(error).__name__,
+                    str(error),
+                )
+
+                if not retryable or attempt >= OPENAI_LOCAL_RETRY_ATTEMPTS:
+                    raise
+
+                await asyncio.sleep(OPENAI_LOCAL_RETRY_BACKOFF_SECONDS)
+
+        if last_error is not None:
+            raise last_error
+
+        raise RuntimeError("Fallo inesperado creando chat completion")
     
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         """Añadir mensaje al historial con optimización de contexto"""
@@ -251,7 +298,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         
         try:
             # Crear una solicitud separada para resumir el contexto
-            summary_response = await self.client.chat.completions.create(
+            summary_response = await self._create_chat_completion_with_local_retry(
                 model="gpt-5.6-luna",  # model="gpt-5.4-mini-2026-03-17"
                 #model=self.config.get("model") or "gpt-3.5-turbo-1106",
                 messages=[{"role": "user", "content": summary_prompt}],
@@ -290,7 +337,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         # Comprobar si estamos usando un modelo de razonamiento (o3-mini)
         if model == "o3-mini":
             # Si es un modelo de razonamiento, incluir el parámetro reasoning_effort
-            generator = await self.client.chat.completions.create(
+            generator = await self._create_chat_completion_with_local_retry(
                 model=model,
                 messages=self.conversation_history,
                 stream=True,
@@ -300,7 +347,7 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             )
         else:
             # Para modelos regulares, incluir temperature
-            generator = await self.client.chat.completions.create(
+            generator = await self._create_chat_completion_with_local_retry(
                 model=model,
                 messages=self.conversation_history,
                 stream=True,

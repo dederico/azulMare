@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import pytz
 from io import BytesIO
 import requests
+import openai
 from openai import OpenAI
 import asyncio
 from contextlib import asynccontextmanager
@@ -6122,7 +6123,9 @@ async def whatsapp(request: Request):
         await manage_message_history(db, from_number)
 
     except Exception as e:
+        error_type = type(e).__name__
         logger.error(f"Error al generar la respuesta: {str(e)}")
+        logger.exception("💥 [LLM FAILURE] type=%s from_number=%s uid=%s", error_type, from_number, uid)
         return JSONResponse(content={"error": f"Error al generar respuesta: {str(e)}"}, status_code=500)
     
     

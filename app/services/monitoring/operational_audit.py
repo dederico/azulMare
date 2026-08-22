@@ -434,7 +434,7 @@ def _classify_silence_candidates(metrics: dict, log_signals: dict) -> None:
     }
 
 
-def _build_findings(metrics: dict, log_signals: dict) -> list[str]:
+def _build_findings(metrics: dict, log_signals: dict, window_hours: int) -> list[str]:
     findings = []
 
     inbound_total = _safe_int(metrics.get("message_totals", {}).get("inbound"))
@@ -442,7 +442,7 @@ def _build_findings(metrics: dict, log_signals: dict) -> list[str]:
     unique_numbers = _safe_int(metrics.get("unique_numbers"))
 
     findings.append(
-        f"Actividad whatsapp ultimas {AUDIT_INTERVAL_HOURS}h: inbound={inbound_total}, outbound={outbound_total}, usuarios_unicos={unique_numbers}"
+        f"Actividad whatsapp ultimas {window_hours}h: inbound={inbound_total}, outbound={outbound_total}, usuarios_unicos={unique_numbers}"
     )
 
     if inbound_total > 0 and outbound_total == 0:
@@ -518,14 +518,20 @@ def _build_findings(metrics: dict, log_signals: dict) -> list[str]:
     return findings
 
 
-def _render_report(metrics: dict, log_signals: dict, generated_at: datetime, since: datetime) -> str:
+def _render_report(
+    metrics: dict,
+    log_signals: dict,
+    generated_at: datetime,
+    since: datetime,
+    window_hours: int,
+) -> str:
     _classify_silence_candidates(metrics, log_signals)
-    findings = _build_findings(metrics, log_signals)
+    findings = _build_findings(metrics, log_signals, window_hours)
     lines: list[str] = []
     lines.append("SAM OPERATIONAL AUDIT")
     lines.append(f"generated_at: {generated_at.isoformat()}")
     lines.append(f"window_start: {since.isoformat()}")
-    lines.append(f"window_hours: {AUDIT_INTERVAL_HOURS}")
+    lines.append(f"window_hours: {window_hours}")
     lines.append("")
     lines.append("RESUMEN")
     for finding in findings:
@@ -650,7 +656,7 @@ def generate_operational_audit_report() -> Path:
     since = generated_at - timedelta(hours=AUDIT_INTERVAL_HOURS)
     metrics = _load_db_metrics(storage, since)
     log_signals = _read_recent_log_signals()
-    report_body = _render_report(metrics, log_signals, generated_at, since)
+    report_body = _render_report(metrics, log_signals, generated_at, since, AUDIT_INTERVAL_HOURS)
 
     AUDIT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = generated_at.strftime("%Y%m%d_%H%M%S")
@@ -674,7 +680,7 @@ def generate_operational_audit_snapshot(window_hours: int | None = None) -> dict
     since = generated_at - timedelta(hours=effective_hours)
     metrics = _load_db_metrics(storage, since)
     log_signals = _read_recent_log_signals()
-    report_body = _render_report(metrics, log_signals, generated_at, since)
+    report_body = _render_report(metrics, log_signals, generated_at, since, effective_hours)
 
     return {
         "name": "sam_operational_audit_live.txt",

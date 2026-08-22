@@ -1154,6 +1154,7 @@ reports_lock = threading.Lock()
 report_sessions_lock = RLock()  # More robust than a simple Lock
 reports_in_progress = {}
 transferred_numbers = {}  # key: phone_number, value: expiration_timestamp
+transfer_guard_context = {}  # key: message_id, value: contextual metadata for guarded transfers
 transfer_timeout = 15 * 60  # 15 minutes in seconds
 last_response_time = {}  # Para rastrear cuándo se envió la última respuesta a cada número
 completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio: str}
@@ -2604,12 +2605,41 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
     Returns:
         string: Mensaje de confirmación o error.
     """
+    context = transfer_guard_context.get(str(message_id), {})
+    explicit_handoff = bool(context.get("explicit_handoff"))
+    report_intent = bool(context.get("report_intent"))
+    report_state = context.get("report_state") or {}
+    has_report_session = bool(report_state.get("has_report_session"))
+    from_number = context.get("from_number")
+    body_preview = (context.get("body") or "")[:180]
+
     logger.critical(
-        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s",
+        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s explicit_handoff=%s report_intent=%s has_report_session=%s from_number=%s body=%s",
         message_id,
         group_id,
         reason,
+        explicit_handoff,
+        report_intent,
+        has_report_session,
+        from_number,
+        body_preview,
     )
+
+    if not explicit_handoff and (report_intent or has_report_session):
+        logger.critical(
+            "⛔ [TRANSFER BLOCKED] message_id=%s from_number=%s reason=%s report_intent=%s has_report_session=%s",
+            message_id,
+            from_number,
+            reason,
+            report_intent,
+            has_report_session,
+        )
+        return (
+            "Error: transferencia bloqueada por guardia local. "
+            "Continua atendiendo el reporte con el flujo normal y no transfieras a humano "
+            "a menos que el usuario lo solicite explícitamente."
+        )
+
     return await transfer_to_group(
         message_id=message_id,
         group_id=1817,
@@ -5861,6 +5891,13 @@ async def whatsapp(request: Request):
             history_messages=len(structured_history),
             report_state=build_report_state_snapshot(from_number),
         )
+        transfer_guard_context[str(message_id)] = {
+            "from_number": from_number,
+            "body": body or "",
+            "explicit_handoff": is_explicit_human_handoff_request(body or ""),
+            "report_intent": detect_report_intent(body or "", ""),
+            "report_state": build_report_state_snapshot(from_number),
+        }
 
         fixed_phone_response = resolve_fixed_security_phone_response(body)
         if fixed_phone_response:
@@ -5895,6 +5932,7 @@ async def whatsapp(request: Request):
             should_create_report_session=should_create_report_session(body, response_content),
             report_state=build_report_state_snapshot(from_number),
         )
+        transfer_guard_context.pop(str(message_id), None)
 
         if from_number in report_sessions and assistant_asked_for_optional_image(response_content):
             with report_sessions_lock:

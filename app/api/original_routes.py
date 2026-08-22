@@ -2157,6 +2157,30 @@ def is_explicit_human_handoff_request(body: str) -> bool:
     return has_person_term and has_contact_verb
 
 
+def is_simple_greeting(body: str) -> bool:
+    if not body:
+        return False
+
+    normalized = re.sub(r"[^\w\sáéíóúñ]", " ", body.strip().lower())
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return False
+
+    simple_greetings = {
+        "hola",
+        "buenas",
+        "buen día",
+        "buen dia",
+        "buenas tardes",
+        "buenos días",
+        "buenos dias",
+        "buenas noches",
+        "que tal",
+        "qué tal",
+    }
+    return normalized in simple_greetings
+
+
 def is_non_bot_operator(operator_id, bot_operator_ids) -> bool:
     try:
         return bool(operator_id) and int(operator_id) not in bot_operator_ids
@@ -2612,27 +2636,50 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
     has_report_session = bool(report_state.get("has_report_session"))
     from_number = context.get("from_number")
     body_preview = (context.get("body") or "")[:180]
+    reason_lower = (reason or "").strip().lower()
+    greeting_only = is_simple_greeting(context.get("body") or "")
+    stale_explicit_handoff_reason = (
+        not explicit_handoff and
+        any(
+            marker in reason_lower
+            for marker in (
+                "solicita hablar con un agente humano",
+                "solicita hablar con humano",
+                "hablar con un agente humano",
+                "hablar con humano",
+            )
+        )
+    )
 
     logger.critical(
-        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s explicit_handoff=%s report_intent=%s has_report_session=%s from_number=%s body=%s",
+        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s explicit_handoff=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s from_number=%s body=%s",
         message_id,
         group_id,
         reason,
         explicit_handoff,
         report_intent,
         has_report_session,
+        greeting_only,
+        stale_explicit_handoff_reason,
         from_number,
         body_preview,
     )
 
-    if not explicit_handoff and (report_intent or has_report_session):
+    if not explicit_handoff and (
+        report_intent or
+        has_report_session or
+        greeting_only or
+        stale_explicit_handoff_reason
+    ):
         logger.critical(
-            "⛔ [TRANSFER BLOCKED] message_id=%s from_number=%s reason=%s report_intent=%s has_report_session=%s",
+            "⛔ [TRANSFER BLOCKED] message_id=%s from_number=%s reason=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s",
             message_id,
             from_number,
             reason,
             report_intent,
             has_report_session,
+            greeting_only,
+            stale_explicit_handoff_reason,
         )
         return (
             "Error: transferencia bloqueada por guardia local. "
@@ -5567,25 +5614,35 @@ async def whatsapp(request: Request):
     # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
     try:
         logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
-        
+
+        should_reset_context_after_human = from_number in recently_returned_to_bot
+
         # Obtener mensajes ordenados por tiempo (los más antiguos primero)
-        messages_db = db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        messages_db = [] if should_reset_context_after_human else (
+            db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        )
         last_outbound_message = next(
             (msg.message for msg in reversed(messages_db) if msg.direction == "outbound" and msg.message),
             "",
         )
-        
+
         # Limpiar el historial antes de agregar mensajes para evitar duplicados
         conversation_history.messages.clear()
-        
-        # Añadir los mensajes al historial en el orden correcto
-        for msg in messages_db:
-            if msg.direction == "inbound":
-                conversation_history.add_user_message(msg.message)
-                logger.debug(f"Mensaje histórico (usuario): {msg.message[:30]}...")
-            elif msg.direction == "outbound":
-                conversation_history.add_ai_message(msg.message)
-                logger.debug(f"Mensaje histórico (asistente): {msg.message[:30]}...")
+
+        if should_reset_context_after_human:
+            logger.critical(
+                "🧹 [RETURN CONTEXT RESET] Reiniciando historial conversacional para %s tras regreso desde agente humano",
+                from_number,
+            )
+        else:
+            # Añadir los mensajes al historial en el orden correcto
+            for msg in messages_db:
+                if msg.direction == "inbound":
+                    conversation_history.add_user_message(msg.message)
+                    logger.debug(f"Mensaje histórico (usuario): {msg.message[:30]}...")
+                elif msg.direction == "outbound":
+                    conversation_history.add_ai_message(msg.message)
+                    logger.debug(f"Mensaje histórico (asistente): {msg.message[:30]}...")
             
     except Exception as e:
         logger.error(f"Error al recuperar mensajes históricos: {str(e)}")

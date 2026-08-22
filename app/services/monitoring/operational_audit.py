@@ -22,9 +22,11 @@ AUDIT_RETENTION_DAYS = int(os.environ.get("OPERATIONAL_AUDIT_RETENTION_DAYS", "3
 LOG_PATTERNS = {
     "llm_failure": ["[LLM FAILURE]", "Error al generar la respuesta"],
     "openai_timeout": ["ConnectTimeout", "APITimeoutError", "[OPENAI REQUEST FAILURE]"],
-    "outbound_error": ["Error en respuesta Chat2Desk", "Error al enviar mensaje", "[CHAT2DESK:whatsapp_main]"],
+    "outbound_error": ["Error en respuesta Chat2Desk", "Error al enviar mensaje"],
+    "outbound_activity": ["📤 [CHAT2DESK:whatsapp_main] attempt", "📥 [CHAT2DESK:whatsapp_main] response"],
     "dedup": ["[PERSISTED DUPLICATE]", "[OUTBOUND DEDUP]", "[STALE INBOUND]"],
     "human_takeover": ["Human agent takeover detected", "Deteccion automatica: Agente humano"],
+    "transfer_api": ["[TRANSFER TRACE]", "[TRANSFER GUARD]"],
 }
 
 PHONE_PATTERN = re.compile(r"(?:from_number=|for |from )(?P<phone>52\d{10,13})")
@@ -463,6 +465,11 @@ def _build_findings(metrics: dict, log_signals: dict) -> list[str]:
             f"ALERTA: se detectaron {log_signals['counts'].get('outbound_error', 0)} eventos ligados a envio/salida Chat2Desk."
         )
 
+    if log_signals["counts"].get("transfer_api", 0) > 0:
+        findings.append(
+            f"ALERTA: se detectaron {log_signals['counts'].get('transfer_api', 0)} eventos de transferencia a operadores disparados por API/script."
+        )
+
     if log_signals["counts"].get("dedup", 0) > 0:
         findings.append(
             f"Observacion: hubo {log_signals['counts'].get('dedup', 0)} eventos de deduplicacion. Validar si corresponden a reentregas normales."
@@ -658,6 +665,25 @@ def generate_operational_audit_report() -> Path:
     if deleted_reports:
         logger.info("[AUDIT] Reportes viejos eliminados por retencion: %s", deleted_reports)
     return report_path
+
+
+def generate_operational_audit_snapshot(window_hours: int | None = None) -> dict:
+    storage = LocalStorage()
+    effective_hours = max(1, min(int(window_hours or AUDIT_INTERVAL_HOURS), 72))
+    generated_at = datetime.now()
+    since = generated_at - timedelta(hours=effective_hours)
+    metrics = _load_db_metrics(storage, since)
+    log_signals = _read_recent_log_signals()
+    report_body = _render_report(metrics, log_signals, generated_at, since)
+
+    return {
+        "name": "sam_operational_audit_live.txt",
+        "path": str(AUDIT_OUTPUT_DIR / "sam_operational_audit_live.txt"),
+        "size_bytes": len(report_body.encode("utf-8")),
+        "modified_at": generated_at.isoformat(),
+        "window_hours": effective_hours,
+        "content": report_body,
+    }
 
 
 async def operational_audit_scheduler():

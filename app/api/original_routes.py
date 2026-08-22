@@ -95,6 +95,7 @@ from app.services.deduplication import dedup_manager, dedup_cleanup_task
 from app.services.monitoring.operational_audit import (
     read_latest_operational_audit_report,
     list_operational_audit_reports,
+    generate_operational_audit_snapshot,
 )
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
@@ -6776,6 +6777,23 @@ async def operational_audit_reports(limit: int = 20):
         }
     except Exception as e:
         logger.error(f"Error listing operational audit reports: {str(e)}", exc_info=True)
+        return JSONResponse(
+            content={"status": "error", "message": str(e)},
+            status_code=500,
+        )
+
+
+@router.get("/admin/operational-audit/live")
+async def operational_audit_live(hours: int = 24):
+    try:
+        report = generate_operational_audit_snapshot(window_hours=hours)
+        return {
+            "status": "success",
+            "data": report,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error generating live operational audit: {str(e)}", exc_info=True)
         return JSONResponse(
             content={"status": "error", "message": str(e)},
             status_code=500,

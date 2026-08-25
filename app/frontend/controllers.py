@@ -67,7 +67,7 @@ RECIPIENT_PHONE_KEYS = {
     "numero", "telefono", "telefono_whatsapp", "whatsapp", "celular", "phone",
     "telefono_celular", "numero_telefono", "numero_celular", "movil", "mobile",
     "telefono_movil", "num_telefono", "num_celular", "telefono1", "telefono_1",
-    "telefono2", "telefono_2", "whats", "whats_app", "numero_whatsapp",
+    "telefono2", "telefono_2", "telefono3", "telefono_3", "whats", "whats_app", "numero_whatsapp",
 }
 RECIPIENT_CANONICAL_KEY_MAP = {
     "nombre_del_vecino": "nombre",
@@ -466,6 +466,147 @@ def _find_first_present_value(parsed: dict, valid_keys: set[str]) -> str:
     return ""
 
 
+def _extract_phone_like_value(raw_value) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        return ""
+
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) in {10, 12, 13}:
+        return value
+    return ""
+
+
+def _looks_like_person_name(value: str) -> bool:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return False
+
+    digits = sum(1 for ch in text if ch.isdigit())
+    letters = sum(1 for ch in text if ch.isalpha())
+    if letters < 3 or digits > 2:
+        return False
+
+    lowered = text.lower()
+    banned_tokens = {
+        "si", "no", "sn", "s/n", "x", "na", "n/a", "centro", "municipio", "estado",
+        "colonia", "calle", "telefono", "celular", "cp", "c.p.", "codigo", "postal",
+    }
+    return lowered not in banned_tokens
+
+
+def _infer_phone_from_row(parsed: dict) -> str:
+    direct_phone = _find_first_present_value(parsed, RECIPIENT_PHONE_KEYS)
+    if direct_phone:
+        return direct_phone
+
+    ranked_candidates = []
+    for key, value in parsed.items():
+        phone_like = _extract_phone_like_value(value)
+        if not phone_like:
+            continue
+
+        score = 0
+        if "tel" in key or "cel" in key or "movil" in key or "whats" in key or "phone" in key:
+            score += 100
+        if "contacto" in key or "emergencia" in key or "tutor" in key or "papa" in key or "mama" in key:
+            score -= 20
+        if key in {"numero", "matricula", "cp", "codigo_postal"}:
+            score -= 50
+        ranked_candidates.append((score, key, phone_like))
+
+    if not ranked_candidates:
+        return ""
+
+    ranked_candidates.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
+    return ranked_candidates[0][2]
+
+
+def _infer_name_from_row(parsed: dict) -> str:
+    direct_name = _find_first_present_value(parsed, RECIPIENT_NAME_KEYS)
+    if direct_name:
+        return direct_name
+
+    preferred_keys = [
+        "nombre_completo",
+        "nombre",
+        "contacto",
+        "cliente",
+        "beneficiario",
+        "persona",
+    ]
+    for key in preferred_keys:
+        value = (parsed.get(key) or "").strip()
+        if _looks_like_person_name(value):
+            return value
+
+    composite_keys = ["nombre", "ap_paterno", "ap_materno"]
+    composite_parts = [(parsed.get(key) or "").strip() for key in composite_keys]
+    composite_parts = [part for part in composite_parts if part and _looks_like_person_name(part)]
+    if composite_parts:
+        return " ".join(composite_parts)
+
+    for key, value in parsed.items():
+        if key in RECIPIENT_PHONE_KEYS:
+            continue
+        if _looks_like_person_name(value):
+            return value.strip()
+
+    return ""
+
+
+def _build_recipient_from_parsed(parsed: dict, row_number: int, source_label: str) -> dict:
+    name = _infer_name_from_row(parsed)
+    phone = _infer_phone_from_row(parsed)
+    if not phone:
+        raise ValueError(f"{source_label} {row_number}: falta el número telefónico.")
+
+    metadata = {
+        key: value
+        for key, value in parsed.items()
+        if key not in RECIPIENT_NAME_KEYS and key not in RECIPIENT_PHONE_KEYS
+    }
+
+    return {
+        "name": name or "Sin nombre",
+        "phone": _normalize_phone_number(phone),
+        "metadata": metadata,
+    }
+
+
+def _row_header_score(row_values) -> int:
+    score = 0
+    for value in row_values:
+        normalized = _canonicalize_recipient_key(str(value or "").strip())
+        if not normalized:
+            continue
+        if normalized in RECIPIENT_NAME_KEYS or normalized in RECIPIENT_PHONE_KEYS:
+            score += 4
+        elif any(token in normalized for token in ("nombre", "telefono", "celular", "whatsapp", "phone", "contacto", "colonia", "calle")):
+            score += 2
+        elif normalized.isdigit():
+            score -= 1
+        else:
+            score += 1
+    return score
+
+
+def _detect_header_row_index(rows, max_scan: int = 8) -> int:
+    if not rows:
+        return 0
+
+    best_index = 0
+    best_score = float("-inf")
+    scan_limit = min(len(rows), max_scan)
+    for idx in range(scan_limit):
+        row = rows[idx] or []
+        score = _row_header_score(row)
+        if score > best_score:
+            best_score = score
+            best_index = idx
+    return best_index
+
+
 def _parse_recipient_line(line: str, line_number: int) -> dict:
     line = line.strip()
     matches = list(RECIPIENT_FIELD_PATTERN.finditer(line))
@@ -483,41 +624,23 @@ def _parse_recipient_line(line: str, line_number: int) -> dict:
         if key and value:
             parsed[key] = value
 
-    name = _find_first_present_value(parsed, RECIPIENT_NAME_KEYS)
-    phone = _find_first_present_value(parsed, RECIPIENT_PHONE_KEYS)
+    phone_match = re.search(
+        r"(?:n[uú]mero|tel[eé]fono(?:_whatsapp)?|whatsapp|celular|phone)\s*:\s*([+\d][\d\s-]*)",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if phone_match and "telefono" not in parsed and "celular" not in parsed and "whatsapp" not in parsed and "phone" not in parsed:
+        parsed["telefono"] = phone_match.group(1).strip()
 
-    if not phone:
-        phone_match = re.search(
-            r"(?:n[uú]mero|tel[eé]fono(?:_whatsapp)?|whatsapp|celular|phone)\s*:\s*([+\d][\d\s-]*)",
-            line,
-            flags=re.IGNORECASE,
-        )
-        if phone_match:
-            phone = phone_match.group(1).strip()
+    name_match = re.search(
+        r"nombre\s*:\s*(.*?)(?=\s+(?:n[uú]mero|tel[eé]fono(?:_whatsapp)?|whatsapp|celular|phone|k)\s*:|$)",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if name_match and "nombre" not in parsed:
+        parsed["nombre"] = name_match.group(1).strip()
 
-    if not name:
-        name_match = re.search(
-            r"nombre\s*:\s*(.*?)(?=\s+(?:n[uú]mero|tel[eé]fono(?:_whatsapp)?|whatsapp|celular|phone|k)\s*:|$)",
-            line,
-            flags=re.IGNORECASE,
-        )
-        if name_match:
-            name = name_match.group(1).strip()
-
-    if not phone:
-        raise ValueError(f"Línea {line_number}: falta el número telefónico.")
-
-    metadata = {
-        key: value
-        for key, value in parsed.items()
-        if key not in RECIPIENT_NAME_KEYS and key not in RECIPIENT_PHONE_KEYS
-    }
-
-    return {
-        "name": name or "Sin nombre",
-        "phone": _normalize_phone_number(phone),
-        "metadata": metadata,
-    }
+    return _build_recipient_from_parsed(parsed, line_number, "Línea")
 
 
 def _dedupe_recipients(recipients: list[dict]) -> list[dict]:
@@ -574,23 +697,7 @@ def _parse_csv_recipients(file_bytes: bytes) -> list[dict]:
         if not parsed:
             continue
 
-        name = _find_first_present_value(parsed, RECIPIENT_NAME_KEYS)
-        phone = _find_first_present_value(parsed, RECIPIENT_PHONE_KEYS)
-        if not phone:
-            raise ValueError(f"Fila {idx}: falta el número telefónico.")
-
-        metadata = {
-            key: value
-            for key, value in parsed.items()
-            if key not in RECIPIENT_NAME_KEYS and key not in RECIPIENT_PHONE_KEYS
-        }
-        recipients.append(
-            {
-                "name": name or "Sin nombre",
-                "phone": _normalize_phone_number(phone),
-                "metadata": metadata,
-            }
-        )
+        recipients.append(_build_recipient_from_parsed(parsed, idx, "Fila"))
 
     if not recipients:
         raise ValueError("El archivo CSV no contiene destinatarios válidos.")
@@ -604,12 +711,13 @@ def _parse_xlsx_recipients(file_bytes: bytes) -> list[dict]:
     if not rows:
         raise ValueError("El archivo XLSX está vacío.")
 
-    headers = [str(cell or "").strip() for cell in rows[0]]
+    header_row_index = _detect_header_row_index(rows)
+    headers = [str(cell or "").strip() for cell in rows[header_row_index]]
     if not any(headers):
         raise ValueError("El archivo XLSX no contiene encabezados.")
 
     recipients = []
-    for idx, row in enumerate(rows[1:], start=2):
+    for idx, row in enumerate(rows[header_row_index + 1 :], start=header_row_index + 2):
         parsed = {}
         for raw_key, raw_value in zip(headers, row):
             key = _canonicalize_recipient_key(raw_key)
@@ -620,23 +728,7 @@ def _parse_xlsx_recipients(file_bytes: bytes) -> list[dict]:
         if not parsed:
             continue
 
-        name = _find_first_present_value(parsed, RECIPIENT_NAME_KEYS)
-        phone = _find_first_present_value(parsed, RECIPIENT_PHONE_KEYS)
-        if not phone:
-            raise ValueError(f"Fila {idx}: falta el número telefónico.")
-
-        metadata = {
-            key: value
-            for key, value in parsed.items()
-            if key not in RECIPIENT_NAME_KEYS and key not in RECIPIENT_PHONE_KEYS
-        }
-        recipients.append(
-            {
-                "name": name or "Sin nombre",
-                "phone": _normalize_phone_number(phone),
-                "metadata": metadata,
-            }
-        )
+        recipients.append(_build_recipient_from_parsed(parsed, idx, "Fila"))
 
     if not recipients:
         raise ValueError("El archivo XLSX no contiene destinatarios válidos.")

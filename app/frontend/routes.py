@@ -1,8 +1,23 @@
 import os
 import json
-from fastapi import FastAPI
+from pathlib import Path
+from fastapi import FastAPI, UploadFile
 from app.models.User import User
-from .controllers import Context, create_knowledge_function, create_outgoing_campaign, delete_outgoing_campaign, list_outgoing_campaigns, send_outgoing_campaign
+from .controllers import (
+    Context,
+    APPROVED_HSM_TEMPLATES,
+    PROACTIVE_CAMPAIGN_KINDS,
+    create_knowledge_function,
+    create_outgoing_campaign,
+    create_saved_audience_file,
+    delete_knowledge_function,
+    delete_outgoing_campaign,
+    delete_saved_audience_file,
+    list_dynamic_knowledge_functions,
+    list_outgoing_campaigns,
+    list_saved_audience_files,
+    send_outgoing_campaign,
+)
 from app.util.logger import logger
 from subprocess import check_output
 from app.models.Config import Config
@@ -43,6 +58,7 @@ def sam_kb_is_authenticated(request: Request) -> bool:
 
 
 def render_sam_kb_page(request: Request, authenticated: bool, error: str = "", success: str = "", form_data: dict | None = None):
+    knowledge_functions = list_dynamic_knowledge_functions(LocalStorage()) if authenticated else []
     return templates.TemplateResponse(
         request,
         "sam_base_conocimiento.html",
@@ -51,6 +67,7 @@ def render_sam_kb_page(request: Request, authenticated: bool, error: str = "", s
             "error": error,
             "success": success,
             "form_data": form_data or {},
+            "knowledge_functions": knowledge_functions,
         },
     )
 
@@ -63,6 +80,7 @@ def render_outgoing_messages_page(
     form_data: dict | None = None,
 ):
     campaigns = list_outgoing_campaigns(LocalStorage()) if authenticated else []
+    saved_audiences = list_saved_audience_files(LocalStorage()) if authenticated else []
     return templates.TemplateResponse(
         request,
         "outgoing_messages.html",
@@ -72,6 +90,9 @@ def render_outgoing_messages_page(
             "success": success,
             "form_data": form_data or {},
             "campaigns": campaigns,
+            "saved_audiences": saved_audiences,
+            "approved_hsm_templates": APPROVED_HSM_TEMPLATES,
+            "campaign_kind_options": PROACTIVE_CAMPAIGN_KINDS,
         },
     )
 
@@ -173,6 +194,24 @@ async def sam_base_conocimiento_submit(request: Request):
                 form_data=payload,
             )
 
+    if action == "delete":
+        try:
+            result = delete_knowledge_function(LocalStorage(), payload.get("function_name", ""))
+            return render_sam_kb_page(
+                request=request,
+                authenticated=True,
+                success=result["message"],
+                form_data={},
+            )
+        except Exception as e:
+            logger.error("Error deleting knowledge function: %s", e)
+            return render_sam_kb_page(
+                request=request,
+                authenticated=True,
+                error=str(e),
+                form_data=payload,
+            )
+
     return render_sam_kb_page(
         request=request,
         authenticated=authenticated,
@@ -194,7 +233,7 @@ async def outgoing_messages(request: Request):
 @router.post("/ciac/mensajes-proactivos", response_class=HTMLResponse)
 async def outgoing_messages_submit(request: Request):
     form = await request.form()
-    payload = {k: (v if isinstance(v, str) else str(v)) for k, v in form.items()}
+    payload = {k: v for k, v in form.items() if isinstance(v, str)}
     action = payload.get("action", "").strip().lower()
     authenticated = sam_kb_is_authenticated(request)
 
@@ -226,6 +265,86 @@ async def outgoing_messages_submit(request: Request):
             authenticated=False,
             error="Tu sesión expiró. Inicia sesión de nuevo.",
         )
+
+    if action == "upload_audience":
+        upload = form.get("audience_file")
+        audience_label = (payload.get("audience_label") or "").strip()
+        drive_url = (payload.get("drive_url") or "").strip()
+        if not audience_label:
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error="Debes capturar un nombre para guardar la lista.",
+                form_data=payload,
+            )
+        try:
+            file_bytes = b""
+            source_name = ""
+            source_url = drive_url
+            extension = ""
+            if isinstance(upload, UploadFile) and upload.filename:
+                file_bytes = await upload.read()
+                source_name = upload.filename
+                extension = Path(upload.filename).suffix.lower()
+            elif drive_url:
+                import requests
+
+                response = requests.get(drive_url, timeout=60)
+                response.raise_for_status()
+                file_bytes = response.content
+                source_name = drive_url
+                extension = Path(drive_url.split("?")[0]).suffix.lower() or ".csv"
+            else:
+                raise ValueError("Debes subir un archivo .csv/.xlsx o capturar una URL de Drive.")
+
+            result = create_saved_audience_file(
+                LocalStorage(),
+                audience_label=audience_label,
+                file_bytes=file_bytes,
+                extension=extension,
+                source_name=source_name,
+                source_url=source_url,
+            )
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                success=result["message"],
+                form_data={},
+            )
+        except Exception as e:
+            logger.error("Error creating saved audience file: %s", e)
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error=str(e),
+                form_data=payload,
+            )
+
+    if action == "delete_audience":
+        audience_file_id = (payload.get("audience_file_id") or "").strip()
+        if not audience_file_id.isdigit():
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error="No se recibió un identificador de lista válido.",
+                form_data=payload,
+            )
+        try:
+            result = delete_saved_audience_file(LocalStorage(), int(audience_file_id))
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                success=result["message"],
+                form_data={},
+            )
+        except Exception as e:
+            logger.error("Error deleting saved audience file: %s", e)
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error=str(e),
+                form_data=payload,
+            )
 
     if action == "create":
         try:

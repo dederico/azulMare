@@ -13,6 +13,9 @@ class OutgoingRecipient(metaclass=DirtyTrackingMeta):
     providerMessageId: str
     providerPayload: str
     errorMessage: str
+    seenAt: str
+    repliedAt: str
+    replyText: str
     metadata: str
 
     def __init__(self, **kwargs):

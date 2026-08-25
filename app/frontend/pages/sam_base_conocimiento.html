@@ -15,6 +15,7 @@
       --primary-dark: #115e59;
       --danger: #b42318;
       --success: #166534;
+      --soft: #f7f7f2;
     }
     * { box-sizing: border-box; }
     body {
@@ -24,10 +25,7 @@
       color: var(--text);
       font-family: Georgia, "Times New Roman", serif;
     }
-    .wrap {
-      max-width: 920px;
-      margin: 0 auto;
-    }
+    .wrap { max-width: 1080px; margin: 0 auto; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -35,52 +33,25 @@
       padding: 28px;
       box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
     }
-    h1 {
-      margin: 0 0 10px;
-      font-size: 32px;
-      line-height: 1.1;
+    h1 { margin: 0 0 10px; font-size: 32px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 24px; }
+    h3 { margin: 0 0 8px; font-size: 18px; }
+    p.lead { margin: 0 0 24px; color: var(--muted); font-size: 16px; }
+    .notice { margin-bottom: 16px; padding: 12px 14px; border-radius: 10px; font-size: 14px; }
+    .notice.error { background: #fef3f2; border: 1px solid #fecdca; color: var(--danger); }
+    .notice.success { background: #ecfdf3; border: 1px solid #abefc6; color: var(--success); }
+    .stack { display: grid; gap: 24px; }
+    .section {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--soft);
+      padding: 20px;
     }
-    p.lead {
-      margin: 0 0 24px;
-      color: var(--muted);
-      font-size: 16px;
-    }
-    .notice {
-      margin-bottom: 16px;
-      padding: 12px 14px;
-      border-radius: 10px;
-      font-size: 14px;
-    }
-    .notice.error {
-      background: #fef3f2;
-      border: 1px solid #fecdca;
-      color: var(--danger);
-    }
-    .notice.success {
-      background: #ecfdf3;
-      border: 1px solid #abefc6;
-      color: var(--success);
-    }
-    form {
-      display: grid;
-      gap: 18px;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 18px;
-    }
-    .field {
-      display: grid;
-      gap: 8px;
-    }
-    .field.full {
-      grid-column: 1 / -1;
-    }
-    label {
-      font-size: 14px;
-      font-weight: 700;
-    }
+    form { display: grid; gap: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .field { display: grid; gap: 8px; }
+    .field.full { grid-column: 1 / -1; }
+    label { font-size: 14px; font-weight: 700; }
     input, textarea {
       width: 100%;
       padding: 12px 14px;
@@ -97,11 +68,7 @@
       font-size: 14px;
       line-height: 1.5;
     }
-    .hint {
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.4;
-    }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.4; }
     .actions {
       display: flex;
       gap: 12px;
@@ -118,20 +85,37 @@
       font: inherit;
       font-weight: 700;
     }
-    button.primary {
-      background: var(--primary);
-      color: white;
-    }
+    button.primary { background: var(--primary); color: white; }
     button.primary:hover { background: var(--primary-dark); }
-    button.secondary {
-      background: #ecece7;
-      color: var(--text);
+    button.secondary { background: #ecece7; color: var(--text); }
+    button.danger { background: #fef3f2; color: var(--danger); border: 1px solid #fecdca; }
+    .cards { display: grid; gap: 14px; }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      background: #fcfcfa;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .empty {
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      background: #fafaf8;
     }
     @media (max-width: 720px) {
       .panel { padding: 20px; }
       .grid { grid-template-columns: 1fr; }
       h1 { font-size: 26px; }
-      .actions { justify-content: stretch; }
+      .actions { justify-content: stretch; flex-direction: column; }
       .actions button { width: 100%; }
     }
   </style>
@@ -140,7 +124,7 @@
   <div class="wrap">
     <div class="panel">
       <h1>SAM Base de Conocimiento</h1>
-      <p class="lead">Alta controlada de nuevas funciones de conocimiento para SAM. Este módulo crea el archivo, actualiza el registry y modifica el prompt activo en base de datos.</p>
+      <p class="lead">Alta y baja controlada de funciones de conocimiento para SAM. Este módulo crea el archivo, actualiza el registry y modifica el prompt activo en base de datos.</p>
 
       {% if error %}
       <div class="notice error">{{ error }}</div>
@@ -166,39 +150,74 @@
         </div>
       </form>
       {% else %}
-      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento">
-        <input type="hidden" name="action" value="create">
-        <div class="grid">
-          <div class="field">
-            <label for="function_name">Nombre interno</label>
-            <input id="function_name" name="function_name" type="text" placeholder="ejemplo: becas_julio_2026" value="{{ form_data.get('function_name', '') }}" required>
-            <div class="hint">Escribe un nombre corto para identificar este tema. Usa solo letras minúsculas, números y guiones bajos. No uses espacios, acentos ni símbolos.</div>
-          </div>
-          <div class="field">
-            <label for="prompt_topic">Texto para el prompt</label>
-            <input id="prompt_topic" name="prompt_topic" type="text" placeholder="actividades culturales del mes de julio de 2026" value="{{ form_data.get('prompt_topic', '') }}" required>
-            <div class="hint">Describe aquí el tema tal como lo preguntaría un ciudadano. Este texto le dirá a SAM cuándo debe usar esta información.</div>
-          </div>
-          <div class="field full">
-            <label for="function_summary">Docstring corto</label>
-            <input id="function_summary" name="function_summary" type="text" placeholder="Obtener información sobre actividades culturales de julio de 2026." value="{{ form_data.get('function_summary', '') }}">
-          </div>
-          <div class="field full">
-            <label for="tc_content">Contenido del documento (TC)</label>
-            <textarea id="tc_content" name="tc_content" placeholder='Este documento contiene información sobre ...&#10;&#10;Pregunta: ...&#10;Respuesta: ...' required>{{ form_data.get('tc_content', '') }}</textarea>
-          </div>
+      <div class="stack">
+        <div class="section">
+          <h2>Nueva función</h2>
+          <form method="POST" action="/admin/ciac/sam-base-de-conocimiento">
+            <input type="hidden" name="action" value="create">
+            <div class="grid">
+              <div class="field">
+                <label for="function_name">Nombre interno</label>
+                <input id="function_name" name="function_name" type="text" placeholder="ejemplo: becas_julio_2026" value="{{ form_data.get('function_name', '') }}" required>
+                <div class="hint">Usa solo minúsculas, números y guiones bajos.</div>
+              </div>
+              <div class="field">
+                <label for="prompt_topic">Texto para el prompt</label>
+                <input id="prompt_topic" name="prompt_topic" type="text" placeholder="actividades culturales del mes de julio de 2026" value="{{ form_data.get('prompt_topic', '') }}" required>
+                <div class="hint">Describe aquí el tema tal como lo preguntaría un ciudadano.</div>
+              </div>
+              <div class="field full">
+                <label for="function_summary">Docstring corto</label>
+                <input id="function_summary" name="function_summary" type="text" placeholder="Obtener información sobre actividades culturales de julio de 2026." value="{{ form_data.get('function_summary', '') }}">
+              </div>
+              <div class="field full">
+                <label for="tc_content">Contenido del documento (TC)</label>
+                <textarea id="tc_content" name="tc_content" placeholder='Este documento contiene información sobre ...&#10;&#10;Pregunta: ...&#10;Respuesta: ...' required>{{ form_data.get('tc_content', '') }}</textarea>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="primary" type="submit">Crear función</button>
+            </div>
+          </form>
         </div>
-        <div class="actions">
-          <button class="primary" type="submit">Crear función</button>
-        </div>
-      </form>
 
-      <form method="POST" action="/admin/ciac/sam-base-de-conocimiento" style="margin-top: 14px;">
-        <input type="hidden" name="action" value="logout">
-        <div class="actions">
-          <button class="secondary" type="submit">Salir</button>
+        <div class="section">
+          <h2>Funciones disponibles</h2>
+          {% if knowledge_functions %}
+          <div class="cards">
+            {% for item in knowledge_functions %}
+            <div class="card">
+              <h3>{{ item.function_name }}</h3>
+              <div class="meta">
+                <span>Archivo: {{ item.module_path }}</span>
+                <span>Estado: {{ 'Activo' if item.exists else 'Faltante' }}</span>
+              </div>
+              {% if item.summary %}
+              <div style="margin-bottom: 10px;">{{ item.summary }}</div>
+              {% endif %}
+              <div style="margin-bottom: 12px; color: var(--muted); font-size: 13px;">{{ item.prompt_line }}</div>
+              <form method="POST" action="/admin/ciac/sam-base-de-conocimiento" onsubmit="return confirm('¿Eliminar esta función de la base de conocimiento?');">
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="function_name" value="{{ item.short_name }}">
+                <div class="actions">
+                  <button class="danger" type="submit">Eliminar función</button>
+                </div>
+              </form>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="empty">Todavía no hay funciones dinámicas registradas en la base de conocimiento.</div>
+          {% endif %}
         </div>
-      </form>
+
+        <form method="POST" action="/admin/ciac/sam-base-de-conocimiento">
+          <input type="hidden" name="action" value="logout">
+          <div class="actions">
+            <button class="secondary" type="submit">Salir</button>
+          </div>
+        </form>
+      </div>
       {% endif %}
     </div>
   </div>

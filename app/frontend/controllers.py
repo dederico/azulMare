@@ -4,11 +4,14 @@ import platform
 import re
 import sys
 import importlib
+import csv
 import requests
 from pathlib import Path
+from io import BytesIO, StringIO
 from openai import OpenAI
 from datetime import datetime
 from threading import Thread
+import openpyxl
 from app.models.File import File
 from app.models.Call import Call
 from app.models.Message import Message
@@ -36,6 +39,57 @@ RECIPIENT_FIELD_PATTERN = re.compile(
     re.UNICODE,
 )
 DEFAULT_CHAT2DESK_CHANNEL_ID = 43906
+PROACTIVE_AUDIENCE_FTYPE = "proactive_audience"
+PROACTIVE_AUDIENCE_PREFIX = "audience::"
+PROACTIVE_HSM_REPLY_GUARD_KEY = "proactive_hsm_guard"
+APPROVED_HSM_TEMPLATES = {
+    "invitacion_evento": {
+        "label": "Invitación a evento",
+        "locale": "es_mx",
+    },
+    "custom": {
+        "label": "Plantilla aprobada personalizada",
+        "locale": "es_mx",
+    },
+}
+PROACTIVE_CAMPAIGN_KINDS = {
+    "hsm_hook": "Gancho HSM",
+    "free_followup": "Mensaje libre 24h",
+    "return_to_sam": "Regresar a SAM",
+}
+
+RECIPIENT_NAME_KEYS = {
+    "nombre", "name", "contacto", "nombre_completo", "nombre_del_vecino",
+    "vecino", "cliente", "beneficiario", "titular", "persona", "full_name",
+}
+RECIPIENT_PHONE_KEYS = {
+    "numero", "telefono", "telefono_whatsapp", "whatsapp", "celular", "phone",
+    "telefono_celular", "numero_telefono", "numero_celular", "movil", "mobile",
+    "telefono_movil", "num_telefono", "num_celular", "telefono1", "telefono_1",
+    "telefono2", "telefono_2", "whats", "whats_app", "numero_whatsapp",
+}
+RECIPIENT_CANONICAL_KEY_MAP = {
+    "nombre_del_vecino": "nombre",
+    "nombre_completo": "nombre",
+    "full_name": "nombre",
+    "numero_telefono": "telefono",
+    "numero_celular": "celular",
+    "telefono_celular": "celular",
+    "telefono_movil": "celular",
+    "movil": "celular",
+    "mobile": "celular",
+    "num_telefono": "telefono",
+    "num_celular": "celular",
+    "whats": "whatsapp",
+    "whats_app": "whatsapp",
+    "numero_whatsapp": "whatsapp",
+    "sector_k": "k",
+    "k_sector": "k",
+    "col": "colonia",
+    "fracc": "fraccionamiento",
+    "direccion": "calle",
+    "domicilio": "calle",
+}
 
 
 class OutgoingDeliveryError(Exception):
@@ -80,6 +134,28 @@ def _build_error_type(source: str, message: str, status_code: int | None = None)
     if "channel" in detail:
         return f"{base}_CHANNEL"
     return f"{base}_ERROR"
+
+
+def _normalize_saved_label(raw_label: str) -> str:
+    label = " ".join((raw_label or "").split()).strip()
+    if not label:
+        raise ValueError("Debes capturar un nombre para guardar la lista.")
+    return label
+
+
+def _build_audience_storage_name(label: str) -> str:
+    return f"{PROACTIVE_AUDIENCE_PREFIX}{label}"
+
+
+def _extract_saved_audience_payload(file_record) -> dict:
+    raw = getattr(file_record, "data", b"") or b""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"No se pudo leer la lista guardada '{getattr(file_record, 'name', '')}': {e}") from e
+    if not isinstance(payload, dict) or not isinstance(payload.get("recipients"), list):
+        raise ValueError("La lista guardada no tiene un formato válido.")
+    return payload
 
 
 def _normalize_knowledge_function_name(raw_name: str) -> str:
@@ -266,6 +342,109 @@ def create_knowledge_function(local_storage: LocalStorage, payload: dict) -> dic
     }
 
 
+def _extract_dynamic_prompt_lines(prompt_text: str) -> list[str]:
+    lines = (prompt_text or "").splitlines()
+    start_idx = next((idx for idx, line in enumerate(lines) if line.strip() == PROMPT_DYNAMIC_START), None)
+    end_idx = next((idx for idx, line in enumerate(lines) if line.strip() == PROMPT_DYNAMIC_END), None)
+    if start_idx is None or end_idx is None or start_idx >= end_idx:
+        return []
+    return [line.strip() for line in lines[start_idx + 1:end_idx] if line.strip()]
+
+
+def list_dynamic_knowledge_functions(local_storage: LocalStorage) -> list[dict]:
+    prompt_config = local_storage.Search(Config(name="prompt"), True, False)
+    prompt_text = prompt_config.value if prompt_config else ""
+    entries = []
+    for line in _extract_dynamic_prompt_lines(prompt_text):
+        match = re.search(r"get_([a-z0-9_]+)\(\)", line, flags=re.IGNORECASE)
+        if not match:
+            continue
+        function_name = match.group(1)
+        module_path = IMPLEMENTATIONS_DIR / f"get_{function_name}.py"
+        summary = ""
+        if module_path.exists():
+            try:
+                module_text = module_path.read_text(encoding="utf-8")
+                summary_match = re.search(r'async def get_[a-z0-9_]+\(\):\n\s+"""(.*?)\n', module_text, flags=re.DOTALL)
+                if summary_match:
+                    summary = " ".join(summary_match.group(1).split())
+            except Exception:
+                summary = ""
+        entries.append(
+            {
+                "function_name": f"get_{function_name}",
+                "short_name": function_name,
+                "prompt_line": line,
+                "module_path": str(module_path.relative_to(REPO_ROOT)),
+                "summary": summary,
+                "exists": module_path.exists(),
+            }
+        )
+    return entries
+
+
+def _remove_prompt_line(prompt_text: str, function_name: str) -> str:
+    lines = (prompt_text or "").splitlines()
+    filtered = [line for line in lines if f"get_{function_name}()" not in line]
+    compacted = []
+    skip_next_empty = False
+    for idx, line in enumerate(filtered):
+        stripped = line.strip()
+        if stripped == PROMPT_DYNAMIC_START:
+            next_significant = next((candidate.strip() for candidate in filtered[idx + 1:] if candidate.strip()), "")
+            if next_significant == PROMPT_DYNAMIC_END:
+                skip_next_empty = True
+                continue
+        if stripped == PROMPT_DYNAMIC_END and skip_next_empty:
+            skip_next_empty = False
+            continue
+        compacted.append(line)
+    return _restore_trailing_newline(prompt_text, "\n".join(compacted))
+
+
+def _remove_function_from_registry_text(registry_text: str, function_name: str) -> str:
+    import_line = f"from .implementations.get_{function_name} import get_{function_name}\n"
+    registry_text = registry_text.replace(import_line, "")
+    registry_text = registry_text.replace(f"    get_{function_name},\n", "")
+    registry_text = registry_text.replace(f"    get_{function_name}\n", "")
+    return registry_text
+
+
+def delete_knowledge_function(local_storage: LocalStorage, raw_function_name: str) -> dict:
+    function_name = _normalize_knowledge_function_name(raw_function_name)
+    module_path = IMPLEMENTATIONS_DIR / f"get_{function_name}.py"
+    if not module_path.exists():
+        raise ValueError(f"No existe el archivo get_{function_name}.py.")
+
+    prompt_config = local_storage.Search(Config(name="prompt"), True, False)
+    if not prompt_config:
+        raise ValueError("No existe el config 'prompt' en la base de datos.")
+
+    original_prompt_text = prompt_config.value or ""
+    original_registry_text = FUNCTION_REGISTRY_PATH.read_text(encoding="utf-8")
+    runtime_name = f"get_{function_name}"
+
+    prompt_config.value = _remove_prompt_line(original_prompt_text, function_name)
+    local_storage.Update(prompt_config)
+    FUNCTION_REGISTRY_PATH.write_text(
+        _remove_function_from_registry_text(original_registry_text, function_name),
+        encoding="utf-8",
+    )
+
+    function_registry_module.registered_functions = [
+        func for func in function_registry_module.registered_functions
+        if getattr(func, "__name__", "") != runtime_name
+    ]
+    sys.modules.pop(f"app.services.functions.implementations.get_{function_name}", None)
+    module_path.unlink()
+
+    return {
+        "status": True,
+        "message": f"Función get_{function_name} eliminada correctamente.",
+        "function_name": runtime_name,
+    }
+
+
 def _normalize_phone_number(raw_phone: str) -> str:
     digits = "".join(ch for ch in (raw_phone or "") if ch.isdigit())
     if not digits:
@@ -292,7 +471,56 @@ def _normalize_recipient_key(raw_key: str) -> str:
         .replace("ú", "u")
         .replace("ñ", "n")
     )
-    return re.sub(r"[^a-z0-9_]", "", key)
+    key = re.sub(r"[^a-z0-9_]", "", key)
+    return RECIPIENT_CANONICAL_KEY_MAP.get(key, key)
+
+
+def _find_first_value(normalized: dict, candidate_keys: set[str]) -> str:
+    for key in candidate_keys:
+        value = (normalized.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _extract_phone_candidate(value: str) -> str:
+    raw_value = (value or "").strip()
+    if not raw_value:
+        return ""
+    if raw_value.startswith("+") and any(ch.isdigit() for ch in raw_value):
+        return raw_value
+    match = re.search(r"(\+?\d[\d\s().-]{7,}\d)", raw_value)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _extract_phone_from_mapping(normalized: dict) -> str:
+    direct_value = _find_first_value(normalized, RECIPIENT_PHONE_KEYS)
+    direct_phone = _extract_phone_candidate(direct_value)
+    if direct_phone:
+        return direct_phone
+
+    for key, value in normalized.items():
+        lowered_key = key.lower()
+        if any(token in lowered_key for token in ("telefono", "celular", "whatsapp", "movil", "mobile", "phone", "numero")):
+            candidate = _extract_phone_candidate(value)
+            if candidate:
+                return candidate
+    return ""
+
+
+def _extract_name_from_mapping(normalized: dict) -> str:
+    direct_name = _find_first_value(normalized, RECIPIENT_NAME_KEYS)
+    if direct_name:
+        return direct_name
+    for key, value in normalized.items():
+        lowered_key = key.lower()
+        if any(token in lowered_key for token in ("nombre", "contacto", "vecino", "cliente", "beneficiario", "titular")):
+            cleaned = (value or "").strip()
+            if cleaned:
+                return cleaned
+    return ""
 
 
 def _parse_recipient_line(line: str, line_number: int) -> dict:
@@ -312,15 +540,8 @@ def _parse_recipient_line(line: str, line_number: int) -> dict:
         if key and value:
             parsed[key] = value
 
-    name = parsed.get("nombre") or parsed.get("name") or parsed.get("contacto") or ""
-    phone = (
-        parsed.get("numero")
-        or parsed.get("telefono")
-        or parsed.get("telefono_whatsapp")
-        or parsed.get("whatsapp")
-        or parsed.get("celular")
-        or parsed.get("phone")
-    )
+    name = _extract_name_from_mapping(parsed)
+    phone = _extract_phone_from_mapping(parsed)
 
     if not phone:
         phone_match = re.search(
@@ -346,7 +567,8 @@ def _parse_recipient_line(line: str, line_number: int) -> dict:
     metadata = {
         key: value
         for key, value in parsed.items()
-        if key not in {"nombre", "name", "contacto", "numero", "telefono", "telefono_whatsapp", "whatsapp", "celular", "phone"}
+        if key not in RECIPIENT_NAME_KEYS
+        and key not in RECIPIENT_PHONE_KEYS
     }
 
     return {
@@ -376,6 +598,191 @@ def parse_outgoing_recipients(recipients_text: str) -> list[dict]:
     return recipients
 
 
+def _build_recipient_from_mapping(row: dict, row_number: int) -> dict | None:
+    normalized = {
+        _normalize_recipient_key(str(key)): ("" if value is None else str(value).strip())
+        for key, value in (row or {}).items()
+        if str(key).strip()
+    }
+    if not any(normalized.values()):
+        return None
+
+    name = _extract_name_from_mapping(normalized) or "Sin nombre"
+    phone = _extract_phone_from_mapping(normalized)
+    if not phone:
+        raise ValueError(f"Fila {row_number}: falta el número telefónico.")
+
+    metadata = {
+        key: value
+        for key, value in normalized.items()
+        if key not in RECIPIENT_NAME_KEYS
+        and key not in RECIPIENT_PHONE_KEYS
+        and value
+    }
+    return {
+        "name": name,
+        "phone": _normalize_phone_number(phone),
+        "metadata": metadata,
+    }
+
+
+def _dedupe_recipients(recipients: list[dict]) -> list[dict]:
+    deduped = []
+    seen = set()
+    for recipient in recipients:
+        phone = recipient["phone"]
+        if phone in seen:
+            continue
+        seen.add(phone)
+        deduped.append(recipient)
+    if not deduped:
+        raise ValueError("No se detectaron destinatarios válidos en el archivo.")
+    return deduped
+
+
+def _parse_csv_recipients(file_bytes: bytes) -> list[dict]:
+    decoded = file_bytes.decode("utf-8-sig", errors="ignore")
+    reader = csv.DictReader(StringIO(decoded))
+    recipients = []
+    for idx, row in enumerate(reader, start=2):
+        recipient = _build_recipient_from_mapping(row, idx)
+        if recipient:
+            recipients.append(recipient)
+    return _dedupe_recipients(recipients)
+
+
+def _parse_xlsx_recipients(file_bytes: bytes) -> list[dict]:
+    workbook = openpyxl.load_workbook(filename=BytesIO(file_bytes), read_only=True, data_only=True)
+    worksheet = workbook.active
+    rows = list(worksheet.iter_rows(values_only=True))
+    if not rows:
+        raise ValueError("El archivo Excel está vacío.")
+    headers = [str(cell).strip() if cell is not None else "" for cell in rows[0]]
+    recipients = []
+    for idx, values in enumerate(rows[1:], start=2):
+        row = {headers[pos]: values[pos] for pos in range(min(len(headers), len(values))) if headers[pos]}
+        recipient = _build_recipient_from_mapping(row, idx)
+        if recipient:
+            recipients.append(recipient)
+    return _dedupe_recipients(recipients)
+
+
+def _normalize_drive_download_url(raw_url: str) -> str:
+    url = (raw_url or "").strip()
+    if "drive.google.com" not in url:
+        return url
+    file_match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
+    if not file_match:
+        file_match = re.search(r"id=([a-zA-Z0-9_-]+)", url)
+    if not file_match:
+        raise ValueError("No se pudo extraer el id del archivo de Google Drive.")
+    file_id = file_match.group(1)
+    return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+
+def _download_audience_source(source_url: str) -> tuple[bytes, str]:
+    normalized_url = _normalize_drive_download_url(source_url)
+    response = requests.get(normalized_url, timeout=60)
+    response.raise_for_status()
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "sheet" in content_type or "excel" in content_type or normalized_url.lower().endswith(".xlsx"):
+        extension = "xlsx"
+    else:
+        extension = "csv"
+    return response.content, extension
+
+
+def _parse_recipients_from_file(file_bytes: bytes, extension: str) -> list[dict]:
+    ext = (extension or "").strip().lower().lstrip(".")
+    if ext == "csv":
+        return _parse_csv_recipients(file_bytes)
+    if ext in {"xlsx", "xlsm", "xltx", "xltm"}:
+        return _parse_xlsx_recipients(file_bytes)
+    raise ValueError("Solo se soportan archivos .csv y .xlsx para listas de vecinos.")
+
+
+def list_saved_audience_files(local_storage: LocalStorage) -> list[dict]:
+    files = local_storage.Search(File(ftype=PROACTIVE_AUDIENCE_FTYPE), json=True, order="asc") or []
+    result = []
+    for file_record in files:
+        try:
+            payload = json.loads((file_record.get("data") or b"").decode("utf-8"))
+        except Exception:
+            continue
+        result.append(
+            {
+                "id": file_record["id"],
+                "name": file_record["name"].replace(PROACTIVE_AUDIENCE_PREFIX, "", 1),
+                "recipient_count": len(payload.get("recipients") or []),
+                "source_name": payload.get("source_name") or "",
+                "source_url": payload.get("source_url") or "",
+                "created_at": payload.get("created_at") or "",
+            }
+        )
+    return result
+
+
+def create_saved_audience_file(
+    local_storage: LocalStorage,
+    *,
+    audience_label: str,
+    file_bytes: bytes,
+    extension: str,
+    source_name: str = "",
+    source_url: str = "",
+) -> dict:
+    label = _normalize_saved_label(audience_label)
+    storage_name = _build_audience_storage_name(label)
+    existing = local_storage.Search(File(name=storage_name, ftype=PROACTIVE_AUDIENCE_FTYPE), True, False)
+    if existing:
+        raise ValueError("Ya existe una lista guardada con ese nombre.")
+
+    recipients = _parse_recipients_from_file(file_bytes, extension)
+    payload = {
+        "label": label,
+        "source_name": source_name,
+        "source_url": source_url,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "recipients": recipients,
+    }
+    saved = local_storage.Insert(
+        File(
+            name=storage_name,
+            ftype=PROACTIVE_AUDIENCE_FTYPE,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        )
+    )
+    if not saved or not hasattr(saved, "id"):
+        raise ValueError("No se pudo guardar la lista de vecinos.")
+    return {
+        "status": True,
+        "message": f"Lista '{label}' guardada con {len(recipients)} destinatarios.",
+        "file_id": saved.id,
+        "recipient_count": len(recipients),
+    }
+
+
+def delete_saved_audience_file(local_storage: LocalStorage, file_id: int) -> dict:
+    file_record = local_storage.GetByPK(File, file_id)
+    if not file_record or getattr(file_record, "ftype", "") != PROACTIVE_AUDIENCE_FTYPE:
+        raise ValueError("No se encontró la lista guardada solicitada.")
+    label = getattr(file_record, "name", "").replace(PROACTIVE_AUDIENCE_PREFIX, "", 1)
+    local_storage.Remove(file_record)
+    return {
+        "status": True,
+        "message": f"Lista '{label}' eliminada correctamente.",
+        "file_id": file_id,
+    }
+
+
+def _get_saved_audience_recipients(local_storage: LocalStorage, file_id: int) -> tuple[list[dict], str]:
+    file_record = local_storage.GetByPK(File, file_id)
+    if not file_record or getattr(file_record, "ftype", "") != PROACTIVE_AUDIENCE_FTYPE:
+        raise ValueError("No se encontró la lista guardada seleccionada.")
+    payload = _extract_saved_audience_payload(file_record)
+    return _dedupe_recipients(payload.get("recipients") or []), payload.get("label") or getattr(file_record, "name", "")
+
+
 def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
     campaigns = local_storage.GetAll(OutgoingCampaign, json=True) or []
     campaigns = [campaign for campaign in campaigns if (campaign.get("status") or "").lower() != "deleted"]
@@ -383,6 +790,16 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
     enriched = []
     for campaign in campaigns:
         recipients = local_storage.Search(OutgoingRecipient(campaign_id=campaign["id"]), json=True, order="asc") or []
+        sent_count = sum(1 for recipient in recipients if (recipient.get("status") or "").lower() == "sent")
+        failed_count = sum(1 for recipient in recipients if (recipient.get("status") or "").lower() == "failed")
+        pending_count = sum(1 for recipient in recipients if (recipient.get("status") or "pending").lower() == "pending")
+        replied_count = sum(1 for recipient in recipients if (recipient.get("repliedAt") or "").strip())
+        seen_count = sum(1 for recipient in recipients if (recipient.get("seenAt") or "").strip())
+        left_on_seen_count = sum(
+            1
+            for recipient in recipients
+            if (recipient.get("seenAt") or "").strip() and not (recipient.get("repliedAt") or "").strip()
+        )
         ks = sorted(
             {
                 json.loads(recipient.get("metadata") or "{}").get("k")
@@ -394,6 +811,12 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
             {
                 **campaign,
                 "recipientCount": len(recipients),
+                "sentCount": sent_count,
+                "failedCount": failed_count,
+                "pendingCount": pending_count,
+                "repliedCount": replied_count,
+                "seenCount": seen_count,
+                "leftOnSeenCount": left_on_seen_count,
                 "ks": ks,
                 "recipients": [
                     {
@@ -411,6 +834,7 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
 def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict:
     campaign_name = (payload.get("campaign_name") or "").strip()
     audience_name = (payload.get("audience_name") or "").strip()
+    campaign_kind = (payload.get("campaign_kind") or "free_followup").strip() or "free_followup"
     message_body = (payload.get("message_body") or "").strip()
     message_mode = (payload.get("message_mode") or "free_text").strip() or "free_text"
     attachment_url = (payload.get("attachment_url") or "").strip()
@@ -419,19 +843,58 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
     created_by = (payload.get("created_by") or "").strip() or "atencion_ciudadana"
     transport = (payload.get("transport") or "wa_direct").strip() or "wa_direct"
     recipients_text = payload.get("recipients_text") or ""
+    audience_file_id_raw = (payload.get("audience_file_id") or "").strip()
+    approved_template_name = (payload.get("approved_template_name") or "").strip()
+    approved_template_locale = (payload.get("approved_template_locale") or "es_mx").strip() or "es_mx"
+    approved_template_custom_name = (payload.get("approved_template_custom_name") or "").strip()
+    template_variables = (payload.get("template_variables") or "").strip()
 
     if not campaign_name:
         raise ValueError("Debes indicar un nombre para la campaña.")
-    if not audience_name:
-        raise ValueError("Debes indicar un nombre para la lista o segmento.")
-    if not message_body:
-        raise ValueError("Debes escribir el mensaje que recibirán los destinatarios.")
+    if campaign_kind not in PROACTIVE_CAMPAIGN_KINDS:
+        raise ValueError("El tipo de campaña seleccionado no es válido.")
     if message_mode not in {"free_text", "template_hsm"}:
         raise ValueError("El tipo de envío seleccionado no es válido.")
-    if message_mode == "template_hsm" and not message_body.startswith("@HSM@"):
-        raise ValueError("Para campañas con plantilla/HSM, el mensaje debe iniciar con @HSM@.")
     if attachment_url and not attachment_filename:
         raise ValueError("Si capturas una URL de adjunto, también debes indicar el nombre del archivo.")
+
+    audience_file_id = 0
+    recipients = []
+    if audience_file_id_raw:
+        if not audience_file_id_raw.isdigit():
+            raise ValueError("La lista guardada seleccionada no es válida.")
+        audience_file_id = int(audience_file_id_raw)
+        recipients, stored_audience_label = _get_saved_audience_recipients(local_storage, audience_file_id)
+        if not audience_name:
+            audience_name = stored_audience_label
+    else:
+        recipients = parse_outgoing_recipients(recipients_text)
+
+    if not audience_name:
+        raise ValueError("Debes indicar un nombre para la lista o segmento.")
+
+    if campaign_kind == "hsm_hook":
+        message_mode = "template_hsm"
+        template_name = approved_template_name
+        if template_name == "custom":
+            template_name = approved_template_custom_name
+        if not template_name:
+            raise ValueError("Debes seleccionar o capturar el nombre de la plantilla aprobada.")
+        body_lines = [line.rstrip() for line in template_variables.splitlines()] if template_variables else []
+        hsm_lines = ["@HSM@", f"{template_name}|{approved_template_locale}"]
+        if body_lines:
+            hsm_lines.append("")
+            hsm_lines.extend(body_lines)
+        message_body = "\n".join(hsm_lines).strip()
+        approved_template_name = template_name
+
+    if campaign_kind in {"free_followup", "return_to_sam"} and not message_body:
+        raise ValueError("Debes escribir el mensaje que recibirán los destinatarios.")
+
+    if not message_body:
+        raise ValueError("Debes escribir el mensaje que recibirán los destinatarios.")
+    if message_mode == "template_hsm" and not message_body.startswith("@HSM@"):
+        raise ValueError("Para campañas con plantilla/HSM, el mensaje debe iniciar con @HSM@.")
 
     normalized_scheduled_at = ""
     if scheduled_at:
@@ -439,8 +902,6 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
         if not scheduled_dt:
             raise ValueError("La fecha programada no tiene un formato válido.")
         normalized_scheduled_at = scheduled_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    recipients = parse_outgoing_recipients(recipients_text)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     status = "scheduled" if normalized_scheduled_at else "draft"
 
@@ -448,8 +909,11 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
         OutgoingCampaign(
             name=campaign_name,
             audienceName=audience_name,
+            audienceFileId=audience_file_id,
             message=message_body,
             messageMode=message_mode,
+            campaignKind=campaign_kind,
+            approvedTemplateName=approved_template_name,
             attachmentUrl=attachment_url,
             attachmentFilename=attachment_filename,
             status=status,
@@ -480,6 +944,9 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
                 providerMessageId="",
                 providerPayload="",
                 errorMessage="",
+                seenAt="",
+                repliedAt="",
+                replyText="",
                 metadata=json.dumps(recipient["metadata"], ensure_ascii=True),
             )
         )

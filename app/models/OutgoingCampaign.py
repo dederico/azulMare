@@ -4,8 +4,11 @@ from .meta import DirtyTrackingMeta
 class OutgoingCampaign(metaclass=DirtyTrackingMeta):
     name: str
     audienceName: str
+    audienceFileId: int
     message: str
     messageMode: str
+    campaignKind: str
+    approvedTemplateName: str
     attachmentUrl: str
     attachmentFilename: str
     status: str

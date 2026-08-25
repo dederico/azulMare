@@ -271,11 +271,132 @@ def _resolve_campaign_delivery_status(recipients) -> str:
 def _classify_outgoing_system_error(text: str) -> tuple[str, str]:
     message = (text or "").strip()
     lowered = message.lower()
+    if " read " in f" {lowered} " or " leído" in lowered or " leido" in lowered or "seen" in lowered or "visto" in lowered:
+        return "WHATSAPP_READ", "chat2desk_read"
     if "24 hours passed" in lowered or "approved whatsapp templates" in lowered:
         return "WHATSAPP_WINDOW_24H", "whatsapp_system"
     if "template" in lowered:
         return "WHATSAPP_TEMPLATE_REQUIRED", "whatsapp_system"
     return "WHATSAPP_SYSTEM", "whatsapp_system"
+
+
+def _get_latest_campaign_recipient_for_phone(db: LocalStorage, normalized_phone: str):
+    recipients = db.Search(OutgoingRecipient(phone=normalized_phone), order="desc") or []
+    ranked = sorted(
+        recipients,
+        key=lambda recipient: (
+            getattr(recipient, "sentAt", "") or "",
+            getattr(recipient, "lastAttemptAt", "") or "",
+            getattr(recipient, "id", 0),
+        ),
+        reverse=True,
+    )
+    for recipient in ranked:
+        status = (getattr(recipient, "status", "") or "").lower()
+        if status == "sent":
+            return recipient
+    return None
+
+
+def get_active_proactive_campaign_guard(db: LocalStorage, raw_phone: str) -> dict | None:
+    normalized_phone = _normalize_campaign_phone(raw_phone)
+    if not normalized_phone:
+        return None
+
+    latest_recipient = _get_latest_campaign_recipient_for_phone(db, normalized_phone)
+    if not latest_recipient:
+        return None
+
+    campaign = db.GetByPK(OutgoingCampaign, latest_recipient.campaign_id)
+    if not campaign:
+        return None
+
+    campaign_kind = (getattr(campaign, "campaignKind", "") or "").strip().lower()
+    if campaign_kind not in {"hsm_hook", "free_followup"}:
+        return None
+
+    return {
+        "campaign_id": getattr(campaign, "id", None),
+        "campaign_name": getattr(campaign, "name", ""),
+        "campaign_kind": campaign_kind,
+        "phone": normalized_phone,
+        "sent_at": getattr(latest_recipient, "sentAt", "") or getattr(latest_recipient, "lastAttemptAt", ""),
+    }
+
+
+def record_outgoing_campaign_reply(db: LocalStorage, raw_phone: str, reply_text: str) -> bool:
+    normalized_phone = _normalize_campaign_phone(raw_phone)
+    if not normalized_phone:
+        return False
+
+    recipient = _get_latest_campaign_recipient_for_phone(db, normalized_phone)
+    if not recipient:
+        return False
+
+    campaign = db.GetByPK(OutgoingCampaign, recipient.campaign_id)
+    if not campaign:
+        return False
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated = False
+    if not getattr(recipient, "seenAt", ""):
+        recipient.seenAt = now
+        updated = True
+    if not getattr(recipient, "repliedAt", ""):
+        recipient.repliedAt = now
+        updated = True
+    cleaned_reply = (reply_text or "").strip()
+    if cleaned_reply:
+        recipient.replyText = _truncate_for_log(cleaned_reply, 500)
+        updated = True
+    if updated:
+        db.Update(recipient)
+        campaign.lastRunAt = now
+        db.Update(campaign)
+        logger.critical(
+            "👀 [PROACTIVE REPLY] campaign_id=%s phone=%s kind=%s reply=%s",
+            getattr(campaign, "id", "unknown"),
+            normalized_phone,
+            getattr(campaign, "campaignKind", ""),
+            _truncate_for_log(cleaned_reply, 160),
+        )
+    return updated
+
+
+def reconcile_outgoing_campaign_read_event(db: LocalStorage, payload: dict) -> bool:
+    message_type = payload.get("type", "")
+    hook_type = payload.get("hook_type", "")
+    if hook_type != "outbox":
+        return False
+
+    system_text = payload.get("text", "") or ""
+    lowered = system_text.lower()
+    if message_type != "system" and not ("read" in lowered or "leído" in lowered or "leido" in lowered or "visto" in lowered):
+        return False
+
+    normalized_phone = _normalize_campaign_phone(payload.get("client", {}).get("phone", ""))
+    if not normalized_phone:
+        return False
+
+    recipient = _get_latest_campaign_recipient_for_phone(db, normalized_phone)
+    if not recipient:
+        return False
+
+    if getattr(recipient, "seenAt", ""):
+        return True
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    recipient.seenAt = now
+    recipient.providerStatus = "chat2desk_read"
+    recipient.providerPayload = json.dumps(payload, ensure_ascii=True)
+    db.Update(recipient)
+    logger.critical(
+        "👁️ [PROACTIVE SEEN] campaign_id=%s phone=%s detail=%s",
+        getattr(recipient, "campaign_id", "unknown"),
+        normalized_phone,
+        _truncate_for_log(system_text, 180),
+    )
+    return True
 
 
 def reconcile_outgoing_campaign_outbox_event(db: LocalStorage, payload: dict) -> bool:
@@ -333,6 +454,9 @@ def reconcile_outgoing_campaign_system_event(db: LocalStorage, payload: dict) ->
 
     system_text = payload.get("text", "") or ""
     error_type, provider_status = _classify_outgoing_system_error(system_text)
+
+    if error_type == "WHATSAPP_READ":
+        return reconcile_outgoing_campaign_read_event(db, payload)
 
     recipients = db.Search(OutgoingRecipient(phone=normalized_phone), order="desc") or []
     if not recipients:
@@ -4561,6 +4685,9 @@ async def whatsapp(request: Request):
         if reconcile_outgoing_campaign_outbox_event(db, payload):
             return JSONResponse(content={"status": True, "message": "Webhook de campaña saliente conciliado"})
 
+        if message_type == 'from_client' and from_number:
+            record_outgoing_campaign_reply(db, from_number, body or message_text or "")
+
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============
         if from_number == SPECIAL_NUMBER:
@@ -4725,6 +4852,27 @@ async def whatsapp(request: Request):
         elif from_number in transferred_numbers:
             logger.info(f"Transfer for {from_number} has expired, bot is now responding again")
             del transferred_numbers[from_number]
+
+        proactive_guard = None
+        if message_type == 'from_client' and from_number:
+            proactive_guard = get_active_proactive_campaign_guard(db, from_number)
+            if proactive_guard:
+                logger.critical(
+                    "🛑 [PROACTIVE HSM GUARD] phone=%s campaign_id=%s campaign_name=%s campaign_kind=%s body=%s",
+                    proactive_guard["phone"],
+                    proactive_guard["campaign_id"],
+                    proactive_guard["campaign_name"],
+                    proactive_guard["campaign_kind"],
+                    _truncate_for_log(body or message_text, 180),
+                )
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Message ignored - proactive campaign guard active",
+                        "campaign_id": proactive_guard["campaign_id"],
+                        "campaign_kind": proactive_guard["campaign_kind"],
+                    }
+                )
 
         # 🎯 QUINTO: Aplicar filtros generales (DESPUÉS de detecciones de takeover)
         should_ignore, ignore_reason = should_ignore_message(body, message_type, from_number)

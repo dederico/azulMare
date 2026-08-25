@@ -9,7 +9,7 @@ import requests
 from pathlib import Path
 from io import BytesIO, StringIO
 from openai import OpenAI
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Thread
 import openpyxl
 from app.models.File import File
@@ -42,6 +42,7 @@ DEFAULT_CHAT2DESK_CHANNEL_ID = 43906
 PROACTIVE_AUDIENCE_FTYPE = "proactive_audience"
 PROACTIVE_AUDIENCE_PREFIX = "audience::"
 PROACTIVE_HSM_REPLY_GUARD_KEY = "proactive_hsm_guard"
+DEFAULT_RETURN_TO_SAM_MESSAGE = "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot para que pueda generar más reportes usando SAM."
 APPROVED_HSM_TEMPLATES = {
     "invitacion_evento": {
         "label": "Invitación a evento",
@@ -53,6 +54,7 @@ APPROVED_HSM_TEMPLATES = {
     },
 }
 PROACTIVE_CAMPAIGN_KINDS = {
+    "hsm_sequence": "Gancho HSM + mensaje libre + regreso a SAM",
     "hsm_hook": "Gancho HSM",
     "free_followup": "Mensaje libre 24h",
     "return_to_sam": "Regresar a SAM",
@@ -122,6 +124,69 @@ def _build_text_preview(text: str, limit: int = 240) -> str:
     return f"{cleaned[:limit]}... [truncated {len(cleaned) - limit} chars]"
 
 
+def _now_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _parse_datetime_or_none(raw_value: str) -> datetime | None:
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_bool(raw_value, default: bool = False) -> bool:
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    return str(raw_value).strip().lower() not in {"", "0", "false", "off", "no"}
+
+
+def _normalize_delay_minutes(raw_value) -> int:
+    value = str(raw_value or "").strip()
+    if not value:
+        return 15
+    try:
+        minutes = int(value)
+    except ValueError as e:
+        raise ValueError("El temporizador para abrir la ventana debe ser un número entero de minutos.") from e
+    if minutes < 0:
+        raise ValueError("El temporizador para abrir la ventana no puede ser negativo.")
+    if minutes > 24 * 60:
+        raise ValueError("El temporizador para abrir la ventana no puede exceder 1440 minutos.")
+    return minutes
+
+
+def _build_hsm_message(template_name: str, locale: str, template_variables: str) -> str:
+    body_lines = [line.rstrip() for line in (template_variables or "").splitlines()] if template_variables else []
+    hsm_lines = ["@HSM@", f"{template_name}|{locale}"]
+    if body_lines:
+        hsm_lines.append("")
+        hsm_lines.extend(body_lines)
+    return "\n".join(hsm_lines).strip()
+
+
+def _append_provider_event(existing_payload: str, stage: str, payload: dict) -> str:
+    events = []
+    try:
+        parsed = json.loads(existing_payload or "[]")
+        if isinstance(parsed, list):
+            events = parsed
+        elif parsed:
+            events = [parsed]
+    except Exception:
+        events = [{"raw": existing_payload}]
+    events.append({"stage": stage, "payload": payload, "at": _now_str()})
+    return _serialize_delivery_payload(events)
+
+
 def _build_error_type(source: str, message: str, status_code: int | None = None) -> str:
     base = source.upper()
     detail = (message or "").lower()
@@ -147,10 +212,20 @@ def _build_audience_storage_name(label: str) -> str:
     return f"{PROACTIVE_AUDIENCE_PREFIX}{label}"
 
 
+def _decode_json_blob(raw_value) -> dict:
+    if isinstance(raw_value, memoryview):
+        raw_value = raw_value.tobytes()
+    if isinstance(raw_value, bytes):
+        raw_value = raw_value.decode("utf-8")
+    if isinstance(raw_value, str):
+        return json.loads(raw_value)
+    raise ValueError(f"Tipo de dato no soportado para blob JSON: {type(raw_value).__name__}")
+
+
 def _extract_saved_audience_payload(file_record) -> dict:
     raw = getattr(file_record, "data", b"") or b""
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        payload = _decode_json_blob(raw)
     except Exception as e:
         raise ValueError(f"No se pudo leer la lista guardada '{getattr(file_record, 'name', '')}': {e}") from e
     if not isinstance(payload, dict) or not isinstance(payload.get("recipients"), list):
@@ -706,7 +781,7 @@ def list_saved_audience_files(local_storage: LocalStorage) -> list[dict]:
     result = []
     for file_record in files:
         try:
-            payload = json.loads((file_record.get("data") or b"").decode("utf-8"))
+            payload = _decode_json_blob(file_record.get("data") or b"")
         except Exception:
             continue
         result.append(
@@ -792,7 +867,7 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
         recipients = local_storage.Search(OutgoingRecipient(campaign_id=campaign["id"]), json=True, order="asc") or []
         sent_count = sum(1 for recipient in recipients if (recipient.get("status") or "").lower() == "sent")
         failed_count = sum(1 for recipient in recipients if (recipient.get("status") or "").lower() == "failed")
-        pending_count = sum(1 for recipient in recipients if (recipient.get("status") or "pending").lower() == "pending")
+        pending_count = sum(1 for recipient in recipients if (recipient.get("status") or "pending").lower() in {"pending", "processing"})
         replied_count = sum(1 for recipient in recipients if (recipient.get("repliedAt") or "").strip())
         seen_count = sum(1 for recipient in recipients if (recipient.get("seenAt") or "").strip())
         left_on_seen_count = sum(
@@ -800,6 +875,10 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
             for recipient in recipients
             if (recipient.get("seenAt") or "").strip() and not (recipient.get("repliedAt") or "").strip()
         )
+        hook_sent_count = sum(1 for recipient in recipients if (recipient.get("hookSentAt") or "").strip())
+        free_sent_count = sum(1 for recipient in recipients if (recipient.get("freeMessageSentAt") or "").strip())
+        returned_to_sam_count = sum(1 for recipient in recipients if (recipient.get("returnToSamSentAt") or "").strip())
+        waiting_window_count = sum(1 for recipient in recipients if (recipient.get("deliveryStage") or "pending_hook") == "waiting_window")
         ks = sorted(
             {
                 json.loads(recipient.get("metadata") or "{}").get("k")
@@ -814,6 +893,10 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
                 "sentCount": sent_count,
                 "failedCount": failed_count,
                 "pendingCount": pending_count,
+                "hookSentCount": hook_sent_count,
+                "freeSentCount": free_sent_count,
+                "returnedToSamCount": returned_to_sam_count,
+                "waitingWindowCount": waiting_window_count,
                 "repliedCount": replied_count,
                 "seenCount": seen_count,
                 "leftOnSeenCount": left_on_seen_count,
@@ -834,9 +917,9 @@ def list_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
 def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict:
     campaign_name = (payload.get("campaign_name") or "").strip()
     audience_name = (payload.get("audience_name") or "").strip()
-    campaign_kind = (payload.get("campaign_kind") or "free_followup").strip() or "free_followup"
+    campaign_kind = (payload.get("campaign_kind") or "hsm_sequence").strip() or "hsm_sequence"
     message_body = (payload.get("message_body") or "").strip()
-    message_mode = (payload.get("message_mode") or "free_text").strip() or "free_text"
+    message_mode = "free_text"
     attachment_url = (payload.get("attachment_url") or "").strip()
     attachment_filename = (payload.get("attachment_filename") or "").strip()
     scheduled_at = (payload.get("scheduled_at") or "").strip()
@@ -848,13 +931,14 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
     approved_template_locale = (payload.get("approved_template_locale") or "es_mx").strip() or "es_mx"
     approved_template_custom_name = (payload.get("approved_template_custom_name") or "").strip()
     template_variables = (payload.get("template_variables") or "").strip()
+    followup_delay_minutes = _normalize_delay_minutes(payload.get("followup_delay_minutes"))
+    return_to_sam_enabled = _normalize_bool(payload.get("return_to_sam_enabled"), default=True)
+    return_to_sam_message = (payload.get("return_to_sam_message") or DEFAULT_RETURN_TO_SAM_MESSAGE).strip() or DEFAULT_RETURN_TO_SAM_MESSAGE
 
     if not campaign_name:
         raise ValueError("Debes indicar un nombre para la campaña.")
     if campaign_kind not in PROACTIVE_CAMPAIGN_KINDS:
         raise ValueError("El tipo de campaña seleccionado no es válido.")
-    if message_mode not in {"free_text", "template_hsm"}:
-        raise ValueError("El tipo de envío seleccionado no es válido.")
     if attachment_url and not attachment_filename:
         raise ValueError("Si capturas una URL de adjunto, también debes indicar el nombre del archivo.")
 
@@ -873,28 +957,14 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
     if not audience_name:
         raise ValueError("Debes indicar un nombre para la lista o segmento.")
 
-    if campaign_kind == "hsm_hook":
-        message_mode = "template_hsm"
-        template_name = approved_template_name
-        if template_name == "custom":
-            template_name = approved_template_custom_name
-        if not template_name:
-            raise ValueError("Debes seleccionar o capturar el nombre de la plantilla aprobada.")
-        body_lines = [line.rstrip() for line in template_variables.splitlines()] if template_variables else []
-        hsm_lines = ["@HSM@", f"{template_name}|{approved_template_locale}"]
-        if body_lines:
-            hsm_lines.append("")
-            hsm_lines.extend(body_lines)
-        message_body = "\n".join(hsm_lines).strip()
-        approved_template_name = template_name
-
-    if campaign_kind in {"free_followup", "return_to_sam"} and not message_body:
-        raise ValueError("Debes escribir el mensaje que recibirán los destinatarios.")
-
+    template_name = approved_template_name
+    if template_name == "custom":
+        template_name = approved_template_custom_name
+    if not template_name:
+        raise ValueError("Debes seleccionar o capturar el nombre de la plantilla aprobada.")
+    approved_template_name = template_name
     if not message_body:
-        raise ValueError("Debes escribir el mensaje que recibirán los destinatarios.")
-    if message_mode == "template_hsm" and not message_body.startswith("@HSM@"):
-        raise ValueError("Para campañas con plantilla/HSM, el mensaje debe iniciar con @HSM@.")
+        raise ValueError("Debes escribir el mensaje libre principal que recibirán los destinatarios.")
 
     normalized_scheduled_at = ""
     if scheduled_at:
@@ -914,8 +984,13 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
             messageMode=message_mode,
             campaignKind=campaign_kind,
             approvedTemplateName=approved_template_name,
+            approvedTemplateLocale=approved_template_locale,
+            approvedTemplateVariables=template_variables,
+            followupDelayMinutes=followup_delay_minutes,
             attachmentUrl=attachment_url,
             attachmentFilename=attachment_filename,
+            returnToSamEnabled=return_to_sam_enabled,
+            returnToSamMessage=return_to_sam_message,
             status=status,
             transport=transport,
             scheduledAt=normalized_scheduled_at,
@@ -937,6 +1012,7 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
                 name=recipient["name"],
                 phone=recipient["phone"],
                 status="pending",
+                deliveryStage="pending_hook",
                 sentAt="",
                 lastAttemptAt="",
                 errorType="",
@@ -944,6 +1020,9 @@ def create_outgoing_campaign(local_storage: LocalStorage, payload: dict) -> dict
                 providerMessageId="",
                 providerPayload="",
                 errorMessage="",
+                hookSentAt="",
+                freeMessageSentAt="",
+                returnToSamSentAt="",
                 seenAt="",
                 repliedAt="",
                 replyText="",
@@ -1135,24 +1214,94 @@ def _send_chat2desk_outgoing_message(
     return {"request": request_payload, "response": payload}
 
 
+def _resolve_recipient_stage(recipient) -> str:
+    stage = getattr(recipient, "deliveryStage", "") or ""
+    if stage:
+        return stage
+    if getattr(recipient, "status", "") == "failed":
+        return "failed"
+    if getattr(recipient, "sentAt", ""):
+        return "completed"
+    return "pending_hook"
+
+
 def _resolve_campaign_delivery_status(recipients) -> str:
     if not recipients:
         return "failed"
 
-    sent_count = sum(1 for recipient in recipients if (recipient.status or "").lower() == "sent")
-    failed_count = sum(1 for recipient in recipients if (recipient.status or "").lower() == "failed")
-    pending_count = sum(1 for recipient in recipients if (recipient.status or "pending").lower() == "pending")
+    stages = [_resolve_recipient_stage(recipient) for recipient in recipients]
+    failed_count = sum(1 for stage in stages if stage == "failed")
+    completed_count = sum(1 for stage in stages if stage == "completed")
+    in_flight_count = sum(1 for stage in stages if stage in {"pending_hook", "waiting_window", "pending_free_message", "pending_return_to_sam"})
 
-    if pending_count > 0:
+    if in_flight_count > 0:
         return "processing"
-    if sent_count > 0 and failed_count > 0:
+    if completed_count > 0 and failed_count > 0:
         return "completed_with_errors"
-    if sent_count > 0:
+    if completed_count > 0:
         return "completed"
     return "failed"
 
 
-def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dict:
+def _get_campaign_channel_id() -> int:
+    raw_channel_id = os.getenv("CHAT2DESK_CHANNEL_ID") or str(DEFAULT_CHAT2DESK_CHANNEL_ID)
+    try:
+        return int(raw_channel_id)
+    except ValueError as e:
+        raise OutgoingDeliveryError("config", f"CHAT2DESK_CHANNEL_ID inválido: {raw_channel_id}") from e
+
+
+def _send_campaign_stage_message(
+    campaign_id: int,
+    campaign,
+    recipient,
+    *,
+    channel_id: int,
+    stage: str,
+    text: str,
+    attachment_url: str = "",
+    attachment_filename: str = "",
+) -> dict:
+    client_id = _resolve_chat2desk_client_id(recipient.phone, campaign.transport or "wa_direct")
+    provider_payload = _send_chat2desk_outgoing_message(
+        client_id=client_id,
+        channel_id=channel_id,
+        transport=campaign.transport or "wa_direct",
+        text=text,
+        attachment_url=attachment_url,
+        attachment_filename=attachment_filename,
+    )
+    provider_data = (provider_payload.get("response") or {}).get("data") or {}
+    logger.critical(
+        "📨 [OUTGOING CAMPAIGN] campaign_id=%s phone=%s stage=%s client_id=%s channel_id=%s provider_message_id=%s request_id=%s text_preview=%s",
+        campaign_id,
+        recipient.phone,
+        stage,
+        client_id,
+        channel_id,
+        provider_data.get("message_id") or provider_data.get("id") or "",
+        provider_data.get("request_id") or "",
+        _build_text_preview(text),
+    )
+    logger.info(
+        "Outgoing campaign %s stage %s sent to %s via Chat2Desk. client_id=%s channel_id=%s",
+        campaign_id,
+        stage,
+        recipient.phone,
+        client_id,
+        channel_id,
+    )
+    return provider_payload
+
+
+def _is_followup_due(recipient, delay_minutes: int, now: datetime) -> bool:
+    hook_sent_at = _parse_datetime_or_none(getattr(recipient, "hookSentAt", "") or "")
+    if not hook_sent_at:
+        return False
+    return now >= (hook_sent_at + timedelta(minutes=delay_minutes))
+
+
+def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int, *, now: datetime | None = None) -> dict:
     campaign = local_storage.GetByPK(OutgoingCampaign, campaign_id)
     if not campaign:
         raise ValueError("No se encontró la campaña solicitada.")
@@ -1160,86 +1309,134 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
         raise ValueError("La campaña fue ocultada y ya no puede enviarse.")
 
     recipients = local_storage.Search(OutgoingRecipient(campaign_id=campaign_id), order="asc") or []
-    pending_recipients = [recipient for recipient in recipients if (recipient.status or "pending") == "pending"]
     if not recipients:
         raise ValueError("La campaña no tiene destinatarios para enviar.")
-    if not pending_recipients:
-        raise ValueError("La campaña ya no tiene destinatarios pendientes por enviar.")
+    actionable_recipients = [
+        recipient for recipient in recipients
+        if _resolve_recipient_stage(recipient) in {"pending_hook", "waiting_window", "pending_free_message", "pending_return_to_sam"}
+    ]
+    if not actionable_recipients:
+        raise ValueError("La campaña ya no tiene destinatarios pendientes por procesar.")
 
     campaign.status = "processing"
     local_storage.Update(campaign)
 
-    sent_count = 0
+    now = now or datetime.now()
+    hook_sent_count = 0
+    free_sent_count = 0
+    return_sent_count = 0
     failed_count = 0
-    campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    waiting_window_count = 0
+    campaign.lastRunAt = now.strftime("%Y-%m-%d %H:%M:%S")
     campaign.lastError = ""
-    raw_channel_id = os.getenv("CHAT2DESK_CHANNEL_ID") or str(DEFAULT_CHAT2DESK_CHANNEL_ID)
     try:
-        channel_id = int(raw_channel_id)
-    except ValueError as e:
+        channel_id = _get_campaign_channel_id()
+    except OutgoingDeliveryError as e:
         campaign.status = "failed"
-        campaign.lastError = f"CHAT2DESK_CHANNEL_ID inválido: {raw_channel_id}"
+        campaign.lastError = e.message
         local_storage.Update(campaign)
-        raise OutgoingDeliveryError("config", campaign.lastError) from e
+        raise e
 
-    for recipient in pending_recipients:
-        recipient.lastAttemptAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for recipient in actionable_recipients:
+        recipient.lastAttemptAt = now.strftime("%Y-%m-%d %H:%M:%S")
+        stage = _resolve_recipient_stage(recipient)
         try:
-            client_id = _resolve_chat2desk_client_id(recipient.phone, campaign.transport or "wa_direct")
-            provider_payload = _send_chat2desk_outgoing_message(
-                client_id=client_id,
-                channel_id=channel_id,
-                transport=campaign.transport or "wa_direct",
-                text=campaign.message,
-                attachment_url=getattr(campaign, "attachmentUrl", "") or "",
-                attachment_filename=getattr(campaign, "attachmentFilename", "") or "",
-            )
-            recipient.status = "sent"
-            recipient.sentAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            recipient.errorType = ""
-            recipient.providerStatus = "sent"
-            provider_data = (provider_payload.get("response") or {}).get("data") or {}
-            recipient.providerMessageId = str(
-                provider_data.get("message_id")
-                or provider_data.get("id")
-                or ""
-            )
-            recipient.providerPayload = _serialize_delivery_payload(provider_payload)
-            recipient.errorMessage = ""
-            local_storage.Update(recipient)
-            sent_count += 1
-            logger.critical(
-                "📨 [OUTGOING CAMPAIGN] campaign_id=%s phone=%s mode=%s client_id=%s channel_id=%s provider_message_id=%s request_id=%s text_preview=%s",
-                campaign_id,
-                recipient.phone,
-                getattr(campaign, "messageMode", "free_text"),
-                client_id,
-                channel_id,
-                recipient.providerMessageId,
-                provider_data.get("request_id") or "",
-                _build_text_preview(campaign.message),
-            )
-            logger.info(
-                "Outgoing campaign %s sent to %s via Chat2Desk. mode=%s client_id=%s channel_id=%s",
-                campaign_id,
-                recipient.phone,
-                getattr(campaign, "messageMode", "free_text"),
-                client_id,
-                channel_id,
-            )
+            if stage == "pending_hook":
+                delay_minutes = int(getattr(campaign, "followupDelayMinutes", 15) or 15)
+                provider_payload = _send_campaign_stage_message(
+                    campaign_id,
+                    campaign,
+                    recipient,
+                    channel_id=channel_id,
+                    stage="hook",
+                    text=_build_hsm_message(
+                        getattr(campaign, "approvedTemplateName", "") or "",
+                        getattr(campaign, "approvedTemplateLocale", "es_mx") or "es_mx",
+                        getattr(campaign, "approvedTemplateVariables", "") or "",
+                    ),
+                )
+                provider_data = (provider_payload.get("response") or {}).get("data") or {}
+                recipient.deliveryStage = "pending_free_message" if delay_minutes == 0 else "waiting_window"
+                recipient.status = "processing"
+                recipient.hookSentAt = now.strftime("%Y-%m-%d %H:%M:%S")
+                recipient.providerStatus = "hook_sent"
+                recipient.providerMessageId = str(provider_data.get("message_id") or provider_data.get("id") or "")
+                recipient.providerPayload = _append_provider_event(recipient.providerPayload, "hook", provider_payload)
+                recipient.errorType = ""
+                recipient.errorMessage = ""
+                local_storage.Update(recipient)
+                hook_sent_count += 1
+                stage = recipient.deliveryStage
+
+            delay_minutes = int(getattr(campaign, "followupDelayMinutes", 15) or 15)
+            if stage == "waiting_window" and not _is_followup_due(recipient, delay_minutes, now):
+                waiting_window_count += 1
+                continue
+
+            if stage in {"waiting_window", "pending_free_message"}:
+                provider_payload = _send_campaign_stage_message(
+                    campaign_id,
+                    campaign,
+                    recipient,
+                    channel_id=channel_id,
+                    stage="free_message",
+                    text=campaign.message,
+                    attachment_url=getattr(campaign, "attachmentUrl", "") or "",
+                    attachment_filename=getattr(campaign, "attachmentFilename", "") or "",
+                )
+                provider_data = (provider_payload.get("response") or {}).get("data") or {}
+                recipient.freeMessageSentAt = now.strftime("%Y-%m-%d %H:%M:%S")
+                recipient.sentAt = recipient.freeMessageSentAt
+                recipient.providerStatus = "free_message_sent"
+                recipient.providerMessageId = str(provider_data.get("message_id") or provider_data.get("id") or "")
+                recipient.providerPayload = _append_provider_event(recipient.providerPayload, "free_message", provider_payload)
+                recipient.errorType = ""
+                recipient.errorMessage = ""
+                free_sent_count += 1
+                if _normalize_bool(getattr(campaign, "returnToSamEnabled", False), default=False):
+                    recipient.deliveryStage = "pending_return_to_sam"
+                else:
+                    recipient.deliveryStage = "completed"
+                    recipient.status = "sent"
+                local_storage.Update(recipient)
+                stage = recipient.deliveryStage
+
+            if stage == "pending_return_to_sam":
+                provider_payload = _send_campaign_stage_message(
+                    campaign_id,
+                    campaign,
+                    recipient,
+                    channel_id=channel_id,
+                    stage="return_to_sam",
+                    text=(getattr(campaign, "returnToSamMessage", "") or DEFAULT_RETURN_TO_SAM_MESSAGE),
+                )
+                provider_data = (provider_payload.get("response") or {}).get("data") or {}
+                recipient.returnToSamSentAt = now.strftime("%Y-%m-%d %H:%M:%S")
+                recipient.deliveryStage = "completed"
+                recipient.status = "sent"
+                recipient.providerStatus = "return_to_sam_sent"
+                recipient.providerMessageId = str(provider_data.get("message_id") or provider_data.get("id") or "")
+                recipient.providerPayload = _append_provider_event(recipient.providerPayload, "return_to_sam", provider_payload)
+                recipient.errorType = ""
+                recipient.errorMessage = ""
+                local_storage.Update(recipient)
+                return_sent_count += 1
+                continue
         except OutgoingDeliveryError as e:
             recipient.status = "failed"
+            recipient.deliveryStage = "failed"
             recipient.errorType = _build_error_type(e.source, e.message, e.status_code)
             recipient.providerStatus = e.source
             recipient.providerMessageId = ""
-            recipient.providerPayload = _serialize_delivery_payload(e.payload)
+            recipient.providerPayload = _append_provider_event(recipient.providerPayload, "error", e.payload)
             recipient.errorMessage = e.message
             local_storage.Update(recipient)
             failed_count += 1
             logger.error(
-                "Outgoing campaign %s failed for %s. type=%s source=%s detail=%s payload=%s",
+                "Outgoing campaign %s failed for %s. stage=%s type=%s source=%s detail=%s payload=%s",
                 campaign_id,
                 recipient.phone,
+                stage,
                 recipient.errorType,
                 e.source,
                 e.message,
@@ -1247,10 +1444,11 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
             )
         except Exception as e:
             recipient.status = "failed"
+            recipient.deliveryStage = "failed"
             recipient.errorType = _build_error_type("app", str(e))
             recipient.providerStatus = "app"
             recipient.providerMessageId = ""
-            recipient.providerPayload = _serialize_delivery_payload({"exception": str(e)})
+            recipient.providerPayload = _append_provider_event(recipient.providerPayload, "exception", {"exception": str(e)})
             recipient.errorMessage = str(e)
             local_storage.Update(recipient)
             failed_count += 1
@@ -1258,28 +1456,30 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dic
 
     campaign.status = _resolve_campaign_delivery_status(local_storage.Search(OutgoingRecipient(campaign_id=campaign_id), order="asc") or [])
     if failed_count:
-        campaign.lastError = f"Envío con errores. Enviados: {sent_count}. Fallidos: {failed_count}."
+        campaign.lastError = (
+            f"Proceso con errores. Ganchos: {hook_sent_count}. "
+            f"Mensajes libres: {free_sent_count}. Regresos a SAM: {return_sent_count}. Fallidos: {failed_count}."
+        )
     local_storage.Update(campaign)
 
     return {
         "status": True,
-        "message": f"Envío terminado. Enviados: {sent_count}. Fallidos: {failed_count}.",
-        "sent_count": sent_count,
+        "message": (
+            f"Proceso terminado. Ganchos enviados: {hook_sent_count}. "
+            f"Mensajes libres enviados: {free_sent_count}. "
+            f"Regresos a SAM: {return_sent_count}. "
+            f"Esperando ventana: {waiting_window_count}. Fallidos: {failed_count}."
+        ),
+        "hook_sent_count": hook_sent_count,
+        "free_sent_count": free_sent_count,
+        "return_sent_count": return_sent_count,
+        "waiting_window_count": waiting_window_count,
         "failed_count": failed_count,
     }
 
 
 def parse_scheduled_datetime(raw_value: str) -> datetime | None:
-    value = (raw_value or "").strip()
-    if not value:
-        return None
-
-    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            return datetime.strptime(value, fmt)
-        except ValueError:
-            continue
-    return None
+    return _parse_datetime_or_none(raw_value)
 
 
 def process_due_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
@@ -1292,7 +1492,7 @@ def process_due_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
         if campaign_status not in {"scheduled", "processing"}:
             continue
         scheduled_dt = parse_scheduled_datetime(campaign.scheduledAt)
-        if not scheduled_dt or scheduled_dt > now:
+        if campaign_status == "scheduled" and (not scheduled_dt or scheduled_dt > now):
             continue
         recipients = local_storage.Search(OutgoingRecipient(campaign_id=campaign.id), order="asc") or []
         if not recipients:
@@ -1300,18 +1500,21 @@ def process_due_outgoing_campaigns(local_storage: LocalStorage) -> list[dict]:
             local_storage.Update(campaign)
             processed.append({"campaign_id": campaign.id, "error": "La campaña no tiene destinatarios."})
             continue
-        if campaign_status == "processing" and not any((recipient.status or "pending").lower() == "pending" for recipient in recipients):
+        if campaign_status == "processing" and not any(
+            _resolve_recipient_stage(recipient) in {"pending_hook", "waiting_window", "pending_free_message", "pending_return_to_sam"}
+            for recipient in recipients
+        ):
             campaign.status = _resolve_campaign_delivery_status(recipients)
             local_storage.Update(campaign)
             processed.append({"campaign_id": campaign.id, "status": campaign.status})
             continue
         try:
-            result = send_outgoing_campaign(local_storage, campaign.id)
+            result = send_outgoing_campaign(local_storage, campaign.id, now=now)
             processed.append({"campaign_id": campaign.id, "result": result})
         except Exception as e:
             logger.error("Error processing scheduled campaign %s: %s", getattr(campaign, "id", "unknown"), e)
             campaign.status = "failed"
-            campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            campaign.lastRunAt = now.strftime("%Y-%m-%d %H:%M:%S")
             local_storage.Update(campaign)
             processed.append({"campaign_id": campaign.id, "error": str(e)})
 

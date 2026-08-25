@@ -6,6 +6,7 @@ class OutgoingRecipient(metaclass=DirtyTrackingMeta):
     name: str
     phone: str
     status: str
+    deliveryStage: str
     sentAt: str
     lastAttemptAt: str
     errorType: str
@@ -13,6 +14,9 @@ class OutgoingRecipient(metaclass=DirtyTrackingMeta):
     providerMessageId: str
     providerPayload: str
     errorMessage: str
+    hookSentAt: str
+    freeMessageSentAt: str
+    returnToSamSentAt: str
     seenAt: str
     repliedAt: str
     replyText: str

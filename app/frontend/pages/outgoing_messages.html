@@ -191,7 +191,7 @@
   <div class="wrap">
     <div class="panel">
       <h1>Mensajes Proactivos</h1>
-      <p class="lead">Administra listas reutilizables, arma campañas HSM o mensajes de seguimiento, y controla cuándo la conversación se queda fuera de SAM y cuándo regresa.</p>
+      <p class="lead">Administra listas reutilizables y arma campañas con este flujo fijo: gancho HSM, mensaje libre principal y regreso a SAM.</p>
 
       {% if error %}
       <div class="notice error">{{ error }}</div>
@@ -275,8 +275,11 @@
           <h2>Crear Campaña</h2>
           <form method="POST" action="/admin/ciac/mensajes-proactivos">
             <input type="hidden" name="action" value="create">
-            {% set selected_kind = form_data.get('campaign_kind', 'hsm_hook') %}
             {% set selected_template = form_data.get('approved_template_name', 'invitacion_evento') %}
+            {% set return_to_sam_enabled = form_data.get('return_to_sam_enabled', 'on') %}
+            {% set return_to_sam_message = form_data.get('return_to_sam_message', 'Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot para que pueda generar más reportes usando SAM.') %}
+            {% set followup_delay_minutes = form_data.get('followup_delay_minutes', '15') %}
+            <input type="hidden" name="campaign_kind" value="hsm_sequence">
             <div class="grid">
               <div class="field">
                 <label for="campaign_name">Nombre de la campaña</label>
@@ -287,17 +290,13 @@
                 <input id="created_by" name="created_by" type="text" value="{{ form_data.get('created_by', '') }}" placeholder="Atención Ciudadana">
               </div>
               <div class="field">
-                <label for="campaign_kind">Tipo de mensaje</label>
-                <select id="campaign_kind" name="campaign_kind">
-                  {% for kind_key, kind_label in campaign_kind_options.items() %}
-                  <option value="{{ kind_key }}" {% if selected_kind == kind_key %}selected{% endif %}>{{ kind_label }}</option>
-                  {% endfor %}
-                </select>
-                <div class="hint">Gancho HSM bloquea intervención de SAM. Mensaje libre sigue la conversación abierta. Regresar a SAM libera el chat otra vez.</div>
-              </div>
-              <div class="field">
                 <label for="scheduled_at">Fecha y hora programada</label>
                 <input id="scheduled_at" name="scheduled_at" type="datetime-local" value="{{ form_data.get('scheduled_at', '') }}">
+              </div>
+              <div class="field">
+                <label for="followup_delay_minutes">Timer para abrir ventana 24h</label>
+                <input id="followup_delay_minutes" name="followup_delay_minutes" type="number" min="0" max="1440" step="1" value="{{ followup_delay_minutes }}">
+                <div class="hint">Minutos entre el gancho HSM y el envío del mensaje libre principal.</div>
               </div>
               <div class="field">
                 <label for="audience_file_id">Lista guardada</label>
@@ -321,6 +320,7 @@
 
             <div class="section" style="padding: 18px;">
               <h3>1. Gancho HSM</h3>
+              <div class="hint" style="margin-bottom: 12px;">Este es el mensaje aprobado por Meta que abre la conversación y deja el chat fuera de SAM temporalmente.</div>
               <div class="grid">
                 <div class="field">
                   <label for="approved_template_name">Plantilla aprobada</label>
@@ -347,22 +347,12 @@
             </div>
 
             <div class="section" style="padding: 18px;">
-              <h3>2. Mensaje Libre 24h</h3>
+              <h3>2. Mensaje libre principal</h3>
               <div class="grid">
                 <div class="field full">
-                  <label for="message_body">Mensaje de salida</label>
-                  <textarea id="message_body" name="message_body" placeholder="Escribe aquí el mensaje libre o el texto de regreso a SAM.">{{ form_data.get('message_body', '') }}</textarea>
-                  <div class="quick-actions">
-                    <button class="soft" type="button" onclick="setFreeFollowupTemplate()">Usar como mensaje libre 24h</button>
-                    <button class="soft" type="button" onclick="setReturnToSamTemplate()">Agregar mensaje para regresar a SAM</button>
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="message_mode">Modo técnico</label>
-                  <select id="message_mode" name="message_mode">
-                    <option value="free_text" {% if form_data.get('message_mode', 'free_text') == 'free_text' %}selected{% endif %}>Mensaje libre</option>
-                    <option value="template_hsm" {% if form_data.get('message_mode', '') == 'template_hsm' %}selected{% endif %}>Plantilla/HSM</option>
-                  </select>
+                  <label for="message_body">Texto del mensaje</label>
+                  <textarea id="message_body" name="message_body" placeholder="Escribe aquí el mensaje libre que quieres enviar después del gancho HSM.">{{ form_data.get('message_body', '') }}</textarea>
+                  <div class="hint">Este es el mensaje principal de la campaña.</div>
                 </div>
                 <div class="field">
                   <label for="attachment_url">Adjunto</label>
@@ -371,6 +361,25 @@
                 <div class="field">
                   <label for="attachment_filename">Nombre del adjunto</label>
                   <input id="attachment_filename" name="attachment_filename" type="text" value="{{ form_data.get('attachment_filename', '') }}" placeholder="imagen.jpg">
+                </div>
+              </div>
+            </div>
+
+            <div class="section" style="padding: 18px;">
+              <h3>3. Regreso a SAM</h3>
+              <div class="grid">
+                <div class="field">
+                  <label for="return_to_sam_enabled">Activar mensaje de regreso</label>
+                  <select id="return_to_sam_enabled" name="return_to_sam_enabled" onchange="toggleReturnToSamState()">
+                    <option value="on" {% if return_to_sam_enabled != 'off' %}selected{% endif %}>ON</option>
+                    <option value="off" {% if return_to_sam_enabled == 'off' %}selected{% endif %}>OFF</option>
+                  </select>
+                  <div class="hint">Viene encendido por defecto. Cuando está ON, se guarda el texto de reinicio del bot.</div>
+                </div>
+                <div class="field full">
+                  <label for="return_to_sam_message">Mensaje de regreso a SAM</label>
+                  <textarea id="return_to_sam_message" name="return_to_sam_message" placeholder="Texto que reinicia a SAM.">{{ return_to_sam_message }}</textarea>
+                  <div class="hint">Usa el texto detonante para devolver la conversación al bot.</div>
                 </div>
               </div>
             </div>
@@ -401,17 +410,20 @@
                 <span>Estatus: <span class="status-pill {{ campaign.status }}">{{ campaign.status }}</span></span>
                 <span>Destinatarios: {{ campaign.recipientCount }}</span>
                 <span>Programada: {{ campaign.scheduledAt or 'No programada' }}</span>
+                <span>Timer: {{ campaign.followupDelayMinutes or 15 }} min</span>
                 {% if campaign.approvedTemplateName %}
                 <span>Plantilla: {{ campaign.approvedTemplateName }}</span>
                 {% endif %}
+                <span>Regreso a SAM: {{ 'ON' if campaign.returnToSamEnabled else 'OFF' }}</span>
               </div>
               <div class="stats">
                 <div class="stat"><strong>{{ campaign.recipientCount }}</strong>Total</div>
-                <div class="stat"><strong>{{ campaign.sentCount }}</strong>Enviados</div>
+                <div class="stat"><strong>{{ campaign.hookSentCount }}</strong>Ganchos</div>
+                <div class="stat"><strong>{{ campaign.waitingWindowCount }}</strong>Esperando ventana</div>
+                <div class="stat"><strong>{{ campaign.freeSentCount }}</strong>Mensajes libres</div>
+                <div class="stat"><strong>{{ campaign.returnedToSamCount }}</strong>Regresos a SAM</div>
                 <div class="stat"><strong>{{ campaign.failedCount }}</strong>Fallidos</div>
                 <div class="stat"><strong>{{ campaign.repliedCount }}</strong>Contestaron</div>
-                <div class="stat"><strong>{{ campaign.seenCount }}</strong>Vistos</div>
-                <div class="stat"><strong>{{ campaign.leftOnSeenCount }}</strong>En visto</div>
               </div>
               {% if campaign.lastError %}
               <div style="margin-bottom: 10px; color: var(--danger); font-size: 13px;">{{ campaign.lastError }}</div>
@@ -423,7 +435,10 @@
                 {% endfor %}
               </div>
               {% endif %}
-              <div>{{ campaign.message }}</div>
+              <div><strong>Mensaje principal:</strong> {{ campaign.message }}</div>
+              {% if campaign.returnToSamMessage %}
+              <div style="margin-top: 8px; color: var(--muted); font-size: 13px;"><strong>Regreso a SAM:</strong> {{ campaign.returnToSamMessage }}</div>
+              {% endif %}
               {% if campaign.attachmentUrl %}
               <div style="margin-top: 8px; color: var(--muted); font-size: 13px;">Adjunto: {{ campaign.attachmentFilename or 'archivo' }} | {{ campaign.attachmentUrl }}</div>
               {% endif %}
@@ -456,6 +471,15 @@
                   {% if recipient.sentAt %}
                   <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Enviado: {{ recipient.sentAt }}</div>
                   {% endif %}
+                  {% if recipient.hookSentAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Gancho HSM: {{ recipient.hookSentAt }}</div>
+                  {% endif %}
+                  {% if recipient.freeMessageSentAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Mensaje libre: {{ recipient.freeMessageSentAt }}</div>
+                  {% endif %}
+                  {% if recipient.returnToSamSentAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Regreso a SAM: {{ recipient.returnToSamSentAt }}</div>
+                  {% endif %}
                   {% if recipient.seenAt %}
                   <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Visto: {{ recipient.seenAt }}</div>
                   {% endif %}
@@ -484,27 +508,19 @@
     </div>
   </div>
   <script>
-    function setFreeFollowupTemplate() {
-      const kind = document.getElementById('campaign_kind');
-      const mode = document.getElementById('message_mode');
-      const body = document.getElementById('message_body');
-      if (kind) kind.value = 'free_followup';
-      if (mode) mode.value = 'free_text';
-      if (body && !body.value.trim()) {
-        body.value = 'Hola, te compartimos este seguimiento por parte de Atención Ciudadana de San Pedro. Si deseas, puedes responder directamente a este mensaje.';
+    function toggleReturnToSamState() {
+      const selector = document.getElementById('return_to_sam_enabled');
+      const textarea = document.getElementById('return_to_sam_message');
+      if (!selector || !textarea) return;
+      const enabled = selector.value !== 'off';
+      textarea.disabled = !enabled;
+      textarea.style.opacity = enabled ? '1' : '0.55';
+      if (enabled && !textarea.value.trim()) {
+        textarea.value = 'Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar el chatbot para que pueda generar más reportes usando SAM.';
       }
     }
 
-    function setReturnToSamTemplate() {
-      const kind = document.getElementById('campaign_kind');
-      const mode = document.getElementById('message_mode');
-      const body = document.getElementById('message_body');
-      if (kind) kind.value = 'return_to_sam';
-      if (mode) mode.value = 'free_text';
-      if (body) {
-        body.value = 'Ahora regresaremos la conversación con SAM para que continúe atendiéndote con reportes, comentarios y/o dudas.';
-      }
-    }
+    toggleReturnToSamState();
   </script>
 </body>
 </html>

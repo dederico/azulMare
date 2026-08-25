@@ -9,8 +9,13 @@ class OutgoingCampaign(metaclass=DirtyTrackingMeta):
     messageMode: str
     campaignKind: str
     approvedTemplateName: str
+    approvedTemplateLocale: str
+    approvedTemplateVariables: str
+    followupDelayMinutes: int
     attachmentUrl: str
     attachmentFilename: str
+    returnToSamEnabled: bool
+    returnToSamMessage: str
     status: str
     transport: str
     scheduledAt: str

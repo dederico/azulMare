@@ -64,7 +64,7 @@ RECIPIENT_NAME_KEYS = {
     "vecino", "cliente", "beneficiario", "titular", "persona", "full_name",
 }
 RECIPIENT_PHONE_KEYS = {
-    "numero", "telefono", "telefono_whatsapp", "whatsapp", "celular", "phone",
+    "telefono", "telefono_whatsapp", "whatsapp", "celular", "phone",
     "telefono_celular", "numero_telefono", "numero_celular", "movil", "mobile",
     "telefono_movil", "num_telefono", "num_celular", "telefono1", "telefono_1",
     "telefono2", "telefono_2", "telefono3", "telefono_3", "whats", "whats_app", "numero_whatsapp",
@@ -496,10 +496,6 @@ def _looks_like_person_name(value: str) -> bool:
 
 
 def _infer_phone_from_row(parsed: dict) -> str:
-    direct_phone = _find_first_present_value(parsed, RECIPIENT_PHONE_KEYS)
-    if direct_phone:
-        return direct_phone
-
     ranked_candidates = []
     for key, value in parsed.items():
         phone_like = _extract_phone_like_value(value)
@@ -509,6 +505,10 @@ def _infer_phone_from_row(parsed: dict) -> str:
         score = 0
         if "tel" in key or "cel" in key or "movil" in key or "whats" in key or "phone" in key:
             score += 100
+        if key in RECIPIENT_PHONE_KEYS:
+            score += 40
+        if key in {"telefono_celular", "celular", "telefono", "whatsapp", "phone"}:
+            score += 25
         if "contacto" in key or "emergencia" in key or "tutor" in key or "papa" in key or "mama" in key:
             score -= 20
         if key in {"numero", "matricula", "cp", "codigo_postal"}:
@@ -572,6 +572,21 @@ def _build_recipient_from_parsed(parsed: dict, row_number: int, source_label: st
         "phone": _normalize_phone_number(phone),
         "metadata": metadata,
     }
+
+
+def _parse_rows_with_tolerance(row_iterable, source_label: str) -> tuple[list[dict], list[str]]:
+    recipients = []
+    errors = []
+
+    for row_number, parsed in row_iterable:
+        if not parsed:
+            continue
+        try:
+            recipients.append(_build_recipient_from_parsed(parsed, row_number, source_label))
+        except ValueError as e:
+            errors.append(str(e))
+
+    return _dedupe_recipients(recipients), errors
 
 
 def _row_header_score(row_values) -> int:
@@ -685,7 +700,7 @@ def _parse_csv_recipients(file_bytes: bytes) -> list[dict]:
     if not reader.fieldnames:
         raise ValueError("El archivo CSV no contiene encabezados.")
 
-    recipients = []
+    parsed_rows = []
     for idx, row in enumerate(reader, start=2):
         parsed = {}
         for raw_key, raw_value in (row or {}).items():
@@ -694,14 +709,14 @@ def _parse_csv_recipients(file_bytes: bytes) -> list[dict]:
             if key and value:
                 parsed[key] = value
 
-        if not parsed:
-            continue
+        parsed_rows.append((idx, parsed))
 
-        recipients.append(_build_recipient_from_parsed(parsed, idx, "Fila"))
-
+    recipients, errors = _parse_rows_with_tolerance(parsed_rows, "Fila")
+    if errors:
+        logger.warning("CSV de destinatarios con filas omitidas: %s", " | ".join(errors[:20]))
     if not recipients:
         raise ValueError("El archivo CSV no contiene destinatarios válidos.")
-    return _dedupe_recipients(recipients)
+    return recipients
 
 
 def _parse_xlsx_recipients(file_bytes: bytes) -> list[dict]:
@@ -716,7 +731,7 @@ def _parse_xlsx_recipients(file_bytes: bytes) -> list[dict]:
     if not any(headers):
         raise ValueError("El archivo XLSX no contiene encabezados.")
 
-    recipients = []
+    parsed_rows = []
     for idx, row in enumerate(rows[header_row_index + 1 :], start=header_row_index + 2):
         parsed = {}
         for raw_key, raw_value in zip(headers, row):
@@ -725,14 +740,14 @@ def _parse_xlsx_recipients(file_bytes: bytes) -> list[dict]:
             if key and value:
                 parsed[key] = value
 
-        if not parsed:
-            continue
+        parsed_rows.append((idx, parsed))
 
-        recipients.append(_build_recipient_from_parsed(parsed, idx, "Fila"))
-
+    recipients, errors = _parse_rows_with_tolerance(parsed_rows, "Fila")
+    if errors:
+        logger.warning("XLSX de destinatarios con filas omitidas: %s", " | ".join(errors[:20]))
     if not recipients:
         raise ValueError("El archivo XLSX no contiene destinatarios válidos.")
-    return _dedupe_recipients(recipients)
+    return recipients
 
 
 def _normalize_drive_download_url(url: str) -> str:

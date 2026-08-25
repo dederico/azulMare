@@ -329,6 +329,7 @@
                     <option value="{{ template_key }}" {% if selected_template == template_key %}selected{% endif %}>{{ template_data.label }}</option>
                     {% endfor %}
                   </select>
+                  <div class="hint">`Invitación a evento` siempre usa la imagen fija `invitacion_evento.jpg` desde Drive. Ese archivo no se captura ni se modifica aquí.</div>
                 </div>
                 <div class="field">
                   <label for="approved_template_custom_name">Nombre personalizado de plantilla</label>
@@ -413,6 +414,9 @@
                 <span>Timer: {{ campaign.followupDelayMinutes or 15 }} min</span>
                 {% if campaign.approvedTemplateName %}
                 <span>Plantilla: {{ campaign.approvedTemplateName }}</span>
+                {% endif %}
+                {% if campaign.approvedTemplateName == 'invitacion_evento' %}
+                <span>Media HSM fija: invitacion_evento.jpg</span>
                 {% endif %}
                 <span>Regreso a SAM: {{ 'ON' if campaign.returnToSamEnabled else 'OFF' }}</span>
               </div>

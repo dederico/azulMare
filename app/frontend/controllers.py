@@ -47,6 +47,8 @@ APPROVED_HSM_TEMPLATES = {
     "invitacion_evento": {
         "label": "Invitación a evento",
         "locale": "es_mx",
+        "fixed_attachment_url": "https://drive.google.com/uc?export=download&id=1No-1ayfSMeFZ_JcGduygZDxZwcqEeeQy",
+        "fixed_attachment_filename": "invitacion_evento.jpg",
     },
     "custom": {
         "label": "Plantilla aprobada personalizada",
@@ -171,6 +173,14 @@ def _build_hsm_message(template_name: str, locale: str, template_variables: str)
         hsm_lines.append("")
         hsm_lines.extend(body_lines)
     return "\n".join(hsm_lines).strip()
+
+
+def _get_fixed_hsm_attachment(template_name: str) -> tuple[str, str]:
+    template_config = APPROVED_HSM_TEMPLATES.get((template_name or "").strip(), {}) or {}
+    return (
+        (template_config.get("fixed_attachment_url") or "").strip(),
+        (template_config.get("fixed_attachment_filename") or "").strip(),
+    )
 
 
 def _append_provider_event(existing_payload: str, stage: str, payload: dict) -> str:
@@ -1343,6 +1353,9 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int, *, now
         try:
             if stage == "pending_hook":
                 delay_minutes = int(getattr(campaign, "followupDelayMinutes", 15) or 15)
+                hook_attachment_url, hook_attachment_filename = _get_fixed_hsm_attachment(
+                    getattr(campaign, "approvedTemplateName", "") or ""
+                )
                 provider_payload = _send_campaign_stage_message(
                     campaign_id,
                     campaign,
@@ -1354,6 +1367,8 @@ def send_outgoing_campaign(local_storage: LocalStorage, campaign_id: int, *, now
                         getattr(campaign, "approvedTemplateLocale", "es_mx") or "es_mx",
                         getattr(campaign, "approvedTemplateVariables", "") or "",
                     ),
+                    attachment_url=hook_attachment_url,
+                    attachment_filename=hook_attachment_filename,
                 )
                 provider_data = (provider_payload.get("response") or {}).get("data") or {}
                 recipient.deliveryStage = "pending_free_message" if delay_minutes == 0 else "waiting_window"

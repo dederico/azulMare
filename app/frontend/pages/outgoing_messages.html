@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mensajes Institucionales</title>
+  <title>Mensajes Proactivos</title>
   <style>
     :root {
       --bg: #f6f5f0;
@@ -13,8 +13,10 @@
       --muted: #6b7280;
       --primary: #0f766e;
       --primary-dark: #115e59;
+      --danger-soft: #fef3f2;
       --danger: #b42318;
       --success: #166534;
+      --soft: #f7f7f2;
     }
     * { box-sizing: border-box; }
     body {
@@ -24,7 +26,7 @@
       color: var(--text);
       font-family: Georgia, "Times New Roman", serif;
     }
-    .wrap { max-width: 1120px; margin: 0 auto; }
+    .wrap { max-width: 1180px; margin: 0 auto; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -33,10 +35,19 @@
       box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
     }
     h1 { margin: 0 0 10px; font-size: 32px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 24px; }
+    h3 { margin: 0 0 8px; font-size: 20px; }
     p.lead { margin: 0 0 24px; color: var(--muted); font-size: 16px; }
     .notice { margin-bottom: 16px; padding: 12px 14px; border-radius: 10px; font-size: 14px; }
     .notice.error { background: #fef3f2; border: 1px solid #fecdca; color: var(--danger); }
     .notice.success { background: #ecfdf3; border: 1px solid #abefc6; color: var(--success); }
+    .stack { display: grid; gap: 24px; }
+    .section {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--soft);
+      padding: 20px;
+    }
     form { display: grid; gap: 18px; }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
     .field { display: grid; gap: 8px; }
@@ -52,7 +63,7 @@
       background: #fff;
     }
     textarea {
-      min-height: 130px;
+      min-height: 120px;
       resize: vertical;
       font-family: "Courier New", monospace;
       font-size: 14px;
@@ -78,23 +89,13 @@
     button.primary { background: var(--primary); color: white; }
     button.primary:hover { background: var(--primary-dark); }
     button.secondary { background: #ecece7; color: var(--text); }
-    .section-title {
-      margin: 28px 0 12px;
-      font-size: 22px;
-    }
-    .cards {
-      display: grid;
-      gap: 14px;
-    }
+    button.danger { background: var(--danger-soft); color: var(--danger); border: 1px solid #fecdca; }
+    .cards { display: grid; gap: 14px; }
     .card {
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 16px 18px;
       background: #fcfcfa;
-    }
-    .card h3 {
-      margin: 0 0 8px;
-      font-size: 20px;
     }
     .meta {
       display: flex;
@@ -114,23 +115,6 @@
       font-weight: 700;
       margin-right: 6px;
     }
-    .recipient-list {
-      margin-top: 14px;
-      border-top: 1px solid var(--border);
-      padding-top: 12px;
-      display: grid;
-      gap: 10px;
-    }
-    .recipient-row {
-      border: 1px solid #e8e6dc;
-      border-radius: 12px;
-      padding: 12px 14px;
-      background: #fff;
-    }
-    .recipient-row strong {
-      display: inline-block;
-      margin-bottom: 4px;
-    }
     .status-pill {
       display: inline-block;
       padding: 4px 10px;
@@ -147,6 +131,23 @@
     .status-pill.completed_with_errors,
     .status-pill.scheduled,
     .status-pill.draft { background: #f4f4f5; color: #3f3f46; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .stat {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+    .stat strong {
+      display: block;
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
     .empty {
       color: var(--muted);
       border: 1px dashed var(--border);
@@ -154,11 +155,26 @@
       padding: 18px;
       background: #fafaf8;
     }
+    .recipient-list {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .recipient-row {
+      border: 1px solid #e8e6dc;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #fff;
+    }
+    @media (max-width: 900px) {
+      .grid, .stats { grid-template-columns: 1fr; }
+    }
     @media (max-width: 720px) {
       .panel { padding: 20px; }
-      .grid { grid-template-columns: 1fr; }
       h1 { font-size: 26px; }
-      .actions { justify-content: stretch; }
+      .actions { justify-content: stretch; flex-direction: column; }
       .actions button { width: 100%; }
     }
   </style>
@@ -166,8 +182,8 @@
 <body>
   <div class="wrap">
     <div class="panel">
-      <h1>Mensajes Institucionales</h1>
-      <p class="lead">Crea listas de destinatarios, redacta avisos del colegio y deja lista cada campaña para envío manual o programado.</p>
+      <h1>Mensajes Proactivos</h1>
+      <p class="lead">Administra listas reutilizables y arma campañas con este flujo fijo: gancho HSM, mensaje libre principal y regreso a GUERRERO.</p>
 
       {% if error %}
       <div class="notice error">{{ error }}</div>
@@ -193,110 +209,312 @@
         </div>
       </form>
       {% else %}
-      <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales">
-        <input type="hidden" name="action" value="create">
-        <div class="grid">
-          <div class="field">
-            <label for="campaign_name">Nombre de la campaña</label>
-            <input id="campaign_name" name="campaign_name" type="text" placeholder="ejemplo: aviso_reunion_padres_junio" value="{{ form_data.get('campaign_name', '') }}" required>
-            <div class="hint">Usa un nombre corto para identificar esta campaña dentro del sistema.</div>
-          </div>
-          <div class="field">
-            <label for="audience_name">Nombre de la lista o segmento</label>
-            <input id="audience_name" name="audience_name" type="text" placeholder="ejemplo: padres de familia secundaria" value="{{ form_data.get('audience_name', '') }}" required>
-            <div class="hint">Describe aquí el grupo de personas que recibirán el mensaje.</div>
-          </div>
-          <div class="field">
-            <label for="scheduled_at">Fecha y hora programada</label>
-            <input id="scheduled_at" name="scheduled_at" type="datetime-local" value="{{ form_data.get('scheduled_at', '') }}">
-            <div class="hint">Si lo dejas vacío, la campaña quedará guardada como borrador.</div>
-          </div>
-          <div class="field">
-            <label for="created_by">Responsable de la campaña</label>
-            <input id="created_by" name="created_by" type="text" placeholder="ejemplo: Colegio Militarizado" value="{{ form_data.get('created_by', '') }}">
-            <div class="hint">Opcional. Sirve para saber quién dejó preparada la campaña.</div>
-          </div>
-          <div class="field full">
-            <label for="message_body">Mensaje a enviar</label>
-            <textarea id="message_body" name="message_body" placeholder="Escribe aquí el mensaje que recibirán todos los contactos de esta lista." required>{{ form_data.get('message_body', '') }}</textarea>
-          </div>
-          <div class="field full">
-            <label for="recipients_text">Lista de destinatarios</label>
-            <textarea id="recipients_text" name="recipients_text" placeholder="Una persona por línea. Ejemplo: Nombre: Juan Pérez Número:+528188888888 Grado: 1A&#10;Nombre: María López Número:+528177777777 Matrícula: 240015" required>{{ form_data.get('recipients_text', '') }}</textarea>
-            <div class="hint">Cada línea debe incluir por lo menos el nombre y el número. Puedes agregar más datos como grado, grupo, matrícula o cualquier otro criterio en formato <strong>Campo: valor</strong>.</div>
-          </div>
-        </div>
-        <div class="actions">
-          <button class="primary" type="submit">Guardar campaña</button>
-        </div>
-      </form>
-
-      <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales" style="margin-top: 14px;">
-        <input type="hidden" name="action" value="logout">
-        <div class="actions">
-          <button class="secondary" type="submit">Salir</button>
-        </div>
-      </form>
-
-      <h2 class="section-title">Campañas Guardadas</h2>
-      {% if campaigns %}
-      <div class="cards">
-        {% for campaign in campaigns %}
-        <div class="card">
-          <h3>{{ campaign.name }}</h3>
-          <div class="meta">
-            <span>Lista: {{ campaign.audienceName }}</span>
-            <span>Estatus: <span class="status-pill {{ campaign.status }}">{{ campaign.status }}</span></span>
-            <span>Destinatarios: {{ campaign.recipientCount }}</span>
-            <span>Programada: {{ campaign.scheduledAt or 'No programada' }}</span>
-          </div>
-          {% if campaign.ks %}
-          <div style="margin-bottom: 10px;">
-            {% for k in campaign.ks %}
-            <span class="pill">K: {{ k }}</span>
-            {% endfor %}
-          </div>
-          {% endif %}
-          <div>{{ campaign.message }}</div>
-          <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales" style="margin-top: 12px;">
-            <input type="hidden" name="action" value="send_now">
-            <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
+      <div class="stack">
+        <div class="section">
+          <h2>Listas Guardadas</h2>
+          <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales" enctype="multipart/form-data">
+            <input type="hidden" name="action" value="upload_audience">
+            <div class="grid">
+              <div class="field">
+                <label for="audience_label">Nombre para guardar la lista</label>
+                <input id="audience_label" name="audience_label" type="text" placeholder="ejemplo: padres_secundaria_agosto" required>
+                <div class="hint">Este nombre aparecerá en el selector al crear campañas.</div>
+              </div>
+              <div class="field">
+                <label for="audience_file">Archivo CSV o XLSX</label>
+                <input id="audience_file" name="audience_file" type="file" accept=".csv,.xlsx,.xls">
+                <div class="hint">Puedes subir listas con columnas como nombre, número, grado, grupo o matrícula.</div>
+              </div>
+              <div class="field full">
+                <label for="drive_url">URL de Drive o archivo remoto</label>
+                <input id="drive_url" name="drive_url" type="text" placeholder="https://drive.google.com/...">
+                <div class="hint">Si no subes archivo, puedes pegar una liga pública de Google Drive.</div>
+              </div>
+            </div>
             <div class="actions">
-              <button class="primary" type="submit">Enviar ahora</button>
+              <button class="primary" type="submit">Guardar lista</button>
             </div>
           </form>
-          {% if campaign.recipients %}
-          <div class="recipient-list">
-            {% for recipient in campaign.recipients %}
-            <div class="recipient-row">
-              <strong>{{ recipient.name }}</strong>
-              <span class="status-pill {{ recipient.status }}">{{ recipient.status }}</span>
-              <div>{{ recipient.phone }}</div>
-              {% if recipient.metadataParsed %}
-              <div style="margin-top: 6px; color: var(--muted); font-size: 13px;">
-                {% for key, value in recipient.metadataParsed.items() %}
-                <span style="margin-right: 10px;">{{ key|upper }}: {{ value }}</span>
+
+          <div style="margin-top: 18px;">
+            {% if saved_audiences %}
+            <div class="cards">
+              {% for audience in saved_audiences %}
+              <div class="card">
+                <h3>{{ audience.name }}</h3>
+                <div class="meta">
+                  <span>Contactos: {{ audience.recipient_count }}</span>
+                  <span>Origen: {{ audience.source_name or audience.source_url or 'Manual' }}</span>
+                  <span>Creada: {{ audience.created_at or 'N/D' }}</span>
+                </div>
+                <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales" onsubmit="return confirm('¿Eliminar esta lista guardada?');">
+                  <input type="hidden" name="action" value="delete_audience">
+                  <input type="hidden" name="audience_file_id" value="{{ audience.id }}">
+                  <div class="actions">
+                    <button class="danger" type="submit">Eliminar lista</button>
+                  </div>
+                </form>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty">Todavía no hay listas guardadas.</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Crear Campaña</h2>
+          <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales">
+            <input type="hidden" name="action" value="create">
+            {% set selected_template = form_data.get('approved_template_name', 'invitacion_evento') %}
+            {% set return_to_sam_enabled = form_data.get('return_to_sam_enabled', 'on') %}
+            {% set return_to_sam_message = form_data.get('return_to_sam_message', 'Gracias por comunicarte con el Colegio Militarizado. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO.') %}
+            {% set followup_delay_minutes = form_data.get('followup_delay_minutes', '15') %}
+            <input type="hidden" name="campaign_kind" value="hsm_sequence">
+            <div class="grid">
+              <div class="field">
+                <label for="campaign_name">Nombre de la campaña</label>
+                <input id="campaign_name" name="campaign_name" type="text" value="{{ form_data.get('campaign_name', '') }}" placeholder="ejemplo: invitacion_padres_ago25" required>
+              </div>
+              <div class="field">
+                <label for="created_by">Responsable</label>
+                <input id="created_by" name="created_by" type="text" value="{{ form_data.get('created_by', '') }}" placeholder="Colegio Militarizado">
+              </div>
+              <div class="field">
+                <label for="scheduled_at">Fecha y hora programada</label>
+                <input id="scheduled_at" name="scheduled_at" type="datetime-local" value="{{ form_data.get('scheduled_at', '') }}">
+              </div>
+              <div class="field">
+                <label for="followup_delay_minutes">Timer para abrir ventana 24h</label>
+                <input id="followup_delay_minutes" name="followup_delay_minutes" type="number" min="0" max="1440" step="1" value="{{ followup_delay_minutes }}">
+                <div class="hint">Minutos entre el gancho HSM y el mensaje libre principal.</div>
+              </div>
+              <div class="field">
+                <label for="audience_file_id">Lista guardada</label>
+                <select id="audience_file_id" name="audience_file_id">
+                  <option value="">Selecciona una lista guardada</option>
+                  {% for audience in saved_audiences %}
+                  <option value="{{ audience.id }}" {% if form_data.get('audience_file_id', '') == (audience.id ~ '') %}selected{% endif %}>{{ audience.name }} ({{ audience.recipient_count }})</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="field">
+                <label for="audience_name">Nombre del segmento</label>
+                <input id="audience_name" name="audience_name" type="text" value="{{ form_data.get('audience_name', '') }}" placeholder="ejemplo: padres secundaria">
+              </div>
+              <div class="field full">
+                <label for="recipients_text">Destinatarios manuales</label>
+                <textarea id="recipients_text" name="recipients_text" placeholder="Si no eliges lista guardada, pega aquí una persona por línea.">{{ form_data.get('recipients_text', '') }}</textarea>
+                <div class="hint">Si seleccionas una lista guardada, este bloque puede quedar vacío.</div>
+              </div>
+            </div>
+
+            <div class="section" style="padding: 18px;">
+              <h3>1. Gancho HSM</h3>
+              <div class="hint" style="margin-bottom: 12px;">Este mensaje aprobado por Meta abre la conversación y evita que GUERRERO responda antes de tiempo.</div>
+              <div class="grid">
+                <div class="field">
+                  <label for="approved_template_name">Plantilla aprobada</label>
+                  <select id="approved_template_name" name="approved_template_name">
+                    {% for template_key, template_data in approved_hsm_templates.items() %}
+                    <option value="{{ template_key }}" {% if selected_template == template_key %}selected{% endif %}>{{ template_data.label }}</option>
+                    {% endfor %}
+                  </select>
+                  <div class="hint">`Invitación a evento` siempre usa la imagen fija `invitacion_evento.jpg` desde Drive.</div>
+                </div>
+                <div class="field">
+                  <label for="approved_template_custom_name">Nombre personalizado de plantilla</label>
+                  <input id="approved_template_custom_name" name="approved_template_custom_name" type="text" value="{{ form_data.get('approved_template_custom_name', '') }}" placeholder="solo si eliges plantilla personalizada">
+                </div>
+                <div class="field">
+                  <label for="approved_template_locale">Locale</label>
+                  <input id="approved_template_locale" name="approved_template_locale" type="text" value="{{ form_data.get('approved_template_locale', 'es_mx') }}">
+                </div>
+                <div class="field full">
+                  <label for="template_variables">Variables o líneas de plantilla</label>
+                  <textarea id="template_variables" name="template_variables" placeholder="Una variable por línea para construir el payload automáticamente.">{{ form_data.get('template_variables', '') }}</textarea>
+                  <div class="hint">Aquí no escriben `@HSM@`; el sistema arma el payload automáticamente.</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section" style="padding: 18px;">
+              <h3>2. Mensaje libre principal</h3>
+              <div class="grid">
+                <div class="field full">
+                  <label for="message_body">Texto del mensaje</label>
+                  <textarea id="message_body" name="message_body" placeholder="Escribe aquí el mensaje libre principal de la campaña.">{{ form_data.get('message_body', '') }}</textarea>
+                </div>
+                <div class="field">
+                  <label for="attachment_url">Adjunto</label>
+                  <input id="attachment_url" name="attachment_url" type="text" value="{{ form_data.get('attachment_url', '') }}" placeholder="https://...">
+                </div>
+                <div class="field">
+                  <label for="attachment_filename">Nombre del adjunto</label>
+                  <input id="attachment_filename" name="attachment_filename" type="text" value="{{ form_data.get('attachment_filename', '') }}" placeholder="imagen.jpg">
+                </div>
+              </div>
+            </div>
+
+            <div class="section" style="padding: 18px;">
+              <h3>3. Regreso a GUERRERO</h3>
+              <div class="grid">
+                <div class="field">
+                  <label for="return_to_sam_enabled">Activar mensaje de regreso</label>
+                  <select id="return_to_sam_enabled" name="return_to_sam_enabled" onchange="toggleReturnToSamState()">
+                    <option value="on" {% if return_to_sam_enabled != 'off' %}selected{% endif %}>ON</option>
+                    <option value="off" {% if return_to_sam_enabled == 'off' %}selected{% endif %}>OFF</option>
+                  </select>
+                  <div class="hint">Viene encendido por defecto. Cuando está ON, GUERRERO solo vuelve hasta este paso.</div>
+                </div>
+                <div class="field full">
+                  <label for="return_to_sam_message">Mensaje de regreso a GUERRERO</label>
+                  <textarea id="return_to_sam_message" name="return_to_sam_message" placeholder="Texto que reinicia a GUERRERO.">{{ return_to_sam_message }}</textarea>
+                </div>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button class="primary" type="submit">Guardar campaña</button>
+            </div>
+          </form>
+        </div>
+
+        <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales">
+          <input type="hidden" name="action" value="logout">
+          <div class="actions">
+            <button class="secondary" type="submit">Salir</button>
+          </div>
+        </form>
+
+        <div class="section">
+          <h2>Campañas Guardadas</h2>
+          {% if campaigns %}
+          <div class="cards">
+            {% for campaign in campaigns %}
+            <div class="card">
+              <h3>{{ campaign.name }}</h3>
+              <div class="meta">
+                <span>Tipo: {{ campaign_kind_options.get(campaign.campaignKind, campaign.campaignKind or 'N/D') }}</span>
+                <span>Lista: {{ campaign.audienceName }}</span>
+                <span>Estatus: <span class="status-pill {{ campaign.status }}">{{ campaign.status }}</span></span>
+                <span>Destinatarios: {{ campaign.recipientCount }}</span>
+                <span>Programada: {{ campaign.scheduledAt or 'No programada' }}</span>
+                <span>Timer: {{ campaign.followupDelayMinutes or 15 }} min</span>
+                {% if campaign.approvedTemplateName %}
+                <span>Plantilla: {{ campaign.approvedTemplateName }}</span>
+                {% endif %}
+                {% if campaign.approvedTemplateName == 'invitacion_evento' %}
+                <span>Media HSM fija: invitacion_evento.jpg</span>
+                {% endif %}
+                <span>Regreso a GUERRERO: {{ 'ON' if campaign.returnToSamEnabled else 'OFF' }}</span>
+              </div>
+              <div class="stats">
+                <div class="stat"><strong>{{ campaign.recipientCount }}</strong>Total</div>
+                <div class="stat"><strong>{{ campaign.hookSentCount }}</strong>Ganchos</div>
+                <div class="stat"><strong>{{ campaign.waitingWindowCount }}</strong>Esperando ventana</div>
+                <div class="stat"><strong>{{ campaign.freeSentCount }}</strong>Mensajes libres</div>
+                <div class="stat"><strong>{{ campaign.returnedToSamCount }}</strong>Regresos a GUERRERO</div>
+                <div class="stat"><strong>{{ campaign.failedCount }}</strong>Fallidos</div>
+                <div class="stat"><strong>{{ campaign.repliedCount }}</strong>Contestaron</div>
+              </div>
+              {% if campaign.lastError %}
+              <div style="margin-bottom: 10px; color: var(--danger); font-size: 13px;">{{ campaign.lastError }}</div>
+              {% endif %}
+              {% if campaign.ks %}
+              <div style="margin-bottom: 10px;">
+                {% for k in campaign.ks %}
+                <span class="pill">K: {{ k }}</span>
                 {% endfor %}
               </div>
               {% endif %}
-              {% if recipient.sentAt %}
-              <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Enviado: {{ recipient.sentAt }}</div>
+              <div><strong>Mensaje principal:</strong> {{ campaign.message }}</div>
+              {% if campaign.returnToSamMessage %}
+              <div style="margin-top: 8px; color: var(--muted); font-size: 13px;"><strong>Regreso a GUERRERO:</strong> {{ campaign.returnToSamMessage }}</div>
               {% endif %}
-              {% if recipient.errorMessage %}
-              <div style="margin-top: 6px; color: var(--danger); font-size: 12px;">Error: {{ recipient.errorMessage }}</div>
+              {% if campaign.attachmentUrl %}
+              <div style="margin-top: 8px; color: var(--muted); font-size: 13px;">Adjunto: {{ campaign.attachmentFilename or 'archivo' }} | {{ campaign.attachmentUrl }}</div>
+              {% endif %}
+              <div class="actions" style="margin-top: 12px;">
+                <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales">
+                  <input type="hidden" name="action" value="send_now">
+                  <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
+                  <button class="primary" type="submit">Enviar ahora</button>
+                </form>
+                <form method="POST" action="/admin/colegio-militarizado/mensajes-institucionales" onsubmit="return confirm('¿Ocultar esta campaña de la vista?');">
+                  <input type="hidden" name="action" value="delete_campaign">
+                  <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
+                  <button class="danger" type="submit">Eliminar</button>
+                </form>
+              </div>
+              {% if campaign.recipients %}
+              <div class="recipient-list">
+                {% for recipient in campaign.recipients %}
+                <div class="recipient-row">
+                  <strong>{{ recipient.name }}</strong>
+                  <span class="status-pill {{ recipient.status }}">{{ recipient.status }}</span>
+                  <div>{{ recipient.phone }}</div>
+                  {% if recipient.metadataParsed %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 13px;">
+                    {% for key, value in recipient.metadataParsed.items() %}
+                    <span style="margin-right: 10px;">{{ key|upper }}: {{ value }}</span>
+                    {% endfor %}
+                  </div>
+                  {% endif %}
+                  {% if recipient.sentAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Enviado: {{ recipient.sentAt }}</div>
+                  {% endif %}
+                  {% if recipient.hookSentAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Gancho HSM: {{ recipient.hookSentAt }}</div>
+                  {% endif %}
+                  {% if recipient.freeMessageSentAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Mensaje libre: {{ recipient.freeMessageSentAt }}</div>
+                  {% endif %}
+                  {% if recipient.returnToSamSentAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Regreso a GUERRERO: {{ recipient.returnToSamSentAt }}</div>
+                  {% endif %}
+                  {% if recipient.seenAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Visto: {{ recipient.seenAt }}</div>
+                  {% endif %}
+                  {% if recipient.repliedAt %}
+                  <div style="margin-top: 6px; color: var(--muted); font-size: 12px;">Respondió: {{ recipient.repliedAt }}</div>
+                  {% endif %}
+                  {% if recipient.replyText %}
+                  <div style="margin-top: 6px; color: var(--text); font-size: 12px;">Última respuesta: {{ recipient.replyText }}</div>
+                  {% endif %}
+                  {% if recipient.errorMessage %}
+                  <div style="margin-top: 6px; color: var(--danger); font-size: 12px;">Error: {{ recipient.errorMessage }}</div>
+                  {% endif %}
+                </div>
+                {% endfor %}
+              </div>
               {% endif %}
             </div>
             {% endfor %}
           </div>
+          {% else %}
+          <div class="empty">Todavía no hay campañas guardadas en este módulo.</div>
           {% endif %}
         </div>
-        {% endfor %}
       </div>
-      {% else %}
-      <div class="empty">Todavía no hay campañas guardadas en este módulo.</div>
-      {% endif %}
       {% endif %}
     </div>
   </div>
+  <script>
+    function toggleReturnToSamState() {
+      const selector = document.getElementById('return_to_sam_enabled');
+      const textarea = document.getElementById('return_to_sam_message');
+      if (!selector || !textarea) return;
+      const enabled = selector.value !== 'off';
+      textarea.disabled = !enabled;
+      textarea.style.opacity = enabled ? '1' : '0.55';
+      if (enabled && !textarea.value.trim()) {
+        textarea.value = 'Gracias por comunicarte con el Colegio Militarizado. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO.';
+      }
+    }
+
+    toggleReturnToSamState();
+  </script>
 </body>
 </html>

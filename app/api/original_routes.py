@@ -28,6 +28,8 @@ from fastapi.responses import JSONResponse
 from app.util.database import LocalStorage
 from app.models.Config import Config
 from app.models.Message import Message
+from app.models.OutgoingCampaign import OutgoingCampaign
+from app.models.OutgoingRecipient import OutgoingRecipient
 # from app.services.llm.deepseek_service import DeepSeekService  # Not used
 from app.services.llm.openai_service import OpenAIService
 from app.services.functions.function_manager import FunctionManager
@@ -1162,6 +1164,312 @@ def validate_colony_exists(colony_name):
     if len(colony_name.strip()) >= 3:
         return True, f"Colonia capturada: {colony_name.strip()}"
     return False, f"Colonia inválida: {colony_name}"
+
+
+def _truncate_for_log(value, limit=160):
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _normalize_campaign_phone(raw_phone: str) -> str:
+    digits = "".join(ch for ch in (raw_phone or "") if ch.isdigit())
+    if len(digits) == 10:
+        return f"+52{digits}"
+    if len(digits) == 12 and digits.startswith("52"):
+        return f"+{digits}"
+    if len(digits) == 13 and digits.startswith("521"):
+        return f"+52{digits[3:]}"
+    if raw_phone and raw_phone.strip().startswith("+"):
+        return "+" + digits
+    return f"+{digits}" if digits else ""
+
+
+def _resolve_campaign_delivery_status(recipients) -> str:
+    if not recipients:
+        return "failed"
+
+    sent_count = sum(1 for recipient in recipients if (getattr(recipient, "status", "") or "").lower() == "sent")
+    failed_count = sum(1 for recipient in recipients if (getattr(recipient, "status", "") or "").lower() == "failed")
+    pending_count = sum(
+        1 for recipient in recipients if (getattr(recipient, "status", "pending") or "pending").lower() == "pending"
+    )
+
+    if pending_count > 0:
+        return "processing"
+    if sent_count > 0 and failed_count > 0:
+        return "completed_with_errors"
+    if sent_count > 0:
+        return "completed"
+    return "failed"
+
+
+def _classify_outgoing_system_error(text: str) -> tuple[str, str]:
+    message = (text or "").strip()
+    lowered = message.lower()
+    if " read " in f" {lowered} " or " leído" in lowered or " leido" in lowered or "seen" in lowered or "visto" in lowered:
+        return "WHATSAPP_READ", "chat2desk_read"
+    if "24 hours passed" in lowered or "approved whatsapp templates" in lowered:
+        return "WHATSAPP_WINDOW_24H", "whatsapp_system"
+    if "template" in lowered:
+        return "WHATSAPP_TEMPLATE_REQUIRED", "whatsapp_system"
+    return "WHATSAPP_SYSTEM", "whatsapp_system"
+
+
+def _list_ranked_campaign_recipients_for_phone(db: LocalStorage, normalized_phone: str):
+    recipients = db.Search(OutgoingRecipient(phone=normalized_phone), order="desc") or []
+    return sorted(
+        recipients,
+        key=lambda recipient: (
+            getattr(recipient, "returnToSamSentAt", "") or "",
+            getattr(recipient, "freeMessageSentAt", "") or "",
+            getattr(recipient, "hookSentAt", "") or "",
+            getattr(recipient, "sentAt", "") or "",
+            getattr(recipient, "lastAttemptAt", "") or "",
+            getattr(recipient, "id", 0),
+        ),
+        reverse=True,
+    )
+
+
+def _get_latest_campaign_recipient_for_phone(db: LocalStorage, normalized_phone: str):
+    ranked = _list_ranked_campaign_recipients_for_phone(db, normalized_phone)
+    for recipient in ranked:
+        status = (getattr(recipient, "status", "") or "").lower()
+        if status == "sent":
+            return recipient
+    return None
+
+
+def _get_latest_relevant_campaign_recipient_for_phone(db: LocalStorage, normalized_phone: str):
+    ranked = _list_ranked_campaign_recipients_for_phone(db, normalized_phone)
+    for recipient in ranked:
+        status = (getattr(recipient, "status", "") or "").lower()
+        if status in {"sent", "processing", "pending"}:
+            return recipient
+    return ranked[0] if ranked else None
+
+
+def _is_proactive_campaign_guard_active(campaign, recipient) -> bool:
+    campaign_kind = (getattr(campaign, "campaignKind", "") or "").strip().lower()
+    if campaign_kind in {"hsm_hook", "free_followup"}:
+        return True
+    if campaign_kind != "hsm_sequence":
+        return False
+
+    return_to_sam_enabled = bool(getattr(campaign, "returnToSamEnabled", False))
+    if return_to_sam_enabled:
+        return not bool(getattr(recipient, "returnToSamSentAt", "") or "")
+    return not bool(getattr(recipient, "freeMessageSentAt", "") or "")
+
+
+def get_active_proactive_campaign_guard(db: LocalStorage, raw_phone: str) -> dict | None:
+    normalized_phone = _normalize_campaign_phone(raw_phone)
+    if not normalized_phone:
+        return None
+
+    latest_recipient = _get_latest_relevant_campaign_recipient_for_phone(db, normalized_phone)
+    if not latest_recipient:
+        return None
+
+    campaign = db.GetByPK(OutgoingCampaign, latest_recipient.campaign_id)
+    if not campaign:
+        return None
+
+    campaign_kind = (getattr(campaign, "campaignKind", "") or "").strip().lower()
+    if campaign_kind not in {"hsm_hook", "free_followup", "hsm_sequence"}:
+        return None
+
+    if not _is_proactive_campaign_guard_active(campaign, latest_recipient):
+        return None
+
+    return {
+        "campaign_id": getattr(campaign, "id", None),
+        "campaign_name": getattr(campaign, "name", ""),
+        "campaign_kind": campaign_kind,
+        "phone": normalized_phone,
+        "sent_at": getattr(latest_recipient, "sentAt", "") or getattr(latest_recipient, "lastAttemptAt", ""),
+    }
+
+
+def record_outgoing_campaign_reply(db: LocalStorage, raw_phone: str, reply_text: str) -> bool:
+    normalized_phone = _normalize_campaign_phone(raw_phone)
+    if not normalized_phone:
+        return False
+
+    recipient = _get_latest_relevant_campaign_recipient_for_phone(db, normalized_phone)
+    if not recipient:
+        return False
+
+    campaign = db.GetByPK(OutgoingCampaign, recipient.campaign_id)
+    if not campaign:
+        return False
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated = False
+    if not getattr(recipient, "seenAt", ""):
+        recipient.seenAt = now
+        updated = True
+    if not getattr(recipient, "repliedAt", ""):
+        recipient.repliedAt = now
+        updated = True
+    cleaned_reply = (reply_text or "").strip()
+    if cleaned_reply:
+        recipient.replyText = _truncate_for_log(cleaned_reply, 500)
+        updated = True
+    if updated:
+        db.Update(recipient)
+        campaign.lastRunAt = now
+        db.Update(campaign)
+        logger.critical(
+            "👀 [PROACTIVE REPLY] campaign_id=%s phone=%s kind=%s reply=%s",
+            getattr(campaign, "id", "unknown"),
+            normalized_phone,
+            getattr(campaign, "campaignKind", ""),
+            _truncate_for_log(cleaned_reply, 160),
+        )
+    return updated
+
+
+def reconcile_outgoing_campaign_read_event(db: LocalStorage, payload: dict) -> bool:
+    message_type = payload.get("type", "")
+    hook_type = payload.get("hook_type", "")
+    if hook_type != "outbox":
+        return False
+
+    system_text = payload.get("text", "") or ""
+    lowered = system_text.lower()
+    if message_type != "system" and not (
+        "read" in lowered or "leído" in lowered or "leido" in lowered or "visto" in lowered
+    ):
+        return False
+
+    normalized_phone = _normalize_campaign_phone(payload.get("client", {}).get("phone", ""))
+    if not normalized_phone:
+        return False
+
+    recipient = _get_latest_campaign_recipient_for_phone(db, normalized_phone)
+    if not recipient:
+        return False
+
+    if getattr(recipient, "seenAt", ""):
+        return True
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    recipient.seenAt = now
+    recipient.providerStatus = "chat2desk_read"
+    recipient.providerPayload = json.dumps(payload, ensure_ascii=True)
+    db.Update(recipient)
+    logger.critical(
+        "👁️ [PROACTIVE SEEN] campaign_id=%s phone=%s detail=%s",
+        getattr(recipient, "campaign_id", "unknown"),
+        normalized_phone,
+        _truncate_for_log(system_text, 180),
+    )
+    return True
+
+
+def reconcile_outgoing_campaign_outbox_event(db: LocalStorage, payload: dict) -> bool:
+    message_type = payload.get("type", "")
+    hook_type = payload.get("hook_type", "")
+    if message_type != "to_client" or hook_type != "outbox":
+        return False
+
+    webhook_message_id = str(payload.get("message_id") or "")
+    if not webhook_message_id:
+        return False
+
+    recipients = db.Search(OutgoingRecipient(providerMessageId=webhook_message_id), order="desc") or []
+    if not recipients:
+        return False
+
+    target = recipients[0]
+    target.status = "sent"
+    target.providerStatus = "chat2desk_outbox"
+    target.providerPayload = json.dumps(payload, ensure_ascii=True)
+    target.lastAttemptAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not getattr(target, "sentAt", ""):
+        target.sentAt = target.lastAttemptAt
+    db.Update(target)
+
+    campaign = db.GetByPK(OutgoingCampaign, target.campaign_id)
+    if campaign:
+        related = db.Search(OutgoingRecipient(campaign_id=campaign.id), order="asc") or []
+        campaign.status = _resolve_campaign_delivery_status(related)
+        campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.Update(campaign)
+
+    logger.critical(
+        "📬 [OUTGOING OUTBOX] campaign_id=%s phone=%s provider_message_id=%s request_id=%s channel_id=%s text=%s",
+        getattr(target, "campaign_id", "unknown"),
+        payload.get("client", {}).get("phone", ""),
+        webhook_message_id,
+        payload.get("request_id"),
+        payload.get("channel_id"),
+        _truncate_for_log(payload.get("text", ""), 240),
+    )
+    return True
+
+
+def reconcile_outgoing_campaign_system_event(db: LocalStorage, payload: dict) -> bool:
+    message_type = payload.get("type", "")
+    hook_type = payload.get("hook_type", "")
+    if message_type != "system" or hook_type != "outbox":
+        return False
+
+    client_phone = payload.get("client", {}).get("phone", "")
+    normalized_phone = _normalize_campaign_phone(client_phone)
+    if not normalized_phone:
+        return False
+
+    system_text = payload.get("text", "") or ""
+    error_type, provider_status = _classify_outgoing_system_error(system_text)
+
+    if error_type == "WHATSAPP_READ":
+        return reconcile_outgoing_campaign_read_event(db, payload)
+
+    recipients = db.Search(OutgoingRecipient(phone=normalized_phone), order="desc") or []
+    if not recipients:
+        logger.warning(f"📭 [OUTGOING SYSTEM] No se encontraron destinatarios de campaña para {normalized_phone}")
+        return False
+
+    target = None
+    for recipient in recipients:
+        status = (getattr(recipient, "status", "") or "").lower()
+        if status in {"sent", "pending"}:
+            target = recipient
+            break
+
+    if not target:
+        logger.warning(f"📭 [OUTGOING SYSTEM] No hay destinatario elegible para actualizar con {normalized_phone}")
+        return False
+
+    target.status = "failed"
+    target.errorType = error_type
+    target.providerStatus = provider_status
+    target.errorMessage = system_text.strip() or "WhatsApp rechazó el envío."
+    target.providerPayload = json.dumps(payload, ensure_ascii=True)
+    target.lastAttemptAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.Update(target)
+
+    campaign = db.GetByPK(OutgoingCampaign, target.campaign_id)
+    if campaign:
+        related = db.Search(OutgoingRecipient(campaign_id=campaign.id), order="asc") or []
+        campaign.status = _resolve_campaign_delivery_status(related)
+        campaign.lastRunAt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        campaign.lastError = _truncate_for_log(system_text, 500)
+        db.Update(campaign)
+
+    logger.critical(
+        "🚨 [OUTGOING SYSTEM] campaign_id=%s phone=%s error_type=%s provider_status=%s detail=%s",
+        getattr(target, "campaign_id", "unknown"),
+        normalized_phone,
+        error_type,
+        provider_status,
+        _truncate_for_log(system_text, 220),
+    )
+    return True
 
 
 def find_closest_street(input_text):
@@ -3710,9 +4018,10 @@ async def whatsapp(request: Request):
             
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
 
-            ai_greeting = "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n" + \
-            "👋 ¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n" + \
-            "¿En qué puedo ayudarte hoy?"
+            ai_greeting = (
+                "👋 ¡Bienvenido! Soy GUERRERO, asistente virtual del Colegio Militarizado General Mariano Escobedo.\n\n"
+                "¿En qué puedo ayudarte hoy?"
+            )
             
             if from_number in user_sessions:
                 conversation_history = user_sessions[from_number].history

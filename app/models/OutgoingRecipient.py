@@ -6,11 +6,22 @@ class OutgoingRecipient(metaclass=DirtyTrackingMeta):
     name: str
     phone: str
     status: str
+    deliveryStage: str
     sentAt: str
+    lastAttemptAt: str
+    errorType: str
+    providerStatus: str
+    providerMessageId: str
+    providerPayload: str
     errorMessage: str
+    hookSentAt: str
+    freeMessageSentAt: str
+    returnToSamSentAt: str
+    seenAt: str
+    repliedAt: str
+    replyText: str
     metadata: str
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             setattr(self, k, v)
-

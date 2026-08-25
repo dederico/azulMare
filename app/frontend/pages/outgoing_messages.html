@@ -71,6 +71,12 @@
       line-height: 1.5;
     }
     .hint { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .quick-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 8px;
+    }
     .actions {
       display: flex;
       gap: 12px;
@@ -90,6 +96,7 @@
     button.primary { background: var(--primary); color: white; }
     button.primary:hover { background: var(--primary-dark); }
     button.secondary { background: #ecece7; color: var(--text); }
+    button.soft { background: #e8f3f1; color: var(--primary-dark); border: 1px solid #b9d8d2; }
     button.danger { background: var(--danger-soft); color: var(--danger); border: 1px solid #fecdca; }
     .cards { display: grid; gap: 14px; }
     .card {
@@ -345,6 +352,10 @@
                 <div class="field full">
                   <label for="message_body">Mensaje de salida</label>
                   <textarea id="message_body" name="message_body" placeholder="Escribe aquí el mensaje libre o el texto de regreso a SAM.">{{ form_data.get('message_body', '') }}</textarea>
+                  <div class="quick-actions">
+                    <button class="soft" type="button" onclick="setFreeFollowupTemplate()">Usar como mensaje libre 24h</button>
+                    <button class="soft" type="button" onclick="setReturnToSamTemplate()">Agregar mensaje para regresar a SAM</button>
+                  </div>
                 </div>
                 <div class="field">
                   <label for="message_mode">Modo técnico</label>
@@ -472,5 +483,28 @@
       {% endif %}
     </div>
   </div>
+  <script>
+    function setFreeFollowupTemplate() {
+      const kind = document.getElementById('campaign_kind');
+      const mode = document.getElementById('message_mode');
+      const body = document.getElementById('message_body');
+      if (kind) kind.value = 'free_followup';
+      if (mode) mode.value = 'free_text';
+      if (body && !body.value.trim()) {
+        body.value = 'Hola, te compartimos este seguimiento por parte de Atención Ciudadana de San Pedro. Si deseas, puedes responder directamente a este mensaje.';
+      }
+    }
+
+    function setReturnToSamTemplate() {
+      const kind = document.getElementById('campaign_kind');
+      const mode = document.getElementById('message_mode');
+      const body = document.getElementById('message_body');
+      if (kind) kind.value = 'return_to_sam';
+      if (mode) mode.value = 'free_text';
+      if (body) {
+        body.value = 'Ahora regresaremos la conversación con SAM para que continúe atendiéndote con reportes, comentarios y/o dudas.';
+      }
+    }
+  </script>
 </body>
 </html>

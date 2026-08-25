@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI
 from app.models.User import User
 from .controllers import (
     Context,
@@ -282,10 +282,12 @@ async def outgoing_messages_submit(request: Request):
             source_name = ""
             source_url = drive_url
             extension = ""
-            if isinstance(upload, UploadFile) and upload.filename:
+            upload_filename = getattr(upload, "filename", "") or ""
+            upload_reader = getattr(upload, "read", None)
+            if upload_filename and callable(upload_reader):
                 file_bytes = await upload.read()
-                source_name = upload.filename
-                extension = Path(upload.filename).suffix.lower()
+                source_name = upload_filename
+                extension = Path(upload_filename).suffix.lower()
             elif drive_url:
                 import requests
 

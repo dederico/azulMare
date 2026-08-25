@@ -280,17 +280,24 @@ def _classify_outgoing_system_error(text: str) -> tuple[str, str]:
     return "WHATSAPP_SYSTEM", "whatsapp_system"
 
 
-def _get_latest_campaign_recipient_for_phone(db: LocalStorage, normalized_phone: str):
+def _list_ranked_campaign_recipients_for_phone(db: LocalStorage, normalized_phone: str):
     recipients = db.Search(OutgoingRecipient(phone=normalized_phone), order="desc") or []
-    ranked = sorted(
+    return sorted(
         recipients,
         key=lambda recipient: (
+            getattr(recipient, "returnToSamSentAt", "") or "",
+            getattr(recipient, "freeMessageSentAt", "") or "",
+            getattr(recipient, "hookSentAt", "") or "",
             getattr(recipient, "sentAt", "") or "",
             getattr(recipient, "lastAttemptAt", "") or "",
             getattr(recipient, "id", 0),
         ),
         reverse=True,
     )
+
+
+def _get_latest_campaign_recipient_for_phone(db: LocalStorage, normalized_phone: str):
+    ranked = _list_ranked_campaign_recipients_for_phone(db, normalized_phone)
     for recipient in ranked:
         status = (getattr(recipient, "status", "") or "").lower()
         if status == "sent":
@@ -298,12 +305,34 @@ def _get_latest_campaign_recipient_for_phone(db: LocalStorage, normalized_phone:
     return None
 
 
+def _get_latest_relevant_campaign_recipient_for_phone(db: LocalStorage, normalized_phone: str):
+    ranked = _list_ranked_campaign_recipients_for_phone(db, normalized_phone)
+    for recipient in ranked:
+        status = (getattr(recipient, "status", "") or "").lower()
+        if status in {"sent", "processing", "pending"}:
+            return recipient
+    return ranked[0] if ranked else None
+
+
+def _is_proactive_campaign_guard_active(campaign, recipient) -> bool:
+    campaign_kind = (getattr(campaign, "campaignKind", "") or "").strip().lower()
+    if campaign_kind in {"hsm_hook", "free_followup"}:
+        return True
+    if campaign_kind != "hsm_sequence":
+        return False
+
+    return_to_sam_enabled = bool(getattr(campaign, "returnToSamEnabled", False))
+    if return_to_sam_enabled:
+        return not bool(getattr(recipient, "returnToSamSentAt", "") or "")
+    return not bool(getattr(recipient, "freeMessageSentAt", "") or "")
+
+
 def get_active_proactive_campaign_guard(db: LocalStorage, raw_phone: str) -> dict | None:
     normalized_phone = _normalize_campaign_phone(raw_phone)
     if not normalized_phone:
         return None
 
-    latest_recipient = _get_latest_campaign_recipient_for_phone(db, normalized_phone)
+    latest_recipient = _get_latest_relevant_campaign_recipient_for_phone(db, normalized_phone)
     if not latest_recipient:
         return None
 
@@ -312,7 +341,10 @@ def get_active_proactive_campaign_guard(db: LocalStorage, raw_phone: str) -> dic
         return None
 
     campaign_kind = (getattr(campaign, "campaignKind", "") or "").strip().lower()
-    if campaign_kind not in {"hsm_hook", "free_followup"}:
+    if campaign_kind not in {"hsm_hook", "free_followup", "hsm_sequence"}:
+        return None
+
+    if not _is_proactive_campaign_guard_active(campaign, latest_recipient):
         return None
 
     return {
@@ -329,7 +361,7 @@ def record_outgoing_campaign_reply(db: LocalStorage, raw_phone: str, reply_text:
     if not normalized_phone:
         return False
 
-    recipient = _get_latest_campaign_recipient_for_phone(db, normalized_phone)
+    recipient = _get_latest_relevant_campaign_recipient_for_phone(db, normalized_phone)
     if not recipient:
         return False
 

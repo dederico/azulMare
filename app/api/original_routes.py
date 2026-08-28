@@ -2979,6 +2979,56 @@ def is_recent_bot_outbound_echo(phone_number: str | None, text: str | None) -> b
     return True
 
 
+def is_recent_persisted_bot_outbound_echo(db, phone_number: str | None, text: str | None, max_age_seconds: int = 120) -> bool:
+    normalized_text = re.sub(r"\s+", " ", (text or "").strip())
+    if not phone_number or not normalized_text:
+        return False
+
+    try:
+        conn = psycopg2.connect(
+            dbname=db.dbName,
+            user=db.user,
+            password=db.password,
+            host=db.host,
+            port=db.port,
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT message, sendername, direction, EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(time, '')::timestamp, NOW())))
+            FROM messages
+            WHERE number = %s
+            ORDER BY id DESC
+            LIMIT 5
+            """,
+            [phone_number],
+        )
+        rows = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        logger.error("Error verificando eco persistido del bot para %s: %s", phone_number, str(e))
+        return False
+
+    for message, sender_name, direction, age_seconds in rows:
+        normalized_message = re.sub(r"\s+", " ", (message or "").strip())
+        if (
+            normalized_message == normalized_text
+            and (sender_name or "").strip().lower() == "assistant"
+            and (direction or "").strip().lower() == "outbound"
+            and age_seconds is not None
+            and float(age_seconds) <= max_age_seconds
+        ):
+            logger.info(
+                "🤖 [BOT ECHO PERSISTED] from_number=%s age_seconds=%.1f text=%s",
+                phone_number,
+                float(age_seconds),
+                normalized_text[:180],
+            )
+            return True
+
+    return False
+
+
 def build_return_to_sam_greeting(sender_name: str) -> str:
     clean_name = (sender_name or "").strip() or "ciudadano"
     return (
@@ -4924,11 +4974,16 @@ async def whatsapp(request: Request):
             return JSONResponse(content={"status": True, "message": "Control released to AI; greeting pending next inbound"})
 
         # 🎯 TERCERO: Detección automática por operator_id
+        is_bot_echo = (
+            is_recent_bot_outbound_echo(from_number, message_text)
+            or is_recent_persisted_bot_outbound_echo(db, from_number, message_text)
+        )
+
         human_operator_active = (
             message_type == 'to_client' and
             hook_type == 'outbox' and
             is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
-            not is_recent_bot_outbound_echo(from_number, message_text) and
+            not is_bot_echo and
             from_number not in recently_returned_to_bot
         )
 

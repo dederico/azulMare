@@ -27,6 +27,8 @@ LOG_PATTERNS = {
     "dedup": ["[PERSISTED DUPLICATE]", "[OUTBOUND DEDUP]", "[STALE INBOUND]"],
     "human_takeover": ["Human agent takeover detected", "Deteccion automatica: Agente humano"],
     "transfer_api": ["[TRANSFER TRACE]", "[TRANSFER GUARD]"],
+    "proactive_guard": ["[PROACTIVE HSM GUARD]"],
+    "stale_return_filter": ["[RETURN STALE EVENT]", "[RETURN FILTER] decision=stale"],
 }
 
 PHONE_PATTERN = re.compile(r"(?:from_number=|for |from )(?P<phone>52\d{10,13})")
@@ -322,6 +324,14 @@ def _analyze_behavioral_patterns(lines: list[str]) -> dict:
         "possible_bot_intrusion_count": 0,
         "possible_bot_intrusion_samples": [],
         "ignored_while_human_samples": [],
+        "proactive_guard_count": 0,
+        "proactive_guard_samples": [],
+        "persisted_duplicate_ignored_count": 0,
+        "persisted_duplicate_ignored_samples": [],
+        "stale_inbound_ignored_count": 0,
+        "stale_inbound_ignored_samples": [],
+        "global_silence_blockers_count": 0,
+        "global_silence_blocker_samples": [],
     }
 
     human_active_numbers: set[str] = set()
@@ -351,6 +361,33 @@ def _analyze_behavioral_patterns(lines: list[str]) -> dict:
                 behavior["ignored_while_human_samples"].append(line)
             if phone:
                 human_active_numbers.add(phone)
+            continue
+
+        if "[PROACTIVE HSM GUARD]" in line:
+            behavior["proactive_guard_count"] += 1
+            behavior["global_silence_blockers_count"] += 1
+            if len(behavior["proactive_guard_samples"]) < AUDIT_LOG_SAMPLE_LIMIT:
+                behavior["proactive_guard_samples"].append(line)
+            if len(behavior["global_silence_blocker_samples"]) < AUDIT_LOG_SAMPLE_LIMIT:
+                behavior["global_silence_blocker_samples"].append(line)
+            continue
+
+        if "[PERSISTED DUPLICATE]" in line and "Ignorando inbound repetido ya entregado" in line:
+            behavior["persisted_duplicate_ignored_count"] += 1
+            behavior["global_silence_blockers_count"] += 1
+            if len(behavior["persisted_duplicate_ignored_samples"]) < AUDIT_LOG_SAMPLE_LIMIT:
+                behavior["persisted_duplicate_ignored_samples"].append(line)
+            if len(behavior["global_silence_blocker_samples"]) < AUDIT_LOG_SAMPLE_LIMIT:
+                behavior["global_silence_blocker_samples"].append(line)
+            continue
+
+        if "[STALE INBOUND]" in line or "[RETURN STALE EVENT]" in line:
+            behavior["stale_inbound_ignored_count"] += 1
+            behavior["global_silence_blockers_count"] += 1
+            if len(behavior["stale_inbound_ignored_samples"]) < AUDIT_LOG_SAMPLE_LIMIT:
+                behavior["stale_inbound_ignored_samples"].append(line)
+            if len(behavior["global_silence_blocker_samples"]) < AUDIT_LOG_SAMPLE_LIMIT:
+                behavior["global_silence_blocker_samples"].append(line)
             continue
 
         if "📤 [CHAT2DESK:whatsapp_main] attempt" in line and phone and phone in human_active_numbers:
@@ -507,6 +544,22 @@ def _build_findings(metrics: dict, log_signals: dict, window_hours: int) -> list
         findings.append(
             f"Observacion: hubo {behavior.get('ignored_while_human_count', 0)} inbound ignorados por takeover humano activo."
         )
+    if behavior.get("global_silence_blockers_count", 0) > 0:
+        findings.append(
+            f"ALERTA: se detectaron {behavior.get('global_silence_blockers_count', 0)} bloqueos operativos de inbound aunque no siempre aparezcan como 'silencio' clasico."
+        )
+    if behavior.get("proactive_guard_count", 0) > 0:
+        findings.append(
+            f"Desglose bloqueos: {behavior.get('proactive_guard_count', 0)} por guardia proactiva activa."
+        )
+    if behavior.get("persisted_duplicate_ignored_count", 0) > 0:
+        findings.append(
+            f"Desglose bloqueos: {behavior.get('persisted_duplicate_ignored_count', 0)} por deduplicacion persistente."
+        )
+    if behavior.get("stale_inbound_ignored_count", 0) > 0:
+        findings.append(
+            f"Desglose bloqueos: {behavior.get('stale_inbound_ignored_count', 0)} por stale inbound o filtro de return-to-bot."
+        )
 
     top_numbers = metrics.get("top_numbers") or []
     if top_numbers:
@@ -606,6 +659,10 @@ def _render_report(
         lines.append(f"- return_to_bot_count: {behavior.get('return_to_bot_count', 0)}")
         lines.append(f"- ignored_while_human_count: {behavior.get('ignored_while_human_count', 0)}")
         lines.append(f"- possible_bot_intrusion_count: {behavior.get('possible_bot_intrusion_count', 0)}")
+        lines.append(f"- proactive_guard_count: {behavior.get('proactive_guard_count', 0)}")
+        lines.append(f"- persisted_duplicate_ignored_count: {behavior.get('persisted_duplicate_ignored_count', 0)}")
+        lines.append(f"- stale_inbound_ignored_count: {behavior.get('stale_inbound_ignored_count', 0)}")
+        lines.append(f"- global_silence_blockers_count: {behavior.get('global_silence_blockers_count', 0)}")
 
         for key, samples in log_signals.get("samples", {}).items():
             lines.append("")
@@ -637,6 +694,34 @@ def _render_report(
         lines.append("IGNORED WHILE HUMAN")
         if behavior.get("ignored_while_human_samples"):
             for sample in behavior["ignored_while_human_samples"]:
+                lines.append(f"- {_truncate(sample, 260)}")
+        else:
+            lines.append("- sin muestras")
+
+        lines.append("PROACTIVE GUARD")
+        if behavior.get("proactive_guard_samples"):
+            for sample in behavior["proactive_guard_samples"]:
+                lines.append(f"- {_truncate(sample, 260)}")
+        else:
+            lines.append("- sin muestras")
+
+        lines.append("PERSISTED DUPLICATE IGNORED")
+        if behavior.get("persisted_duplicate_ignored_samples"):
+            for sample in behavior["persisted_duplicate_ignored_samples"]:
+                lines.append(f"- {_truncate(sample, 260)}")
+        else:
+            lines.append("- sin muestras")
+
+        lines.append("STALE INBOUND IGNORED")
+        if behavior.get("stale_inbound_ignored_samples"):
+            for sample in behavior["stale_inbound_ignored_samples"]:
+                lines.append(f"- {_truncate(sample, 260)}")
+        else:
+            lines.append("- sin muestras")
+
+        lines.append("GLOBAL SILENCE BLOCKERS")
+        if behavior.get("global_silence_blocker_samples"):
+            for sample in behavior["global_silence_blocker_samples"]:
                 lines.append(f"- {_truncate(sample, 260)}")
         else:
             lines.append("- sin muestras")

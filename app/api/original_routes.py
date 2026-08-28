@@ -2845,7 +2845,7 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
 
     return await transfer_to_group(
         message_id=message_id,
-        group_id=1817,
+        group_id=group_id,
         reason=reason,
     )
 
@@ -4840,7 +4840,8 @@ async def whatsapp(request: Request):
 
         # 🎯 TERCERO: Detección automática por operator_id
         human_operator_active = (
-            message_type in {'to_client', 'from_client'} and
+            message_type == 'to_client' and
+            hook_type == 'outbox' and
             is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
             from_number not in recently_returned_to_bot
         )
@@ -4849,9 +4850,7 @@ async def whatsapp(request: Request):
             expiration_time = datetime.now().timestamp() + (30 * 60)
             transferred_numbers[from_number] = expiration_time
 
-        if (message_type == 'to_client' and 
-            hook_type == 'outbox' and
-            human_operator_active):
+        if human_operator_active:
             
             logger.info(f"Detección automática: Agente humano (ID {payload.get('operator_id')}) tomó la conversación con {from_number}")
 
@@ -4869,10 +4868,12 @@ async def whatsapp(request: Request):
                 db.Insert(system_notification)
             except Exception as e:
                 logger.error(f"Error registrando transferencia automática: {str(e)}")
-        elif (message_type == 'to_client' and 
+        elif (
+            message_type == 'to_client' and
             hook_type == 'outbox' and
             is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
-            from_number in recently_returned_to_bot):
+            from_number in recently_returned_to_bot
+        ):
 
             grace_time = int(BOT_GRACE_PERIOD - (datetime.now().timestamp() - recently_returned_to_bot[from_number]))
             logger.info(f"Ignorando detección automática para {from_number} - en período de gracia ({grace_time} segundos restantes)")
@@ -5894,7 +5895,7 @@ async def whatsapp(request: Request):
 
             transfer_result = await transfer_to_group(
                 message_id=message_id,
-                group_id=1817,
+                group_id=None,
                 reason="Solicitud explícita del usuario para hablar con humano",
             )
 

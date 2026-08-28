@@ -138,7 +138,8 @@
     .status-pill.completed,
     .status-pill.completed_with_errors,
     .status-pill.scheduled,
-    .status-pill.draft { background: #f4f4f5; color: #3f3f46; }
+    .status-pill.draft,
+    .status-pill.reset { background: #f4f4f5; color: #3f3f46; }
     .stats {
       display: grid;
       grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -451,6 +452,11 @@
                   <input type="hidden" name="action" value="send_now">
                   <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
                   <button class="primary" type="submit">Enviar ahora</button>
+                </form>
+                <form method="POST" action="/admin/ciac/mensajes-proactivos" onsubmit="return confirm('¿Liberar esta campaña para que SAM responda sin pausas?');">
+                  <input type="hidden" name="action" value="reset">
+                  <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
+                  <button class="soft" type="submit">Reset SAM</button>
                 </form>
                 <form method="POST" action="/admin/ciac/mensajes-proactivos" onsubmit="return confirm('¿Ocultar esta campaña de la vista?');">
                   <input type="hidden" name="action" value="delete">

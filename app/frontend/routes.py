@@ -16,6 +16,7 @@ from .controllers import (
     list_dynamic_knowledge_functions,
     list_outgoing_campaigns,
     list_saved_audience_files,
+    reset_outgoing_campaign,
     send_outgoing_campaign,
 )
 from app.util.logger import logger
@@ -385,6 +386,32 @@ async def outgoing_messages_submit(request: Request):
             )
         except Exception as e:
             logger.error("Error sending outgoing campaign: %s", e)
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error=str(e),
+                form_data=payload,
+            )
+
+    if action == "reset":
+        campaign_id = (payload.get("campaign_id") or "").strip()
+        if not campaign_id.isdigit():
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                error="No se recibió un identificador de campaña válido.",
+                form_data=payload,
+            )
+        try:
+            result = reset_outgoing_campaign(LocalStorage(), int(campaign_id))
+            return render_outgoing_messages_page(
+                request=request,
+                authenticated=True,
+                success=result["message"],
+                form_data={},
+            )
+        except Exception as e:
+            logger.error("Error resetting outgoing campaign: %s", e)
             return render_outgoing_messages_page(
                 request=request,
                 authenticated=True,

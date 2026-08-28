@@ -711,6 +711,14 @@ def _build_recipient_from_mapping(row: dict, row_number: int) -> dict | None:
     }
 
 
+def _build_recipient_from_mapping_or_none(row: dict, row_number: int) -> dict | None:
+    try:
+        return _build_recipient_from_mapping(row, row_number)
+    except ValueError as e:
+        logger.warning("Skipping invalid audience row %s: %s", row_number, e)
+        return None
+
+
 def _dedupe_recipients(recipients: list[dict]) -> list[dict]:
     deduped = []
     seen = set()
@@ -730,7 +738,7 @@ def _parse_csv_recipients(file_bytes: bytes) -> list[dict]:
     reader = csv.DictReader(StringIO(decoded))
     recipients = []
     for idx, row in enumerate(reader, start=2):
-        recipient = _build_recipient_from_mapping(row, idx)
+        recipient = _build_recipient_from_mapping_or_none(row, idx)
         if recipient:
             recipients.append(recipient)
     return _dedupe_recipients(recipients)
@@ -738,18 +746,27 @@ def _parse_csv_recipients(file_bytes: bytes) -> list[dict]:
 
 def _parse_xlsx_recipients(file_bytes: bytes) -> list[dict]:
     workbook = openpyxl.load_workbook(filename=BytesIO(file_bytes), read_only=True, data_only=True)
-    worksheet = workbook.active
-    rows = list(worksheet.iter_rows(values_only=True))
-    if not rows:
-        raise ValueError("El archivo Excel está vacío.")
-    headers = [str(cell).strip() if cell is not None else "" for cell in rows[0]]
-    recipients = []
-    for idx, values in enumerate(rows[1:], start=2):
-        row = {headers[pos]: values[pos] for pos in range(min(len(headers), len(values))) if headers[pos]}
-        recipient = _build_recipient_from_mapping(row, idx)
-        if recipient:
-            recipients.append(recipient)
-    return _dedupe_recipients(recipients)
+    try:
+        worksheet = workbook.active
+        rows_iter = worksheet.iter_rows(values_only=True)
+        first_row = next(rows_iter, None)
+        if first_row is None:
+            raise ValueError("El archivo Excel está vacío.")
+
+        headers = [str(cell).strip() if cell is not None else "" for cell in first_row]
+        recipients = []
+        for idx, values in enumerate(rows_iter, start=2):
+            row = {
+                headers[pos]: values[pos]
+                for pos in range(min(len(headers), len(values)))
+                if headers[pos]
+            }
+            recipient = _build_recipient_from_mapping_or_none(row, idx)
+            if recipient:
+                recipients.append(recipient)
+        return _dedupe_recipients(recipients)
+    finally:
+        workbook.close()
 
 
 def _normalize_drive_download_url(raw_url: str) -> str:
@@ -1066,6 +1083,55 @@ def delete_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> d
         "status": True,
         "message": f"Campaña '{campaign.name}' ocultada correctamente.",
         "campaign_id": campaign_id,
+    }
+
+
+def reset_outgoing_campaign(local_storage: LocalStorage, campaign_id: int) -> dict:
+    campaign = local_storage.GetByPK(OutgoingCampaign, campaign_id)
+    if not campaign:
+        raise ValueError("No se encontró la campaña solicitada.")
+    if (campaign.status or "").lower() == "deleted":
+        raise ValueError("La campaña fue ocultada y ya no puede reiniciarse.")
+
+    recipients = local_storage.Search(OutgoingRecipient(campaign_id=campaign_id), order="asc") or []
+    if not recipients:
+        raise ValueError("La campaña no tiene destinatarios para reiniciar.")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reset_count = 0
+    for recipient in recipients:
+        if (recipient.status or "").lower() == "reset":
+            continue
+        recipient.status = "reset"
+        recipient.deliveryStage = "completed"
+        recipient.lastAttemptAt = now_str
+        recipient.errorType = ""
+        recipient.providerStatus = "manual_reset"
+        recipient.providerMessageId = ""
+        recipient.providerPayload = _append_provider_event(
+            recipient.providerPayload,
+            "manual_reset",
+            {"campaign_id": campaign_id, "message": "Guardia proactiva liberada manualmente"},
+        )
+        recipient.errorMessage = ""
+        if not (recipient.returnToSamSentAt or "").strip():
+            recipient.returnToSamSentAt = now_str
+        local_storage.Update(recipient)
+        reset_count += 1
+
+    campaign.status = "reset"
+    campaign.lastRunAt = now_str
+    campaign.lastError = "Campaña liberada manualmente para que SAM continúe respondiendo sin pausa."
+    local_storage.Update(campaign)
+
+    return {
+        "status": True,
+        "message": (
+            f"Campaña '{campaign.name}' liberada. "
+            f"SAM puede responder de inmediato y se resetearon {reset_count} destinatarios."
+        ),
+        "campaign_id": campaign_id,
+        "reset_count": reset_count,
     }
 
 

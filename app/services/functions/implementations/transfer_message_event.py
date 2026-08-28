@@ -1,16 +1,89 @@
 import os
 import httpx
 from app.util.database import LocalStorage
+from app.models.Config import Config
 from app.models.Message import Message
 from datetime import datetime
 import pytz
 from app.util.logger import logger
 import re
+from threading import Lock
 
 # Obtener token de API de Chat2Desk
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
 CHAT2DESK_BASE_URL = "https://api.chat2desk.com.mx/v1"
 DEFAULT_OPERATOR_GROUP_ID = int(os.environ.get("CHAT2DESK_OPERATOR_GROUP_ID", "1817"))
+ROUND_ROBIN_LOCK = Lock()
+ROUND_ROBIN_INDEX = 0
+
+
+def _parse_group_ids(raw_value):
+    group_ids = []
+    for token in str(raw_value or "").split(","):
+        cleaned = token.strip()
+        if not cleaned:
+            continue
+        try:
+            group_id = int(float(cleaned))
+        except (TypeError, ValueError):
+            logger.warning("ID de grupo inválido ignorado en configuración: %s", cleaned)
+            continue
+        if group_id not in group_ids:
+            group_ids.append(group_id)
+    return group_ids
+
+
+def _get_configured_operator_group_ids():
+    configured_group_ids = []
+
+    try:
+        local_storage = LocalStorage()
+        config_list = local_storage.Search(Config(name="chat2desk_operator_group_ids"), single=True, json=False)
+        if config_list and getattr(config_list, "value", None):
+            configured_group_ids = _parse_group_ids(config_list.value)
+
+        if not configured_group_ids:
+            config_single = local_storage.Search(Config(name="chat2desk_operator_group_id"), single=True, json=False)
+            if config_single and getattr(config_single, "value", None):
+                configured_group_ids = _parse_group_ids(config_single.value)
+    except Exception as e:
+        logger.warning("No se pudo leer configuración de grupos de operadores desde BD: %s", e)
+
+    if not configured_group_ids:
+        configured_group_ids = _parse_group_ids(os.environ.get("CHAT2DESK_OPERATOR_GROUP_IDS"))
+
+    if not configured_group_ids:
+        configured_group_ids = [DEFAULT_OPERATOR_GROUP_ID]
+
+    return configured_group_ids
+
+
+def resolve_operator_group_id(preferred_group_id=None):
+    configured_group_ids = _get_configured_operator_group_ids()
+
+    if preferred_group_id is not None:
+        try:
+            normalized_preferred = int(float(preferred_group_id))
+        except (TypeError, ValueError):
+            logger.warning("preferred_group_id inválido: %s", preferred_group_id)
+        else:
+            if normalized_preferred in configured_group_ids:
+                return normalized_preferred, configured_group_ids, "preferred"
+            logger.warning(
+                "preferred_group_id=%s no está en grupos configurados=%s; se aplicará round-robin.",
+                normalized_preferred,
+                configured_group_ids,
+            )
+
+    if len(configured_group_ids) == 1:
+        return configured_group_ids[0], configured_group_ids, "single"
+
+    global ROUND_ROBIN_INDEX
+    with ROUND_ROBIN_LOCK:
+        selected_group_id = configured_group_ids[ROUND_ROBIN_INDEX % len(configured_group_ids)]
+        ROUND_ROBIN_INDEX += 1
+
+    return selected_group_id, configured_group_ids, "round_robin"
 
 def format_phone_number(phone):
     """
@@ -46,27 +119,20 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
     """
     try:
         requested_group_id = group_id
-        normalized_group_id = DEFAULT_OPERATOR_GROUP_ID
+        normalized_requested_group_id = None
 
         if group_id is not None:
             try:
-                requested_group_id = int(float(group_id))
+                normalized_requested_group_id = int(float(group_id))
+                requested_group_id = normalized_requested_group_id
             except (ValueError, TypeError):
                 logger.warning(
-                    "group_id no válido: %s, usando grupo configurado %s",
+                    "group_id no válido: %s, usando configuración dinámica de grupos",
                     group_id,
-                    DEFAULT_OPERATOR_GROUP_ID,
                 )
                 requested_group_id = None
 
-        if requested_group_id not in (None, DEFAULT_OPERATOR_GROUP_ID):
-            logger.warning(
-                "Sobrescribiendo group_id solicitado=%s por grupo configurado=%s",
-                requested_group_id,
-                DEFAULT_OPERATOR_GROUP_ID,
-            )
-
-        group_id = normalized_group_id
+        group_id, configured_group_ids, selection_mode = resolve_operator_group_id(normalized_requested_group_id)
 
         # Configurar encabezados
         api_token = os.environ.get("CHAT2DESK_API_TOKEN")
@@ -88,10 +154,12 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
         logger.debug(f"URL: {transfer_url}")
         logger.debug(f"Params: {transfer_params}")
         logger.critical(
-            "🔀 [TRANSFER TRACE] message_id=%s requested_group_id=%s effective_group_id=%s reason=%s",
+            "🔀 [TRANSFER TRACE] message_id=%s requested_group_id=%s effective_group_id=%s selection_mode=%s configured_group_ids=%s reason=%s",
             message_id,
             requested_group_id,
             group_id,
+            selection_mode,
+            configured_group_ids,
             reason,
         )
 

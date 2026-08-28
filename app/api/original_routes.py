@@ -1319,6 +1319,7 @@ finalized_report_numbers = set()
 recently_returned_to_bot = {}
 bot_returned_at = {}
 pending_bot_greeting = {}
+recent_bot_outbound_messages = {}  # key: phone_number, value: {text: normalized_text, expires_at: timestamp}
 STALE_RETURN_EVENT_TOLERANCE_SECONDS = 1.0
 STALE_INBOUND_EVENT_MAX_AGE_SECONDS = 30 * 60
 BOT_GRACE_PERIOD = 10
@@ -2947,6 +2948,37 @@ async def remove_from_recently_returned(number, delay_seconds):
         logger.error(f"Error removing {number} from recently returned tracking: {str(e)}")
 
 
+def remember_recent_bot_outbound_message(phone_number: str | None, text: str | None, ttl_seconds: int = 45) -> None:
+    normalized_text = re.sub(r"\s+", " ", (text or "").strip())
+    if not phone_number or not normalized_text:
+        return
+    recent_bot_outbound_messages[phone_number] = {
+        "text": normalized_text,
+        "expires_at": datetime.now().timestamp() + ttl_seconds,
+    }
+
+
+def is_recent_bot_outbound_echo(phone_number: str | None, text: str | None) -> bool:
+    normalized_text = re.sub(r"\s+", " ", (text or "").strip())
+    if not phone_number or not normalized_text:
+        return False
+
+    tracked = recent_bot_outbound_messages.get(phone_number)
+    if not tracked:
+        return False
+
+    current_time = datetime.now().timestamp()
+    if current_time >= tracked.get("expires_at", 0):
+        recent_bot_outbound_messages.pop(phone_number, None)
+        return False
+
+    if tracked.get("text") != normalized_text:
+        return False
+
+    recent_bot_outbound_messages.pop(phone_number, None)
+    return True
+
+
 def build_return_to_sam_greeting(sender_name: str) -> str:
     clean_name = (sender_name or "").strip() or "ciudadano"
     return (
@@ -4172,6 +4204,7 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text, tran
             response = await client.post(chat2desk_url, json=data, headers=headers)
             
         if response.status_code == 200:
+            remember_recent_bot_outbound_message(phone_number, text)
             logger.debug(f"Message sent successfully to Chat2Desk")
             return True
         else:
@@ -4895,6 +4928,7 @@ async def whatsapp(request: Request):
             message_type == 'to_client' and
             hook_type == 'outbox' and
             is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
+            not is_recent_bot_outbound_echo(from_number, message_text) and
             from_number not in recently_returned_to_bot
         )
 

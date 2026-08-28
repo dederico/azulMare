@@ -1318,6 +1318,7 @@ finalized_report_numbers = set()
 # Ahora, añade esta nueva función para verificar si un número ya tiene un reporte reciente
 recently_returned_to_bot = {}
 bot_returned_at = {}
+pending_bot_greeting = {}
 STALE_RETURN_EVENT_TOLERANCE_SECONDS = 1.0
 STALE_INBOUND_EVENT_MAX_AGE_SECONDS = 30 * 60
 BOT_GRACE_PERIOD = 10
@@ -2939,8 +2940,21 @@ async def remove_from_recently_returned(number, delay_seconds):
         if number in bot_returned_at:
             del bot_returned_at[number]
             logger.info(f"Removed {number} from bot_returned_at tracking")
+        if number in pending_bot_greeting:
+            del pending_bot_greeting[number]
+            logger.info(f"Removed {number} from pending_bot_greeting tracking")
     except Exception as e:
         logger.error(f"Error removing {number} from recently returned tracking: {str(e)}")
+
+
+def build_return_to_sam_greeting(sender_name: str) -> str:
+    clean_name = (sender_name or "").strip() or "ciudadano"
+    return (
+        "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n"
+        "¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. "
+        "Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n"
+        f"Hola {clean_name}, ¿en qué podemos ayudarte? ¿Es una emergencia?"
+    )
 
 def has_recent_report(phone_number, max_age_minutes=15):
     """
@@ -4825,6 +4839,7 @@ async def whatsapp(request: Request):
             return_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time")) or datetime.now().timestamp()
             recently_returned_to_bot[from_number] = return_timestamp
             bot_returned_at[from_number] = return_timestamp
+            pending_bot_greeting[from_number] = True
             logger.info(f"Added {from_number} to recently_returned_to_bot with grace period of {BOT_GRACE_PERIOD} seconds")
             
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
@@ -5059,6 +5074,47 @@ async def whatsapp(request: Request):
                 STALE_RETURN_EVENT_TOLERANCE_SECONDS,
             )
             logger.info(f"✅ [RETURN FRESH EVENT] Primer inbound nuevo aceptado para {from_number} después de -bot")
+
+        if from_number in pending_bot_greeting:
+            sender_name = payload.get('client', {}).get('name', 'Usuario')
+            greeting_message = build_return_to_sam_greeting(sender_name)
+
+            logger.critical(
+                "👋 [RETURN AUTOGREETING] Enviando saludo de SAM tras return-to-bot para %s",
+                from_number,
+            )
+
+            try:
+                assistant_message = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="Assistant",
+                    message=greeting_message,
+                    number=from_number,
+                    uid=f"assistant-return-greeting-{datetime.now().timestamp()}",
+                    direction="outbound",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(assistant_message)
+                await manage_message_history(db, from_number)
+            except Exception as e:
+                logger.error("Error guardando saludo de retorno para %s: %s", from_number, str(e))
+
+            pending_bot_greeting.pop(from_number, None)
+            recently_returned_to_bot.pop(from_number, None)
+
+            sent = await send_chat2desk_message(
+                from_number,
+                payload.get('client_id'),
+                payload.get('channel_id'),
+                greeting_message,
+                payload.get('transport', 'wa_direct'),
+            )
+
+            if sent:
+                return JSONResponse(content={"status": True, "message": "Saludo de SAM enviado tras return-to-bot"})
+
+            logger.error("No se pudo enviar saludo de SAM tras return-to-bot para %s", from_number)
 
         # Deduplicar mensajes entrantes solo cuando ya exista evidencia de entrega exitosa.
         # Si el primer intento guardó el inbound pero falló antes de responder, debemos permitir el retry.

@@ -2995,7 +2995,7 @@ def is_recent_persisted_bot_outbound_echo(db, phone_number: str | None, text: st
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT message, sendername, direction, EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(time, '')::timestamp, NOW())))
+            SELECT message, "senderName", direction, EXTRACT(EPOCH FROM (NOW() - COALESCE(NULLIF(time, '')::timestamp, NOW())))
             FROM messages
             WHERE number = %s
             ORDER BY id DESC
@@ -7061,6 +7061,7 @@ async def reset_conversation(phone_number: str):
     Limpia historial en BD, sesiones en memoria y protecciones anti-duplicados.
     """
     try:
+        db = LocalStorage()
         deleted_messages = db.delete_messages_by_number(phone_number)
         dedup_items_cleared = dedup_manager.force_clear_protection(phone_number)
 
@@ -7074,6 +7075,9 @@ async def reset_conversation(phone_number: str):
             "transferred_numbers": False,
             "last_response_time": False,
             "recently_returned_to_bot": False,
+            "bot_returned_at": False,
+            "pending_bot_greeting": False,
+            "recent_bot_outbound_messages": False,
             "closed_by_inactivity": False,
             "hsm_sent_reports": False,
             "sent_evaluation_messages": False,
@@ -7117,6 +7121,18 @@ async def reset_conversation(phone_number: str):
         if phone_number in recently_returned_to_bot:
             del recently_returned_to_bot[phone_number]
             memory_cleanup["recently_returned_to_bot"] = True
+
+        if phone_number in bot_returned_at:
+            del bot_returned_at[phone_number]
+            memory_cleanup["bot_returned_at"] = True
+
+        if phone_number in pending_bot_greeting:
+            del pending_bot_greeting[phone_number]
+            memory_cleanup["pending_bot_greeting"] = True
+
+        if phone_number in recent_bot_outbound_messages:
+            del recent_bot_outbound_messages[phone_number]
+            memory_cleanup["recent_bot_outbound_messages"] = True
 
         if phone_number in closed_by_inactivity:
             del closed_by_inactivity[phone_number]

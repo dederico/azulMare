@@ -4830,7 +4830,7 @@ async def whatsapp(request: Request):
 
         # 🎯 SEGUNDO: Verificar return to AI
         if message_type == 'to_client' and is_bot_return_message(message_text):
-            logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Releasing control to AI for next inbound message on {from_number}")
+            logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Releasing control to AI immediately on {from_number}")
             
             if from_number in transferred_numbers:
                 del transferred_numbers[from_number]
@@ -4839,8 +4839,39 @@ async def whatsapp(request: Request):
             return_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time")) or datetime.now().timestamp()
             recently_returned_to_bot[from_number] = return_timestamp
             bot_returned_at[from_number] = return_timestamp
-            pending_bot_greeting[from_number] = True
             logger.info(f"Added {from_number} to recently_returned_to_bot with grace period of {BOT_GRACE_PERIOD} seconds")
+
+            sender_name = payload.get('client', {}).get('name', 'Usuario')
+            greeting_message = build_return_to_sam_greeting(sender_name)
+
+            logger.critical(
+                "👋 [RETURN AUTOGREETING] Enviando saludo institucional de SAM inmediatamente para %s",
+                from_number,
+            )
+
+            try:
+                assistant_message = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="Assistant",
+                    message=greeting_message,
+                    number=from_number,
+                    uid=f"assistant-return-greeting-{datetime.now().timestamp()}",
+                    direction="outbound",
+                    mtype="text",
+                    source="whatsapp"
+                )
+                db.Insert(assistant_message)
+                await manage_message_history(db, from_number)
+            except Exception as e:
+                logger.error("Error guardando saludo inmediato de retorno para %s: %s", from_number, str(e))
+
+            sent = await send_chat2desk_message(
+                from_number,
+                payload.get('client_id'),
+                payload.get('channel_id'),
+                greeting_message,
+                payload.get('transport', 'wa_direct'),
+            )
             
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
             log_operational_decision_trace(
@@ -4848,10 +4879,16 @@ async def whatsapp(request: Request):
                 "human_goodbye_release",
                 operator_id=operator_id,
                 message_preview=message_text[:240],
-                action="release_control_without_autogreeting",
+                action="release_control_with_immediate_autogreeting",
                 return_timestamp=return_timestamp,
             )
-            return JSONResponse(content={"status": True, "message": "Control released to AI for next inbound message"})
+
+            if sent:
+                return JSONResponse(content={"status": True, "message": "Control released to AI and SAM greeting sent"})
+
+            pending_bot_greeting[from_number] = True
+            logger.warning("No se pudo enviar saludo inmediato de retorno para %s; se reintentará con el siguiente inbound", from_number)
+            return JSONResponse(content={"status": True, "message": "Control released to AI; greeting pending next inbound"})
 
         # 🎯 TERCERO: Detección automática por operator_id
         human_operator_active = (

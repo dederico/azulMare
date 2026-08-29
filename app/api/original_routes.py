@@ -3065,6 +3065,25 @@ def has_recent_report(phone_number, max_age_minutes=15):
     return None
 
 
+def get_recent_report_closure_message(phone_number: str) -> str | None:
+    recent_report = has_recent_report(phone_number)
+    if recent_report and recent_report.get("folio"):
+        return (
+            f"Tu reporte ya fue registrado con el folio **{recent_report['folio']}**. "
+            "Gracias por reportarlo."
+        )
+
+    dedup_status = dedup_manager.get_status(phone_number)
+    dedup_report = dedup_status.get("recent_report") if isinstance(dedup_status, dict) else None
+    if dedup_report and dedup_report.get("folio"):
+        return (
+            f"Tu reporte ya fue registrado con el folio **{dedup_report['folio']}**. "
+            "Gracias por reportarlo."
+        )
+
+    return None
+
+
 # Añade esta función wrapper alrededor de save_client_selection
 async def save_client_selection_with_deduplication(yoga_number, selection1, selection2, selection3,
                                        selection4, selection5, selection6, selection7, 
@@ -5622,6 +5641,60 @@ async def whatsapp(request: Request):
             # Procesamiento de imagen
             photo_url = payload.get("photo")
             if photo_url:
+                closure_message = get_recent_report_closure_message(from_number)
+                if closure_message:
+                    logger.info(
+                        "📷 [POST-FOLIO IGNORE] Ignorando imagen tardía para %s porque ya existe reporte reciente",
+                        from_number,
+                    )
+                    body = closure_message
+                    try:
+                        if from_number in user_sessions:
+                            user_sessions[from_number].history.add_ai_message(body)
+
+                        assistant_message = Message(
+                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            senderName="Assistant",
+                            message=body,
+                            number=from_number,
+                            uid=uid,
+                            direction="outbound",
+                            mtype="text",
+                            source="whatsapp"
+                        )
+                        db.Insert(assistant_message)
+                        await manage_message_history(db, from_number)
+
+                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
+                        headers = {
+                            "Authorization": api_token,
+                            "Content-Type": "application/json"
+                        }
+                        data = {
+                            "client_id": client_id,
+                            "channel_id": channel_id,
+                            "transport": transport,
+                            "text": body
+                        }
+                        log_chat2desk_outbound_attempt(
+                            "post_folio_image_ignore",
+                            data,
+                            from_number=from_number,
+                            message_id=message_id,
+                        )
+                        response = requests.post(chat2desk_url, json=data, headers=headers)
+                        log_chat2desk_outbound_response(
+                            "post_folio_image_ignore",
+                            response,
+                            from_number=from_number,
+                            message_id=message_id,
+                        )
+                        return JSONResponse(content={"status": True, "message": "Imagen tardía ignorada tras folio"})
+                    except Exception as e:
+                        logger.error(f"Error al responder imagen tardía post-folio: {str(e)}")
+                        return JSONResponse(content={"error": f"Error al responder imagen tardía post-folio: {str(e)}"}, status_code=500)
+
                 previous = get_user_answer(from_number, "selection8") or ""
                 updated_list = [url.strip() for url in previous.split(",") if url.strip()]
                 updated_list.append(photo_url)
@@ -5737,136 +5810,145 @@ async def whatsapp(request: Request):
         # Now let's fix the report finalization check in the WhatsApp endpoint
         elif body and from_number in report_sessions and report_sessions[from_number]["images"]:
             # El usuario ya ha enviado imágenes, este texto podría ser información del reporte
+            closure_message = get_recent_report_closure_message(from_number)
+            if closure_message:
+                logger.info(
+                    "🧾 [POST-FOLIO IGNORE] Ignorando mensaje tardío '%s' para %s porque ya existe reporte reciente",
+                    (body or "")[:60],
+                    from_number,
+                )
+                body = closure_message
+            else:
             
-            # Log the message to help with debugging
-            logger.debug(f"Processing potential report data for {from_number}: '{body[:50]}...'")
-            
-            # First, ensure this isn't a bot-generated message being echoed back
-            is_bot_message = False
-            
-            # Check for specific image receipt markers
-            if "[IMAGE_RECEIPT]" in body or ("he recibido" in body.lower() and "imagen" in body.lower()):
-                is_bot_message = True
-                logger.warning(f"Ignoring bot image receipt message: '{body[:50]}...'")
-            
-            # For other messages, check if they match recent bot messages
-            if not is_bot_message and from_number in user_sessions:
-                recent_messages = user_sessions[from_number].history.messages[-3:]  # Last 3 messages
-                for msg in recent_messages:
-                    if isinstance(msg, AIMessage) and (msg.content in body or body in msg.content):
-                        is_bot_message = True
-                        logger.warning(f"Message appears to be a bot message echo: '{body[:50]}...'")
-                        break
-            if not is_bot_message:
-                detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
-            
-            if is_bot_message:
-                # Skip processing if this appears to be from the bot
-                return JSONResponse(content={"status": True, "message": "Bot message echo ignored"})
-            
-            # Now check if this is providing location or requesting finalization
-            is_location = any(keyword in body.lower() for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"])
-            is_finalization = is_finalization_message(body, from_number)
+                # Log the message to help with debugging
+                logger.debug(f"Processing potential report data for {from_number}: '{body[:50]}...'")
+                
+                # First, ensure this isn't a bot-generated message being echoed back
+                is_bot_message = False
+                
+                # Check for specific image receipt markers
+                if "[IMAGE_RECEIPT]" in body or ("he recibido" in body.lower() and "imagen" in body.lower()):
+                    is_bot_message = True
+                    logger.warning(f"Ignoring bot image receipt message: '{body[:50]}...'")
+                
+                # For other messages, check if they match recent bot messages
+                if not is_bot_message and from_number in user_sessions:
+                    recent_messages = user_sessions[from_number].history.messages[-3:]  # Last 3 messages
+                    for msg in recent_messages:
+                        if isinstance(msg, AIMessage) and (msg.content in body or body in msg.content):
+                            is_bot_message = True
+                            logger.warning(f"Message appears to be a bot message echo: '{body[:50]}...'")
+                            break
+                if not is_bot_message:
+                    detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
+                
+                if is_bot_message:
+                    # Skip processing if this appears to be from the bot
+                    return JSONResponse(content={"status": True, "message": "Bot message echo ignored"})
+                
+                # Now check if this is providing location or requesting finalization
+                is_location = any(keyword in body.lower() for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"])
+                is_finalization = is_finalization_message(body, from_number)
 
-            
-            # Log the classification for debugging
-            logger.debug(f"Message classification - Is location: {is_location}, Is finalization: {is_finalization}")
-            
-            if is_location:
-                # Es información de ubicación
-                report_sessions[from_number]["location"] = body
-                report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
-                body = f"Ubicación registrada: {body}. Para finalizar tu reporte con las imágenes que has enviado, avísame cuando estés listo."
-            elif is_finalization:
-                # Generate a unique request ID for this report finalization request
-                request_id = f"{from_number}-{int(datetime.now().timestamp())}"
-                logger.info(f"Report finalization request {request_id} received")
                 
-                # En lugar de procesar directamente, enviar un mensaje especial al modelo
-                finalization_prompt = "El usuario quiere finalizar el reporte. " + \
-                         "Por favor, verifica que has recopilado toda la información necesaria " + \
-                         "(asunto, nombre, calle, número, colonia) y llama a la función save_client_selection " + \
-                         "con los datos completos. Si falta algún dato, solicítalo antes de proceder."
+                # Log the classification for debugging
+                logger.debug(f"Message classification - Is location: {is_location}, Is finalization: {is_finalization}")
                 
-                # Añadir este mensaje al historial como si fuera un mensaje del sistema
-                if from_number in user_sessions:
-                    conversation_history = user_sessions[from_number].history
-                    conversation_history.add_ai_message(f"[SISTEMA: {finalization_prompt}]")
-
-                # El usuario quiere finalizar el reporte
-                images = report_sessions[from_number]["images"]
-                descriptions = report_sessions[from_number]["image_descriptions"]
-
-                if fotos_urls:
-                    for foto in fotos_urls:
-                        if foto not in images:
-                            images.append(foto)
-                            descriptions.append("Imagen adicional")  # Descripción genérica
-                
-                # Deduplicate images to ensure no duplicates
-                unique_images = []
-                unique_descriptions = []
-                img_set = set()
-                
-                for i, img in enumerate(images):
-                    if img not in img_set:
-                        img_set.add(img)
-                        unique_images.append(img)
-                        if i < len(descriptions):
-                            unique_descriptions.append(descriptions[i])
-                
-                logger.info(f"After deduplication: {len(unique_images)} of {len(images)} images remain")
-                
-                # Use the location stored in the report session or the current message as fallback
-                user_location = report_sessions[from_number]["location"] or body or "ubicación no especificada"
-                
-                # Usar la función centralizada para procesar el reporte
-                result = await process_and_save_report(from_number, user_location, unique_images, unique_descriptions)
-                
-                if result['status'] == 'in_progress':
-                    body = result['message']
-                elif result['status'] == 'duplicate':
-                    body = result['message']
-                elif result['status'] == 'no_images':
-                    body = result['message']
-                elif result['status'] == 'validation_block':
-                    body = result['message']
-                elif result['status'] == 'error':
-                    body = f"Lo siento, hubo un error al finalizar tu reporte: {result['message']}. Por favor, intenta nuevamente."
-                elif result['status'] == 'success':
-                    # El reporte se creó exitosamente
-                    folio = result['folio']
-                    logger.info(f"Successfully created report with folio {folio} for request {request_id}")
-
-                    mark_report_as_completed(from_number)
-
-                    asyncio.create_task(delayed_cleanup_report_session(from_number, 30))
-
-                    # Limpiar la sesión de reporte después de finalizar
-                    if from_number in report_sessions:
-                        del report_sessions[from_number]
-                                            
-                    # Importante: Construir un mensaje informativo que *NO* requiera acción adicional del usuario
-                    image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
-                    body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. Estamos para servirte"
+                if is_location:
+                    # Es información de ubicación
+                    report_sessions[from_number]["location"] = body
+                    report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+                    body = f"Ubicación registrada: {body}. Para finalizar tu reporte con las imágenes que has enviado, avísame cuando estés listo."
+                elif is_finalization:
+                    # Generate a unique request ID for this report finalization request
+                    request_id = f"{from_number}-{int(datetime.now().timestamp())}"
+                    logger.info(f"Report finalization request {request_id} received")
                     
-                    # Verificar que el mensaje no esté vacío 
-                    if not body or len(body.strip()) == 0:
-                        body = f"Tu reporte ha sido generado exitosamente. Agradecemos tu colaboración. Estamos para servirte."
+                    # En lugar de procesar directamente, enviar un mensaje especial al modelo
+                    finalization_prompt = "El usuario quiere finalizar el reporte. " + \
+                             "Por favor, verifica que has recopilado toda la información necesaria " + \
+                             "(asunto, nombre, calle, número, colonia) y llama a la función save_client_selection " + \
+                             "con los datos completos. Si falta algún dato, solicítalo antes de proceder."
+                    
+                    # Añadir este mensaje al historial como si fuera un mensaje del sistema
+                    if from_number in user_sessions:
+                        conversation_history = user_sessions[from_number].history
+                        conversation_history.add_ai_message(f"[SISTEMA: {finalization_prompt}]")
 
-                    # Crear y guardar un mensaje de sistema explicando lo que ocurrió
-                    img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
-                    system_notification = Message(
-                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        senderName="System",
-                        message=f"[SISTEMA: Se generó el reporte con folio {folio} {img_count}de la ubicación '{user_location}'. El reporte ha sido enviado al sistema.]",
-                        number=from_number,
-                        uid=f"system-{request_id}",
-                        direction="system",
-                        mtype="text",
-                        source="whatsapp"
-                    )
-                    db.Insert(system_notification)
+                    # El usuario quiere finalizar el reporte
+                    images = report_sessions[from_number]["images"]
+                    descriptions = report_sessions[from_number]["image_descriptions"]
+
+                    if fotos_urls:
+                        for foto in fotos_urls:
+                            if foto not in images:
+                                images.append(foto)
+                                descriptions.append("Imagen adicional")  # Descripción genérica
+                    
+                    # Deduplicate images to ensure no duplicates
+                    unique_images = []
+                    unique_descriptions = []
+                    img_set = set()
+                    
+                    for i, img in enumerate(images):
+                        if img not in img_set:
+                            img_set.add(img)
+                            unique_images.append(img)
+                            if i < len(descriptions):
+                                unique_descriptions.append(descriptions[i])
+                    
+                    logger.info(f"After deduplication: {len(unique_images)} of {len(images)} images remain")
+                    
+                    # Use the location stored in the report session or the current message as fallback
+                    user_location = report_sessions[from_number]["location"] or body or "ubicación no especificada"
+                    
+                    # Usar la función centralizada para procesar el reporte
+                    result = await process_and_save_report(from_number, user_location, unique_images, unique_descriptions)
+                    
+                    if result['status'] == 'in_progress':
+                        body = result['message']
+                    elif result['status'] == 'duplicate':
+                        body = result['message']
+                    elif result['status'] == 'no_images':
+                        body = result['message']
+                    elif result['status'] == 'validation_block':
+                        body = result['message']
+                    elif result['status'] == 'error':
+                        body = f"Lo siento, hubo un error al finalizar tu reporte: {result['message']}. Por favor, intenta nuevamente."
+                    elif result['status'] == 'success':
+                    # El reporte se creó exitosamente
+                        folio = result['folio']
+                        logger.info(f"Successfully created report with folio {folio} for request {request_id}")
+
+                        mark_report_as_completed(from_number)
+
+                        asyncio.create_task(delayed_cleanup_report_session(from_number, 30))
+
+                        # Limpiar la sesión de reporte después de finalizar
+                        if from_number in report_sessions:
+                            del report_sessions[from_number]
+                                                
+                        # Importante: Construir un mensaje informativo que *NO* requiera acción adicional del usuario
+                        image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
+                        body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. Estamos para servirte"
+                        
+                        # Verificar que el mensaje no esté vacío 
+                        if not body or len(body.strip()) == 0:
+                            body = f"Tu reporte ha sido generado exitosamente. Agradecemos tu colaboración. Estamos para servirte."
+
+                        # Crear y guardar un mensaje de sistema explicando lo que ocurrió
+                        img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
+                        system_notification = Message(
+                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            senderName="System",
+                            message=f"[SISTEMA: Se generó el reporte con folio {folio} {img_count}de la ubicación '{user_location}'. El reporte ha sido enviado al sistema.]",
+                            number=from_number,
+                            uid=f"system-{request_id}",
+                            direction="system",
+                            mtype="text",
+                            source="whatsapp"
+                        )
+                        db.Insert(system_notification)
 
                     # IMPORTANTE: Ahora vamos a enviar este mensaje directamente a través de Chat2Desk
                     # para evitar que siga el flujo normal y cause una transferencia a humano

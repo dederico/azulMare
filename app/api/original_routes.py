@@ -4254,6 +4254,15 @@ async def remove_from_completed_reports(number, delay_seconds):
 async def send_chat2desk_message(phone_number, client_id, channel_id, text, transport="wa_direct"):
     """Send a message via Chat2Desk API. Supports both wa_direct (WhatsApp) and widget (web chat)."""
     try:
+        current_time = datetime.now().timestamp()
+        if phone_number in transferred_numbers and current_time < transferred_numbers[phone_number]:
+            logger.warning(
+                "🚫 [OUTBOUND BLOCKED] Mensaje de bot cancelado para %s porque la conversación está tomada por humano (%ss restantes)",
+                phone_number,
+                int(transferred_numbers[phone_number] - current_time),
+            )
+            return False
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
 
@@ -6155,13 +6164,17 @@ async def whatsapp(request: Request):
                 raise ValueError("No se encontró message_id en el payload para transferir")
 
             expiration_time = datetime.now().timestamp() + transfer_timeout
-            transferred_numbers[from_number] = expiration_time
 
             transfer_result = await transfer_to_group(
                 message_id=message_id,
                 group_id=None,
                 reason="Solicitud explícita del usuario para hablar con humano",
             )
+
+            if not isinstance(transfer_result, str) or "transferida exitosamente" not in transfer_result.lower():
+                raise RuntimeError(transfer_result or "La transferencia no confirmó éxito")
+
+            transferred_numbers[from_number] = expiration_time
 
             logger.critical(
                 "✅ [DIRECT TRANSFER] %s solicitado por usuario. Resultado: %s",
@@ -6233,6 +6246,23 @@ async def whatsapp(request: Request):
             return JSONResponse(content={"status": True, "message": "Respuesta duplicada bloqueada"})
 
         recent_outbound_response_keys.add(outbound_dedup_key)
+
+        current_takeover_time = datetime.now().timestamp()
+        if from_number in transferred_numbers and current_takeover_time < transferred_numbers[from_number]:
+            logger.warning(
+                "🚫 [WHATSAPP_MAIN BLOCKED] Respuesta de SAM cancelada para %s por takeover humano activo (%ss restantes). response=%s",
+                from_number,
+                int(transferred_numbers[from_number] - current_takeover_time),
+                response_content[:240],
+            )
+            log_operational_decision_trace(
+                from_number,
+                "outbound_blocked_human_takeover",
+                message_id=message_id,
+                response_preview=response_content[:300],
+                remaining_seconds=int(transferred_numbers[from_number] - current_takeover_time),
+            )
+            return JSONResponse(content={"status": True, "message": "Respuesta bloqueada por takeover humano activo"})
 
         log_chat2desk_outbound_attempt(
             "whatsapp_main",

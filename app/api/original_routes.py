@@ -2845,11 +2845,35 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
             "a menos que el usuario lo solicite explícitamente."
         )
 
-    return await transfer_to_group(
+    transfer_result = await transfer_to_group(
         message_id=message_id,
         group_id=group_id,
         reason=reason,
     )
+
+    if (
+        from_number and
+        isinstance(transfer_result, str) and
+        "transferida exitosamente" in transfer_result.lower()
+    ):
+        expiration_time = datetime.now().timestamp() + transfer_timeout
+        transferred_numbers[from_number] = expiration_time
+        logger.critical(
+            "🔐 [TOOL TRANSFER ACTIVE] from_number=%s message_id=%s expires_at=%s reason=%s",
+            from_number,
+            message_id,
+            datetime.fromtimestamp(expiration_time).isoformat(),
+            reason,
+        )
+        log_operational_decision_trace(
+            from_number,
+            "tool_transfer_activated",
+            message_id=message_id,
+            reason=reason,
+            expires_at=expiration_time,
+        )
+
+    return transfer_result
 
 
 transfer_to_group_guarded.__name__ = "transfer_to_group"
@@ -6719,6 +6743,22 @@ async def whatsapp(request: Request):
     last_response_time[from_number] = current_time
 
     try:
+        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
+            logger.warning(
+                "🚫 [WHATSAPP_MAIN FINAL BLOCK] Respuesta final de SAM cancelada para %s por takeover humano activo (%ss restantes). response=%s",
+                from_number,
+                int(transferred_numbers[from_number] - current_time),
+                response_content[:240],
+            )
+            log_operational_decision_trace(
+                from_number,
+                "final_outbound_blocked_human_takeover",
+                message_id=message_id,
+                response_preview=response_content[:300],
+                remaining_seconds=int(transferred_numbers[from_number] - current_time),
+            )
+            return JSONResponse(content={"status": True, "message": "Respuesta final bloqueada por takeover humano activo"})
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
         

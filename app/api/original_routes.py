@@ -107,6 +107,7 @@ from app.services.conversation_control import (
 from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
+    inactivity_snapshot_is_still_stale,
     is_emergency_related,
     should_activate_human_control,
 )
@@ -1475,6 +1476,13 @@ def get_active_takeover(phone_number: str, *, storage=None) -> dict | None:
         expires_at = control.get("expires_at")
         transferred_numbers[key] = float(expires_at) if expires_at is not None else None
         return control
+
+    if storage is not None:
+        # When persistent storage was consulted, conversation_control already
+        # handled DB failures with its own memory fallback. A missing control is
+        # therefore authoritative and must also clear this legacy cache.
+        transferred_numbers.pop(key, None)
+        return None
 
     if key in transferred_numbers:
         expiration = transferred_numbers[key]
@@ -4047,7 +4055,7 @@ async def websocket_endpoint(ws: WebSocket):
 # En vez de user_histories, usamos user_sessions para incluir la marca de última actividad.
 user_sessions = {}  # key: from_number, value: WhatsAppSession
 
-# Tiempo de inactividad (en segundos) antes de desconectar la sesión (5 minutos)
+# Tiempo de inactividad (en segundos) antes de desconectar la sesión (15 minutos)
 INACTIVITY_THRESHOLD = 15 * 60
 
 class WhatsAppSession:
@@ -4064,7 +4072,7 @@ class WhatsAppSession:
 async def check_inactivity():
     """
     Tarea en background que revisa cada minuto las sesiones activas.
-    Si alguna sesión ha estado inactiva más de 5 minutos, se envía un mensaje
+    Si alguna sesión ha estado inactiva más de 15 minutos, se envía un mensaje
     de alerta por Chat2Desk, elimina los mensajes de la base de datos y elimina la sesión.
     """
     while True:
@@ -4077,7 +4085,8 @@ async def check_inactivity():
                 logger.debug("Inactividad omitida para %s: takeover humano activo", number)
                 continue
 
-            elapsed = (now - session.last_active).total_seconds()
+            observed_last_active = session.last_active
+            elapsed = (now - observed_last_active).total_seconds()
             if elapsed > INACTIVITY_THRESHOLD:
                 try:
                     # 🆕 VERIFICAR SI HAY EVALUACIÓN PENDIENTE
@@ -4118,6 +4127,25 @@ async def check_inactivity():
                     if response.status_code == 200:
                         client_data = response.json()
                         if client_data.get("status") == "success" and client_data.get("data"):
+                            current_session = user_sessions.get(number)
+                            inactivity_still_valid = (
+                                current_session is session
+                                and inactivity_snapshot_is_still_stale(
+                                    observed_last_active=observed_last_active,
+                                    current_last_active=current_session.last_active,
+                                    now=datetime.now(pytz.timezone('America/Mexico_City')),
+                                    threshold_seconds=INACTIVITY_THRESHOLD,
+                                    human_control_active=bool(get_active_takeover(number, storage=db)),
+                                )
+                            )
+                            if not inactivity_still_valid:
+                                logger.info(
+                                    "🛑 [INACTIVITY CANCELLED] No se enviará cierre para %s: "
+                                    "hubo actividad nueva, takeover o cambio de sesión",
+                                    number,
+                                )
+                                continue
+
                             client_id = client_data["data"][0]["id"]
                             channel_id = 43906  # Canal fijo para WhatsApp
                             
@@ -4141,6 +4169,25 @@ async def check_inactivity():
                             if number in transferred_numbers:
                                 del transferred_numbers[number]
                                 logger.critical(f"🧹 [INACTIVITY] Eliminado {number} de transferred_numbers por inactividad")
+
+                    current_session = user_sessions.get(number)
+                    inactivity_still_valid = (
+                        current_session is session
+                        and inactivity_snapshot_is_still_stale(
+                            observed_last_active=observed_last_active,
+                            current_last_active=current_session.last_active,
+                            now=datetime.now(pytz.timezone('America/Mexico_City')),
+                            threshold_seconds=INACTIVITY_THRESHOLD,
+                            human_control_active=bool(get_active_takeover(number, storage=db)),
+                        )
+                    )
+                    if not inactivity_still_valid:
+                        logger.info(
+                            "🛑 [INACTIVITY CLEANUP CANCELLED] No se limpiará %s: "
+                            "hubo actividad nueva, takeover o cambio de sesión",
+                            number,
+                        )
+                        continue
                     
                     # Eliminar todos los mensajes de este número de la base de datos
                     conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
@@ -5220,6 +5267,13 @@ async def whatsapp(request: Request):
             
             release_takeover(from_number, storage=db)
             logger.debug(f"Removed {from_number} from human takeover control")
+
+            if from_number not in user_sessions:
+                user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+            else:
+                user_sessions[from_number].update_activity()
+            closed_by_inactivity.pop(from_number, None)
+            logger.info("⏱️ [INACTIVITY RESET] Temporizador reiniciado tras devolución a SAM para %s", from_number)
                 
             return_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time")) or datetime.now().timestamp()
             recently_returned_to_bot[from_number] = return_timestamp

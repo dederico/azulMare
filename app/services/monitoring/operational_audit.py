@@ -33,6 +33,11 @@ LOG_PATTERNS = {
     "transfer_api": ["[TRANSFER TRACE]", "[TRANSFER GUARD]"],
     "proactive_guard": ["[PROACTIVE HSM GUARD]"],
     "stale_return_filter": ["[RETURN STALE EVENT]", "[RETURN FILTER] decision=stale"],
+    "inactivity_guard": [
+        "[INACTIVITY RESET]",
+        "[INACTIVITY CANCELLED]",
+        "[INACTIVITY CLEANUP CANCELLED]",
+    ],
 }
 
 PHONE_PATTERN = re.compile(r"(?:from_number=|for |from )(?P<phone>52\d{10,13})")

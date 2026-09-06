@@ -1,8 +1,10 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
+    inactivity_snapshot_is_still_stale,
     should_activate_human_control,
 )
 
@@ -60,6 +62,45 @@ class OperatorOutboxClassificationTests(unittest.TestCase):
                 operator_id=228544,
                 is_bot_echo=False,
                 recently_returned_to_bot=True,
+            )
+        )
+
+
+class InactivityPolicyTests(unittest.TestCase):
+    def test_unchanged_stale_snapshot_can_close(self):
+        observed = datetime.now(timezone.utc) - timedelta(minutes=16)
+        self.assertTrue(
+            inactivity_snapshot_is_still_stale(
+                observed_last_active=observed,
+                current_last_active=observed,
+                now=datetime.now(timezone.utc),
+                threshold_seconds=15 * 60,
+                human_control_active=False,
+            )
+        )
+
+    def test_new_activity_cancels_pending_close(self):
+        observed = datetime.now(timezone.utc) - timedelta(minutes=16)
+        refreshed = datetime.now(timezone.utc)
+        self.assertFalse(
+            inactivity_snapshot_is_still_stale(
+                observed_last_active=observed,
+                current_last_active=refreshed,
+                now=refreshed,
+                threshold_seconds=15 * 60,
+                human_control_active=False,
+            )
+        )
+
+    def test_human_takeover_cancels_pending_close(self):
+        observed = datetime.now(timezone.utc) - timedelta(minutes=16)
+        self.assertFalse(
+            inactivity_snapshot_is_still_stale(
+                observed_last_active=observed,
+                current_last_active=observed,
+                now=datetime.now(timezone.utc),
+                threshold_seconds=15 * 60,
+                human_control_active=True,
             )
         )
 

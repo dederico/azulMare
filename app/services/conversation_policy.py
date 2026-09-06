@@ -37,6 +37,28 @@ def should_activate_human_control(
     )
 
 
+def inactivity_snapshot_is_still_stale(
+    *,
+    observed_last_active,
+    current_last_active,
+    now,
+    threshold_seconds: float,
+    human_control_active: bool,
+) -> bool:
+    """Confirm inactivity using the same activity snapshot seen before async work."""
+    if human_control_active:
+        return False
+    if observed_last_active is None or current_last_active is None or now is None:
+        return False
+    if current_last_active != observed_last_active:
+        return False
+
+    try:
+        return (now - current_last_active).total_seconds() > float(threshold_seconds)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def classify_emergency_answer(body: str | None) -> bool | None:
     """Classify natural Spanish answers to the bot's emergency question."""
     normalized = normalize_policy_text(body)

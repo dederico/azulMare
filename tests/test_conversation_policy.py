@@ -3,7 +3,7 @@ import unittest
 from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
-    resolve_bot_operator_ids,
+    should_activate_human_control,
 )
 
 
@@ -18,15 +18,50 @@ class EmergencyClassificationTests(unittest.TestCase):
         self.assertIs(classify_emergency_answer("Puede ocasionar un socavón"), True)
 
 
-class BotOperatorClassificationTests(unittest.TestCase):
-    def test_current_chat2desk_bot_operator_is_known(self):
-        self.assertIn(228544, resolve_bot_operator_ids())
+class OperatorOutboxClassificationTests(unittest.TestCase):
+    def test_human_operator_message_activates_control(self):
+        self.assertTrue(
+            should_activate_human_control(
+                message_type="to_client",
+                hook_type="outbox",
+                operator_id=228544,
+                is_bot_echo=False,
+                recently_returned_to_bot=False,
+            )
+        )
 
-    def test_runtime_operator_ids_extend_defaults(self):
-        operator_ids = resolve_bot_operator_ids("228600, 228601")
-        self.assertIn(228544, operator_ids)
-        self.assertIn(228600, operator_ids)
-        self.assertIn(228601, operator_ids)
+    def test_same_operator_on_bot_echo_does_not_activate_control(self):
+        self.assertFalse(
+            should_activate_human_control(
+                message_type="to_client",
+                hook_type="outbox",
+                operator_id=228544,
+                is_bot_echo=True,
+                recently_returned_to_bot=False,
+            )
+        )
+
+    def test_outbox_without_operator_does_not_activate_control(self):
+        self.assertFalse(
+            should_activate_human_control(
+                message_type="to_client",
+                hook_type="outbox",
+                operator_id=None,
+                is_bot_echo=False,
+                recently_returned_to_bot=False,
+            )
+        )
+
+    def test_return_to_bot_grace_suppresses_takeover(self):
+        self.assertFalse(
+            should_activate_human_control(
+                message_type="to_client",
+                hook_type="outbox",
+                operator_id=228544,
+                is_bot_echo=False,
+                recently_returned_to_bot=True,
+            )
+        )
 
 
 class TransferAuthorizationTests(unittest.TestCase):

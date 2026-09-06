@@ -108,7 +108,7 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     is_emergency_related,
-    resolve_bot_operator_ids,
+    should_activate_human_control,
 )
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
@@ -191,6 +191,74 @@ def persist_successful_delivery_marker(db, from_number: str, uid, message_id) ->
         source="whatsapp",
     )
     db.Insert(marker)
+
+
+def build_bot_outbound_marker_uid(provider_message_id) -> str:
+    return f"bot-outbound-{provider_message_id}"
+
+
+def has_bot_outbound_marker(db, provider_message_id) -> bool:
+    if provider_message_id in (None, ""):
+        return False
+
+    try:
+        marker = db.Search(
+            Message(
+                uid=build_bot_outbound_marker_uid(provider_message_id),
+                source="whatsapp",
+            ),
+            single=True,
+        )
+        return marker is not None
+    except Exception as error:
+        logger.error(
+            "Error consultando marker de salida del bot para message_id=%s: %s",
+            provider_message_id,
+            error,
+        )
+        return False
+
+
+def persist_bot_outbound_marker(db, from_number: str, response, context: str) -> str | None:
+    """Persist the provider message ID returned by a successful SAM API send."""
+    try:
+        if response is None or response.status_code != 200:
+            return None
+        response_data = response.json()
+        if response_data.get("status") != "success":
+            return None
+        response_payload = response_data.get("data") or {}
+        provider_message_id = response_payload.get("message_id") or response_payload.get("id")
+        if provider_message_id in (None, ""):
+            logger.warning("[BOT OUTBOUND MARKER] Chat2Desk no devolvió message_id en %s", context)
+            return None
+
+        marker_uid = build_bot_outbound_marker_uid(provider_message_id)
+        if has_bot_outbound_marker(db, provider_message_id):
+            return str(provider_message_id)
+
+        db.Insert(
+            Message(
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                senderName="System",
+                message=f"[SYSTEM] SAM outbound confirmed context={context} provider_message_id={provider_message_id}",
+                number=from_number,
+                uid=marker_uid,
+                direction="system",
+                mtype="text",
+                source="whatsapp",
+            )
+        )
+        logger.info(
+            "🤖 [BOT OUTBOUND MARKER] context=%s from_number=%s provider_message_id=%s",
+            context,
+            from_number,
+            provider_message_id,
+        )
+        return str(provider_message_id)
+    except Exception as error:
+        logger.error("No se pudo persistir marker de salida del bot en %s: %s", context, error)
+        return None
 
 
 def format_event_timestamp_for_log(timestamp: float | None) -> str:
@@ -960,6 +1028,12 @@ async def send_chat2desk_message_direct(client_id, channel_id, text, transport="
             )
             
         if response.status_code == 200:
+            persist_bot_outbound_marker(
+                LocalStorage(),
+                str(client_id),
+                response,
+                "send_chat2desk_message_direct",
+            )
             logger.debug(f"✅ Mensaje directo enviado: {normalized_text[:50]}...")
             return True
         else:
@@ -1012,6 +1086,12 @@ async def send_chat2desk_image_direct(client_id, channel_id, image_url, transpor
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":
+                persist_bot_outbound_marker(
+                    LocalStorage(),
+                    str(client_id),
+                    response,
+                    "send_chat2desk_image_direct",
+                )
                 logger.critical(f"📷 [SUCCESS] ✅ Imagen enviada con attachment_filename")
                 return True
         
@@ -1074,6 +1154,12 @@ async def send_image_base64_with_filename(client_id, channel_id, image_url, tran
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":
+                persist_bot_outbound_marker(
+                    LocalStorage(),
+                    str(client_id),
+                    response,
+                    "send_image_base64_with_filename",
+                )
                 logger.critical(f"📷 [SUCCESS] ✅ Base64 enviado con filename")
                 return True
         
@@ -1161,6 +1247,12 @@ async def download_and_upload_image(client_id, channel_id, image_url, transport=
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":
+                persist_bot_outbound_marker(
+                    LocalStorage(),
+                    str(client_id),
+                    response,
+                    "download_and_send_image",
+                )
                 logger.critical(f"📷 [SUCCESS] ✅ Imagen subida como base64")
                 return True
         
@@ -2386,13 +2478,6 @@ def is_simple_greeting(body: str) -> bool:
     return normalized in simple_greetings
 
 
-def is_non_bot_operator(operator_id, bot_operator_ids) -> bool:
-    try:
-        return bool(operator_id) and int(operator_id) not in bot_operator_ids
-    except (TypeError, ValueError):
-        return False
-
-
 def normalize_validation_block_message(message: str) -> str:
     if not message:
         return ""
@@ -3102,7 +3187,7 @@ def is_recent_bot_outbound_echo(phone_number: str | None, text: str | None) -> b
     return True
 
 
-def is_recent_persisted_bot_outbound_echo(db, phone_number: str | None, text: str | None, max_age_seconds: int = 120) -> bool:
+def is_recent_persisted_bot_outbound_echo(db, phone_number: str | None, text: str | None, max_age_seconds: int = 10 * 60) -> bool:
     normalized_text = re.sub(r"\s+", " ", (text or "").strip())
     if not phone_number or not normalized_text:
         return False
@@ -3122,7 +3207,7 @@ def is_recent_persisted_bot_outbound_echo(db, phone_number: str | None, text: st
             FROM messages
             WHERE number = %s
             ORDER BY id DESC
-            LIMIT 5
+            LIMIT 200
             """,
             [phone_number],
         )
@@ -3638,7 +3723,8 @@ async def notify_user_timeout(phone_number, folio, image_count):
     Versión simple sin muchos detalles.
     """
     try:
-        if get_active_takeover(phone_number, storage=LocalStorage()):
+        storage = LocalStorage()
+        if get_active_takeover(phone_number, storage=storage):
             logger.critical("🚫 [TIMEOUT NOTICE BLOCK] Notificación bloqueada durante takeover para %s", phone_number)
             return False
 
@@ -3670,8 +3756,12 @@ async def notify_user_timeout(phone_number, folio, image_count):
                 }
                 
                 async with httpx.AsyncClient() as client:
-                    await client.post("https://api.chat2desk.com.mx/v1/messages", 
-                                    json=message_data, headers=headers)
+                    send_response = await client.post(
+                        "https://api.chat2desk.com.mx/v1/messages",
+                        json=message_data,
+                        headers=headers,
+                    )
+                persist_bot_outbound_marker(storage, phone_number, send_response, "timeout_notice")
                     
                 logger.critical(f"📤 [MENSAJE ENVIADO] '{message}' enviado a {phone_number}")
                     
@@ -3681,7 +3771,8 @@ async def notify_user_timeout(phone_number, folio, image_count):
 async def notify_user_timeout_flexible(phone_number, folio, image_count):
     """Notifica con mensaje apropiado según si tiene imágenes o no"""
     try:
-        if get_active_takeover(phone_number, storage=LocalStorage()):
+        storage = LocalStorage()
+        if get_active_takeover(phone_number, storage=storage):
             logger.critical("🚫 [TIMEOUT NOTICE BLOCK] Notificación bloqueada durante takeover para %s", phone_number)
             return False
 
@@ -3718,8 +3809,12 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 }
                 
                 async with httpx.AsyncClient() as client:
-                    await client.post("https://api.chat2desk.com.mx/v1/messages", 
-                                    json=message_data, headers=headers)
+                    send_response = await client.post(
+                        "https://api.chat2desk.com.mx/v1/messages",
+                        json=message_data,
+                        headers=headers,
+                    )
+                persist_bot_outbound_marker(storage, phone_number, send_response, "timeout_notice_flexible")
                     
                 logger.critical(f"📤 [MENSAJE ENVIADO] '{message}' enviado a {phone_number}")
                     
@@ -3733,7 +3828,8 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
     Versión más detallada con información del contexto LLM.
     """
     try:
-        if get_active_takeover(phone_number, storage=LocalStorage()):
+        storage = LocalStorage()
+        if get_active_takeover(phone_number, storage=storage):
             logger.critical("🚫 [TIMEOUT NOTICE BLOCK] Notificación bloqueada durante takeover para %s", phone_number)
             return False
 
@@ -3771,8 +3867,12 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
                 }
                 
                 async with httpx.AsyncClient() as client:
-                    await client.post("https://api.chat2desk.com.mx/v1/messages", 
-                                    json=message_data, headers=headers)
+                    send_response = await client.post(
+                        "https://api.chat2desk.com.mx/v1/messages",
+                        json=message_data,
+                        headers=headers,
+                    )
+                persist_bot_outbound_marker(storage, phone_number, send_response, "timeout_notice_detailed")
                     
     except Exception as e:
         logger.error(f"Error en send_timeout_notification_with_real_data: {str(e)}")
@@ -4030,7 +4130,13 @@ async def check_inactivity():
                             }
                             
                             async with httpx.AsyncClient() as client:
-                                await client.post(chat2desk_url, json=message_data, headers=headers)
+                                send_response = await client.post(chat2desk_url, json=message_data, headers=headers)
+                            persist_bot_outbound_marker(
+                                db,
+                                number,
+                                send_response,
+                                "inactivity_disconnect",
+                            )
 
                             if number in transferred_numbers:
                                 del transferred_numbers[number]
@@ -4409,7 +4515,8 @@ async def remove_from_completed_reports(number, delay_seconds):
 async def send_chat2desk_message(phone_number, client_id, channel_id, text, transport="wa_direct"):
     """Send a message via Chat2Desk API. Supports both wa_direct (WhatsApp) and widget (web chat)."""
     try:
-        active_takeover = get_active_takeover(phone_number, storage=LocalStorage())
+        storage = LocalStorage()
+        active_takeover = get_active_takeover(phone_number, storage=storage)
         if active_takeover:
             logger.warning(
                 "🚫 [OUTBOUND BLOCKED] Mensaje de bot cancelado para %s porque la conversación está tomada por humano (%s)",
@@ -4438,6 +4545,7 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text, tran
             
         if response.status_code == 200:
             remember_recent_bot_outbound_message(phone_number, text)
+            persist_bot_outbound_marker(storage, phone_number, response, "send_chat2desk_message")
             logger.debug(f"Message sent successfully to Chat2Desk")
             return True
         else:
@@ -4969,14 +5077,6 @@ async def whatsapp(request: Request):
         max_retries=OPENAI_MAX_RETRIES,
     )
 
-    # Los IDs conocidos se complementan desde Config/env para evitar falsos takeovers
-    # cuando Chat2Desk asigna un operador distinto al token del bot.
-    bot_operator_ids = resolve_bot_operator_ids(
-        os.getenv("CHAT2DESK_BOT_OPERATOR_IDS")
-        or config.get("chat2desk_bot_operator_ids")
-    )
-    
-    
     try:
         payload = await request.json()  # Recibimos el payload como JSON
         print(f"Payload recibido: {payload}")
@@ -5177,16 +5277,24 @@ async def whatsapp(request: Request):
 
         # 🎯 TERCERO: Detección automática por operator_id
         is_bot_echo = (
-            is_recent_bot_outbound_echo(from_number, message_text)
+            has_bot_outbound_marker(db, message_id)
+            or is_recent_bot_outbound_echo(from_number, message_text)
             or is_recent_persisted_bot_outbound_echo(db, from_number, message_text)
         )
+        if is_bot_echo:
+            logger.info(
+                "🤖 [BOT OUTBOX VERIFIED] from_number=%s message_id=%s operator_id=%s",
+                from_number,
+                message_id,
+                payload.get('operator_id'),
+            )
 
-        human_operator_active = (
-            message_type == 'to_client' and
-            hook_type == 'outbox' and
-            is_non_bot_operator(payload.get('operator_id'), bot_operator_ids) and
-            not is_bot_echo and
-            from_number not in recently_returned_to_bot
+        human_operator_active = should_activate_human_control(
+            message_type=message_type,
+            hook_type=hook_type,
+            operator_id=payload.get('operator_id'),
+            is_bot_echo=is_bot_echo,
+            recently_returned_to_bot=from_number in recently_returned_to_bot,
         )
 
         if human_operator_active:
@@ -5218,7 +5326,7 @@ async def whatsapp(request: Request):
         elif (
             message_type == 'to_client' and
             hook_type == 'outbox' and
-            is_non_bot_operator(payload.get('operator_id'), bot_operator_ids) and
+            bool(payload.get('operator_id')) and
             from_number in recently_returned_to_bot
         ):
 
@@ -5794,6 +5902,12 @@ async def whatsapp(request: Request):
                                         message_id=message_id,
                                     )
                                     if direct_response.status_code == 200:
+                                        persist_bot_outbound_marker(
+                                            db,
+                                            from_number,
+                                            direct_response,
+                                            "nearest_office_direct",
+                                        )
                                         logger.debug(f"Información de oficina cercana enviada exitosamente a Chat2Desk")
                                         # No continuar con el procesamiento normal del LLM
                                         return JSONResponse(content={"status": True, "message": "Respuesta directa enviada por Chat2Desk"})
@@ -5878,6 +5992,12 @@ async def whatsapp(request: Request):
                             response,
                             from_number=from_number,
                             message_id=message_id,
+                        )
+                        persist_bot_outbound_marker(
+                            db,
+                            from_number,
+                            response,
+                            "post_folio_image_ignore",
                         )
                         return JSONResponse(content={"status": True, "message": "Imagen tardía ignorada tras folio"})
                     except Exception as e:
@@ -5974,6 +6094,7 @@ async def whatsapp(request: Request):
                         )
 
                         if response.status_code == 200:
+                            persist_bot_outbound_marker(db, from_number, response, "image_ack")
                             logger.debug(f"Respuesta de imagen enviada exitosamente a Chat2Desk")
                             return JSONResponse(content={"status": True, "message": "Respuesta de imagen enviada por Chat2Desk"})
                         else:
@@ -6451,6 +6572,7 @@ async def whatsapp(request: Request):
         )
 
         if response.status_code == 200:
+            persist_bot_outbound_marker(db, from_number, response, "explicit_transfer_response")
             persist_successful_delivery_marker(db, from_number, uid, message_id)
             logger.debug("Respuesta enviada exitosamente a Chat2Desk")
             return JSONResponse(
@@ -7032,6 +7154,7 @@ async def whatsapp(request: Request):
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":
+                persist_bot_outbound_marker(db, from_number, response, "whatsapp_main")
                 persist_successful_delivery_marker(db, from_number, uid, message_id)
                 logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
                 content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
@@ -7277,9 +7400,11 @@ async def report_status_update(request: Request):
                 content={"error": "Error al enviar mensaje en Chat2Desk"}, 
                 status_code=500
             )
+
+        db = LocalStorage()
+        persist_bot_outbound_marker(db, phone_number, response, "report_status_update")
             
         # Almacenar el mensaje en la base de datos local
-        db = LocalStorage()
         message = Message(
             time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             senderName="Sistema",

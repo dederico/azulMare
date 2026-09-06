@@ -5,7 +5,6 @@ import unicodedata
 EXPLICIT_HANDOFF = "explicit_user_request"
 VERIFIED_NO_CONTEXT = "verified_no_context"
 TOOL_FAILURE = "tool_failure"
-DEFAULT_BOT_OPERATOR_IDS = frozenset({228522, 228524, 228544})
 
 
 def normalize_policy_text(value: str | None) -> str:
@@ -15,23 +14,27 @@ def normalize_policy_text(value: str | None) -> str:
     return " ".join(text.split())
 
 
-def resolve_bot_operator_ids(configured_value=None) -> set[int]:
-    """Return known Chat2Desk bot IDs plus any IDs configured at runtime."""
-    operator_ids = set(DEFAULT_BOT_OPERATOR_IDS)
-    if configured_value is None:
-        return operator_ids
+def should_activate_human_control(
+    *,
+    message_type: str | None,
+    hook_type: str | None,
+    operator_id,
+    is_bot_echo: bool,
+    recently_returned_to_bot: bool,
+) -> bool:
+    """Treat an operator outbox event as human only after excluding known bot echoes."""
+    try:
+        has_operator = bool(operator_id) and int(operator_id) > 0
+    except (TypeError, ValueError):
+        has_operator = False
 
-    if isinstance(configured_value, (list, tuple, set, frozenset)):
-        candidates = configured_value
-    else:
-        candidates = re.findall(r"\d+", str(configured_value))
-
-    for candidate in candidates:
-        try:
-            operator_ids.add(int(candidate))
-        except (TypeError, ValueError):
-            continue
-    return operator_ids
+    return (
+        message_type == "to_client"
+        and hook_type == "outbox"
+        and has_operator
+        and not is_bot_echo
+        and not recently_returned_to_bot
+    )
 
 
 def classify_emergency_answer(body: str | None) -> bool | None:

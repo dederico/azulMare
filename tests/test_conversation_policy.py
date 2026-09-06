@@ -50,6 +50,14 @@ class TransferAuthorizationTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertEqual(decision, "verified_no_context")
 
+    def test_tool_failure_keeps_its_reason_code(self):
+        allowed, decision = self.authorize(
+            reason_code="tool_failure",
+            reason="get_ubicaciones falló con timeout",
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(decision, "tool_failure")
+
     def test_reason_code_without_explanation_is_blocked(self):
         allowed, decision = self.authorize(reason_code="verified_no_context")
         self.assertFalse(allowed)

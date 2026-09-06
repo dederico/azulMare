@@ -82,7 +82,7 @@ def ensure_conversation_control_storage(storage) -> bool:
 def activate_human_control(
     phone_number: str,
     *,
-    expires_at: float,
+    expires_at: float | None,
     source: str,
     transfer_message_id: str | int | None = None,
     storage=None,
@@ -91,7 +91,7 @@ def activate_human_control(
     control = {
         "phone_number": key,
         "mode": HUMAN_MODE,
-        "expires_at": float(expires_at),
+        "expires_at": float(expires_at) if expires_at is not None else None,
         "source": str(source or "unknown"),
         "transfer_message_id": str(transfer_message_id or ""),
         "updated_at": time.time(),
@@ -185,7 +185,7 @@ def get_active_human_control(phone_number: str, *, storage=None) -> dict[str, An
                 persisted = {
                     "phone_number": row[0],
                     "mode": row[1],
-                    "expires_at": float(row[2] or 0),
+                    "expires_at": float(row[2]) if row[2] is not None else None,
                     "source": row[3],
                     "transfer_message_id": row[4],
                     "updated_at": float(row[5] or 0),
@@ -205,7 +205,8 @@ def get_active_human_control(phone_number: str, *, storage=None) -> dict[str, An
     if not candidate or candidate.get("mode") != HUMAN_MODE:
         return None
 
-    if float(candidate.get("expires_at") or 0) <= now:
+    expires_at = candidate.get("expires_at")
+    if expires_at is not None and float(expires_at) <= now:
         release_human_control(key, storage=storage)
         return None
 

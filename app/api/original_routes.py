@@ -1328,9 +1328,8 @@ report_sessions = {}  # key: phone_number, value: {images: [], image_description
 reports_lock = threading.Lock()
 report_sessions_lock = RLock()  # More robust than a simple Lock
 reports_in_progress = {}
-transferred_numbers = {}  # key: phone_number, value: expiration_timestamp
+transferred_numbers = {}  # key: phone_number, value: expiration_timestamp o None si requiere devolución explícita
 transfer_guard_context = {}  # key: message_id, value: contextual metadata for guarded transfers
-transfer_timeout = 15 * 60  # 15 minutes in seconds
 last_response_time = {}  # Para rastrear cuándo se envió la última respuesta a cada número
 completed_reports = {}  # key: phone_number, value: {timestamp: datetime, folio: str}
 finalized_report_numbers = set()
@@ -1352,13 +1351,14 @@ sent_evaluation_messages = {}
 def activate_takeover(
     phone_number: str,
     *,
-    expires_at: float,
+    expires_at: float | None = None,
     source: str,
     message_id=None,
     storage=None,
-) -> float:
+) -> float | None:
     key = normalize_phone_key(phone_number)
-    transferred_numbers[key] = float(expires_at)
+    normalized_expiration = float(expires_at) if expires_at is not None else None
+    transferred_numbers[key] = normalized_expiration
     activate_human_control(
         key,
         expires_at=expires_at,
@@ -1366,7 +1366,7 @@ def activate_takeover(
         transfer_message_id=message_id,
         storage=storage,
     )
-    return float(expires_at)
+    return normalized_expiration
 
 
 def release_takeover(phone_number: str, *, storage=None) -> None:
@@ -1379,20 +1379,29 @@ def get_active_takeover(phone_number: str, *, storage=None) -> dict | None:
     key = normalize_phone_key(phone_number)
     control = get_active_human_control(key, storage=storage)
     if control:
-        transferred_numbers[key] = float(control["expires_at"])
+        expires_at = control.get("expires_at")
+        transferred_numbers[key] = float(expires_at) if expires_at is not None else None
         return control
 
-    expiration = transferred_numbers.get(key)
-    if expiration and float(expiration) > datetime.now().timestamp():
-        return {
-            "phone_number": key,
-            "mode": "human",
-            "expires_at": float(expiration),
-            "source": "legacy_memory",
-        }
+    if key in transferred_numbers:
+        expiration = transferred_numbers[key]
+        if expiration is None or float(expiration) > datetime.now().timestamp():
+            return {
+                "phone_number": key,
+                "mode": "human",
+                "expires_at": expiration,
+                "source": "legacy_memory",
+            }
 
     transferred_numbers.pop(key, None)
     return None
+
+
+def takeover_remaining_label(control: dict) -> str:
+    expires_at = control.get("expires_at")
+    if expires_at is None:
+        return "hasta devolución explícita"
+    return f"{max(0, int(float(expires_at) - datetime.now().timestamp()))}s restantes"
 
 # ===============================================================
 # OPTIMIZACIÓN: Crear índices una sola vez al iniciar el servidor
@@ -2941,10 +2950,8 @@ async def transfer_to_group_guarded(
         isinstance(transfer_result, str) and
         "transferida exitosamente" in transfer_result.lower()
     ):
-        expiration_time = datetime.now().timestamp() + transfer_timeout
         activate_takeover(
             from_number,
-            expires_at=expiration_time,
             source=f"tool:{authorization}",
             message_id=message_id,
             storage=storage,
@@ -2953,7 +2960,7 @@ async def transfer_to_group_guarded(
             "🔐 [TOOL TRANSFER ACTIVE] from_number=%s message_id=%s expires_at=%s reason=%s",
             from_number,
             message_id,
-            datetime.fromtimestamp(expiration_time).isoformat(),
+            "until_explicit_release",
             reason,
         )
         log_operational_decision_trace(
@@ -2961,7 +2968,7 @@ async def transfer_to_group_guarded(
             "tool_transfer_activated",
             message_id=message_id,
             reason=reason,
-            expires_at=expiration_time,
+            expires_at=None,
         )
 
     return transfer_result
@@ -4401,13 +4408,12 @@ async def remove_from_completed_reports(number, delay_seconds):
 async def send_chat2desk_message(phone_number, client_id, channel_id, text, transport="wa_direct"):
     """Send a message via Chat2Desk API. Supports both wa_direct (WhatsApp) and widget (web chat)."""
     try:
-        current_time = datetime.now().timestamp()
         active_takeover = get_active_takeover(phone_number, storage=LocalStorage())
         if active_takeover:
             logger.warning(
-                "🚫 [OUTBOUND BLOCKED] Mensaje de bot cancelado para %s porque la conversación está tomada por humano (%ss restantes)",
+                "🚫 [OUTBOUND BLOCKED] Mensaje de bot cancelado para %s porque la conversación está tomada por humano (%s)",
                 phone_number,
-                int(float(active_takeover["expires_at"]) - current_time),
+                takeover_remaining_label(active_takeover),
             )
             return False
 
@@ -5079,10 +5085,8 @@ async def whatsapp(request: Request):
         if message_type == 'to_client' and is_human_takeover_message(message_text):
             logger.info(f"Human agent takeover detected for {from_number}")
             
-            expiration_time = datetime.now().timestamp() + (30 * 60)
             activate_takeover(
                 from_number,
-                expires_at=expiration_time,
                 source="chat2desk_takeover_message",
                 message_id=message_id,
                 storage=db,
@@ -5092,7 +5096,7 @@ async def whatsapp(request: Request):
                 system_notification = Message(
                     time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     senderName="System",
-                    message=f"[SYSTEM] Conversation transferred to human agent until {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
+                    message="[SYSTEM] Conversation transferred to human agent until explicit return to SAM",
                     number=from_number,
                     uid=f"takeover-{datetime.now().timestamp()}",
                     direction="system",
@@ -5181,10 +5185,8 @@ async def whatsapp(request: Request):
         )
 
         if human_operator_active:
-            expiration_time = datetime.now().timestamp() + (30 * 60)
             activate_takeover(
                 from_number,
-                expires_at=expiration_time,
                 source=f"operator_outbox:{payload.get('operator_id')}",
                 message_id=message_id,
                 storage=db,
@@ -5198,7 +5200,7 @@ async def whatsapp(request: Request):
                 system_notification = Message(
                     time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     senderName="System",
-                    message=f"[SYSTEM] Detección automática: Conversación transferida a agente humano hasta {datetime.fromtimestamp(expiration_time).strftime('%H:%M:%S')}",
+                    message="[SYSTEM] Detección automática: Conversación transferida a agente humano hasta devolución explícita a SAM",
                     number=from_number,
                     uid=f"auto-takeover-{datetime.now().timestamp()}",
                     direction="system",
@@ -5222,9 +5224,9 @@ async def whatsapp(request: Request):
         active_takeover = get_active_takeover(from_number, storage=db)
         if active_takeover:
             logger.info(
-                "Ignoring message from %s as it's being handled by a human agent (expires in %s seconds)",
+                "Ignoring message from %s because it is being handled by a human agent (%s)",
                 from_number,
-                int(float(active_takeover["expires_at"]) - current_time),
+                takeover_remaining_label(active_takeover),
             )
             return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
 
@@ -6326,8 +6328,6 @@ async def whatsapp(request: Request):
             if not message_id:
                 raise ValueError("No se encontró message_id en el payload para transferir")
 
-            expiration_time = datetime.now().timestamp() + transfer_timeout
-
             transfer_result = await transfer_to_group(
                 message_id=message_id,
                 group_id=None,
@@ -6339,7 +6339,6 @@ async def whatsapp(request: Request):
 
             activate_takeover(
                 from_number,
-                expires_at=expiration_time,
                 source="explicit_user_request",
                 message_id=message_id,
                 storage=db,
@@ -6415,13 +6414,12 @@ async def whatsapp(request: Request):
 
         recent_outbound_response_keys.add(outbound_dedup_key)
 
-        current_takeover_time = datetime.now().timestamp()
         active_takeover = get_active_takeover(from_number, storage=db)
         if active_takeover:
             logger.warning(
-                "🚫 [WHATSAPP_MAIN BLOCKED] Respuesta de SAM cancelada para %s por takeover humano activo (%ss restantes). response=%s",
+                "🚫 [WHATSAPP_MAIN BLOCKED] Respuesta de SAM cancelada para %s por takeover humano activo (%s). response=%s",
                 from_number,
-                int(float(active_takeover["expires_at"]) - current_takeover_time),
+                takeover_remaining_label(active_takeover),
                 response_content[:240],
             )
             log_operational_decision_trace(
@@ -6429,7 +6427,7 @@ async def whatsapp(request: Request):
                 "outbound_blocked_human_takeover",
                 message_id=message_id,
                 response_preview=response_content[:300],
-                remaining_seconds=int(float(active_takeover["expires_at"]) - current_takeover_time),
+                remaining=takeover_remaining_label(active_takeover),
             )
             return JSONResponse(content={"status": True, "message": "Respuesta bloqueada por takeover humano activo"})
 
@@ -6517,7 +6515,8 @@ async def whatsapp(request: Request):
             logger.critical(f"🎯 [LLM CONTEXT] - Fecha: {date_string} {hour}")
 
     # Después crear el system_prompt como siempre:
-    system_prompt = system_message.format(
+    prompt_template = config.get("prompt") or system_message
+    system_prompt = prompt_template.format(
         customer_name=sender_name,
         call_sid=uid,
         date2=date_string,
@@ -6535,7 +6534,7 @@ async def whatsapp(request: Request):
 
     try:
         # Crear el prompt con el historial de mensajes
-        system_prompt = system_message.format(customer_name=sender_name,call_sid=uid,date2=date_string,
+        system_prompt = prompt_template.format(customer_name=sender_name,call_sid=uid,date2=date_string,
             yoga_number=user_message.number,
             now=hour,
             folio="Pendiente de generar",
@@ -6913,9 +6912,9 @@ async def whatsapp(request: Request):
         active_takeover = get_active_takeover(from_number, storage=db)
         if active_takeover:
             logger.warning(
-                "🚫 [WHATSAPP_MAIN FINAL BLOCK] Respuesta final de SAM cancelada para %s por takeover humano activo (%ss restantes). response=%s",
+                "🚫 [WHATSAPP_MAIN FINAL BLOCK] Respuesta final de SAM cancelada para %s por takeover humano activo (%s). response=%s",
                 from_number,
-                int(float(active_takeover["expires_at"]) - current_time),
+                takeover_remaining_label(active_takeover),
                 response_content[:240],
             )
             log_operational_decision_trace(
@@ -6923,7 +6922,7 @@ async def whatsapp(request: Request):
                 "final_outbound_blocked_human_takeover",
                 message_id=message_id,
                 response_preview=response_content[:300],
-                remaining_seconds=int(float(active_takeover["expires_at"]) - current_time),
+                remaining=takeover_remaining_label(active_takeover),
             )
             return JSONResponse(content={"status": True, "message": "Respuesta final bloqueada por takeover humano activo"})
 

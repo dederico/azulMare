@@ -120,6 +120,7 @@ def authorize_transfer(
     if explicit_handoff:
         return True, EXPLICIT_HANDOFF
 
+    normalized_code = normalize_policy_text(reason_code).replace(" ", "_")
     if not reason_claims_missing_context(reason, reason_code):
         return False, "missing_authorized_reason"
 
@@ -132,4 +133,6 @@ def authorize_transfer(
     if emergency_related:
         return False, "known_emergency_flow"
 
+    if normalized_code == TOOL_FAILURE:
+        return True, TOOL_FAILURE
     return True, VERIFIED_NO_CONTEXT

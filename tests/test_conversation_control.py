@@ -39,6 +39,20 @@ class ConversationControlTests(unittest.TestCase):
 
         self.assertIsNone(get_active_human_control(self.phone))
 
+    def test_takeover_without_expiration_requires_explicit_release(self):
+        activate_human_control(
+            self.phone,
+            expires_at=None,
+            source="test",
+        )
+
+        control = get_active_human_control(self.phone)
+        self.assertIsNotNone(control)
+        self.assertIsNone(control["expires_at"])
+
+        release_human_control(self.phone)
+        self.assertIsNone(get_active_human_control(self.phone))
+
 
 if __name__ == "__main__":
     unittest.main()

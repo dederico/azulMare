@@ -166,6 +166,7 @@ def get_active_human_control(phone_number: str, *, storage=None) -> dict[str, An
     key = normalize_phone_key(phone_number)
     now = time.time()
     persisted = None
+    persistent_storage_checked = False
 
     if storage is not None and ensure_conversation_control_storage(storage):
         conn = None
@@ -181,6 +182,7 @@ def get_active_human_control(phone_number: str, *, storage=None) -> dict[str, An
                     (key,),
                 )
                 row = cursor.fetchone()
+            persistent_storage_checked = True
             if row:
                 persisted = {
                     "phone_number": row[0],
@@ -195,6 +197,13 @@ def get_active_human_control(phone_number: str, *, storage=None) -> dict[str, An
         finally:
             if conn is not None:
                 conn.close()
+
+    if persistent_storage_checked and persisted is None:
+        # PostgreSQL is authoritative when it was queried successfully. This also
+        # propagates releases made by another replica or by an audited DB cleanup.
+        with _memory_lock:
+            _memory_controls.pop(key, None)
+        return None
 
     candidate = persisted
     if candidate is None:

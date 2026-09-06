@@ -1,5 +1,8 @@
 import time
 import unittest
+from unittest.mock import patch
+
+import app.services.conversation_control as conversation_control
 
 from app.services.conversation_control import (
     activate_human_control,
@@ -51,6 +54,41 @@ class ConversationControlTests(unittest.TestCase):
         self.assertIsNone(control["expires_at"])
 
         release_human_control(self.phone)
+        self.assertIsNone(get_active_human_control(self.phone))
+
+    def test_persistent_absence_clears_stale_replica_memory(self):
+        class EmptyCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def execute(self, query, params):
+                return None
+
+            def fetchone(self):
+                return None
+
+        class EmptyConnection:
+            def cursor(self):
+                return EmptyCursor()
+
+            def close(self):
+                return None
+
+        activate_human_control(
+            self.phone,
+            expires_at=None,
+            source="stale-replica-test",
+        )
+
+        with (
+            patch.object(conversation_control, "ensure_conversation_control_storage", return_value=True),
+            patch.object(conversation_control, "_connect", return_value=EmptyConnection()),
+        ):
+            self.assertIsNone(get_active_human_control(self.phone, storage=object()))
+
         self.assertIsNone(get_active_human_control(self.phone))
 
 

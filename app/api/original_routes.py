@@ -97,6 +97,18 @@ from app.services.monitoring.operational_audit import (
     list_operational_audit_reports,
     generate_operational_audit_snapshot,
 )
+from app.services.conversation_control import (
+    activate_human_control,
+    ensure_conversation_control_storage,
+    get_active_human_control,
+    normalize_phone_key,
+    release_human_control,
+)
+from app.services.conversation_policy import (
+    authorize_transfer,
+    classify_emergency_answer,
+    is_emergency_related,
+)
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 evaluated_reports = {}
@@ -1289,6 +1301,13 @@ AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION")
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
+DEPLOYMENT_SHA = (
+    os.environ.get("GIT_SHA")
+    or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+    or os.environ.get("RENDER_GIT_COMMIT")
+    or os.environ.get("SOURCE_VERSION")
+    or "unknown"
+)
 
 OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 OPENAI_MAX_RETRIES = 3
@@ -1328,6 +1347,52 @@ closed_by_inactivity = {}  # key: phone_number, value: expiration_timestamp
 INACTIVITY_COOLDOWN = 15 * 60  # 15 minutos en segundos - periodo para NO reactivar después de cierre
 hsm_sent_reports = {}
 sent_evaluation_messages = {} 
+
+
+def activate_takeover(
+    phone_number: str,
+    *,
+    expires_at: float,
+    source: str,
+    message_id=None,
+    storage=None,
+) -> float:
+    key = normalize_phone_key(phone_number)
+    transferred_numbers[key] = float(expires_at)
+    activate_human_control(
+        key,
+        expires_at=expires_at,
+        source=source,
+        transfer_message_id=message_id,
+        storage=storage,
+    )
+    return float(expires_at)
+
+
+def release_takeover(phone_number: str, *, storage=None) -> None:
+    key = normalize_phone_key(phone_number)
+    transferred_numbers.pop(key, None)
+    release_human_control(key, storage=storage)
+
+
+def get_active_takeover(phone_number: str, *, storage=None) -> dict | None:
+    key = normalize_phone_key(phone_number)
+    control = get_active_human_control(key, storage=storage)
+    if control:
+        transferred_numbers[key] = float(control["expires_at"])
+        return control
+
+    expiration = transferred_numbers.get(key)
+    if expiration and float(expiration) > datetime.now().timestamp():
+        return {
+            "phone_number": key,
+            "mode": "human",
+            "expires_at": float(expiration),
+            "source": "legacy_memory",
+        }
+
+    transferred_numbers.pop(key, None)
+    return None
 
 # ===============================================================
 # OPTIMIZACIÓN: Crear índices una sola vez al iniciar el servidor
@@ -2153,35 +2218,7 @@ def assistant_asked_if_emergency(message: str) -> bool:
 
 
 def classify_emergency_response(body: str) -> bool | None:
-    if not body:
-        return None
-
-    normalized = body.strip().lower()
-    if not normalized:
-        return None
-
-    yes_patterns = {
-        "si",
-        "sí",
-        "si es",
-        "sí es",
-        "claro",
-        "asi es",
-        "así es",
-        "correcto",
-    }
-    no_patterns = {
-        "no",
-        "no es",
-        "negativo",
-    }
-
-    if normalized in yes_patterns:
-        return True
-    if normalized in no_patterns:
-        return False
-
-    return None
+    return classify_emergency_answer(body)
 
 
 def classify_image_decision_response(body: str) -> str | None:
@@ -2448,6 +2485,7 @@ def detect_report_intent(body, response_content):
     report_keywords = [
         "reporte", "reportar", "levantar reporte", "quiero reportar",
         "problema", "bache", "luminaria", "basura", "drenaje",
+        "fuga", "socavón", "socavon", "folio", "seguimiento",
         "hacer reporte", "necesito reportar", "tengo un problema"
     ]
     
@@ -2568,6 +2606,17 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
     Versión protegida contra duplicados de save_client_selection2
     """
     
+    active_takeover = get_active_takeover(yoga_number, storage=LocalStorage())
+    if active_takeover:
+        logger.critical(
+            "🚫 [REPORT PROTECTED BLOCK] Reporte bloqueado para %s por takeover humano activo",
+            yoga_number,
+        )
+        return (
+            "VALIDATION_BLOCK: La conversación está siendo atendida por un agente humano. "
+            "No se puede crear un folio durante el takeover."
+        )
+
     # Preparar datos para verificación
     selection_data = {
         'selection1': selection1 or "984",
@@ -2660,6 +2709,20 @@ async def save_client_selection2_guarded(
     images_list (array[string], optional): Lista de URLs de imágenes.
     descriptions_list (array[string], optional): Lista de descripciones correspondientes a las imágenes.
     """
+    storage = LocalStorage()
+    active_takeover = get_active_takeover(yoga_number, storage=storage)
+    if active_takeover:
+        logger.critical(
+            "🚫 [REPORT BLOCKED HUMAN] No se creará folio para %s durante takeover humano. source=%s expires_at=%s",
+            yoga_number,
+            active_takeover.get("source"),
+            active_takeover.get("expires_at"),
+        )
+        return (
+            "VALIDATION_BLOCK: La conversación está siendo atendida por un agente humano. "
+            "No debes crear ni modificar reportes mientras el takeover esté activo."
+        )
+
     emergency_codes = {"891", "892", "893", "894", "895", "896", "964"}
     normalized_type = str(selection1 or "").strip()
     normalized_name = str(selection2 or "").strip().lower()
@@ -2776,13 +2839,19 @@ async def save_client_selection2_guarded(
 
 save_client_selection2_guarded.__name__ = "save_client_selection2"
 
-async def transfer_to_group_guarded(message_id: int, group_id: int | None = None, reason: str | None = None):
+async def transfer_to_group_guarded(
+    message_id: int,
+    group_id: int | None = None,
+    reason: str | None = None,
+    reason_code: str | None = None,
+):
     """
     Transfiere una conversación usando el message_id del payload.
 
     message_id (number): ID del mensaje del payload. OBLIGATORIO.
     group_id (number, optional): Se ignora cualquier valor solicitado y se usa el grupo configurado del bot.
     reason (string, optional): Razón de la transferencia para logs.
+    reason_code (string, optional): Usa 'verified_no_context' únicamente cuando no exista información suficiente para responder después de intentar resolver la consulta. Usa 'tool_failure' cuando una herramienta necesaria haya fallado. No transfieras emergencias ni reportes por falta de contexto.
 
     Returns:
         string: Mensaje de confirmación o error.
@@ -2793,6 +2862,7 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
     report_state = context.get("report_state") or {}
     has_report_session = bool(report_state.get("has_report_session"))
     from_number = context.get("from_number")
+    storage = context.get("storage") or LocalStorage()
     body_preview = (context.get("body") or "")[:180]
     reason_lower = (reason or "").strip().lower()
     greeting_only = is_simple_greeting(context.get("body") or "")
@@ -2809,11 +2879,29 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
         )
     )
 
+    active_takeover = get_active_takeover(from_number, storage=storage) if from_number else None
+    transfer_allowed, authorization = authorize_transfer(
+        explicit_handoff=explicit_handoff,
+        reason=reason,
+        reason_code=reason_code,
+        report_intent=report_intent,
+        has_report_session=has_report_session,
+        greeting_only=greeting_only,
+        emergency_related=is_emergency_related(context.get("body") or ""),
+        already_transferred=bool(active_takeover),
+    )
+    if not from_number:
+        transfer_allowed = False
+        authorization = "missing_request_context"
+
     logger.critical(
-        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s explicit_handoff=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s from_number=%s body=%s",
+        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s reason_code=%s authorization=%s allowed=%s explicit_handoff=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s from_number=%s body=%s",
         message_id,
         group_id,
         reason,
+        reason_code,
+        authorization,
+        transfer_allowed,
         explicit_handoff,
         report_intent,
         has_report_session,
@@ -2823,17 +2911,14 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
         body_preview,
     )
 
-    if not explicit_handoff and (
-        report_intent or
-        has_report_session or
-        greeting_only or
-        stale_explicit_handoff_reason
-    ):
+    if not transfer_allowed:
         logger.critical(
-            "⛔ [TRANSFER BLOCKED] message_id=%s from_number=%s reason=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s",
+            "⛔ [TRANSFER BLOCKED] message_id=%s from_number=%s reason=%s reason_code=%s authorization=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s",
             message_id,
             from_number,
             reason,
+            reason_code,
+            authorization,
             report_intent,
             has_report_session,
             greeting_only,
@@ -2841,8 +2926,8 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
         )
         return (
             "Error: transferencia bloqueada por guardia local. "
-            "Continua atendiendo el reporte con el flujo normal y no transfieras a humano "
-            "a menos que el usuario lo solicite explícitamente."
+            "Sólo puedes transferir si el usuario solicita atención humana explícitamente "
+            "o si verificaste que no existe contexto suficiente para resolver la consulta."
         )
 
     transfer_result = await transfer_to_group(
@@ -2857,7 +2942,13 @@ async def transfer_to_group_guarded(message_id: int, group_id: int | None = None
         "transferida exitosamente" in transfer_result.lower()
     ):
         expiration_time = datetime.now().timestamp() + transfer_timeout
-        transferred_numbers[from_number] = expiration_time
+        activate_takeover(
+            from_number,
+            expires_at=expiration_time,
+            source=f"tool:{authorization}",
+            message_id=message_id,
+            storage=storage,
+        )
         logger.critical(
             "🔐 [TOOL TRANSFER ACTIVE] from_number=%s message_id=%s expires_at=%s reason=%s",
             from_number,
@@ -3131,6 +3222,13 @@ async def save_client_selection_with_deduplication(yoga_number, selection1, sele
     Returns:
         str: Report folio number
     """
+    if get_active_takeover(yoga_number, storage=LocalStorage()):
+        logger.critical(
+            "🚫 [REPORT WRAPPER BLOCK] No se creará folio para %s durante takeover humano",
+            yoga_number,
+        )
+        return "VALIDATION_BLOCK: La conversación está siendo atendida por un agente humano."
+
     # Verificar si ya existe un reporte reciente para este número
     recent_report = has_recent_report(yoga_number)
     if recent_report:
@@ -3318,6 +3416,7 @@ async def check_report_timeouts():
         try:
             await asyncio.sleep(60)  # Revisar cada minuto
             now = datetime.now(pytz.timezone('America/Mexico_City'))
+            timeout_storage = LocalStorage()
 
             logger.critical(f"🔍 [TIMEOUT] Revisando sesiones activas: {len(report_sessions)}")
 
@@ -3381,6 +3480,14 @@ async def check_report_timeouts():
             # Procesar cada número que cumplió timeout
             for number in numbers_to_process:
                 try:
+                    active_takeover = get_active_takeover(number, storage=timeout_storage)
+                    if active_takeover:
+                        logger.critical(
+                            "🚫 [TIMEOUT HUMAN BLOCK] No se generará folio automático para %s durante takeover humano",
+                            number,
+                        )
+                        continue
+
                     logger.critical(f"⏰ [EJECUTANDO] Creando reporte automático para {number}")
 
                     # 🚫 VERIFICAR DUPLICADOS PRIMERO
@@ -3523,6 +3630,10 @@ async def notify_user_timeout(phone_number, folio, image_count):
     Versión simple sin muchos detalles.
     """
     try:
+        if get_active_takeover(phone_number, storage=LocalStorage()):
+            logger.critical("🚫 [TIMEOUT NOTICE BLOCK] Notificación bloqueada durante takeover para %s", phone_number)
+            return False
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         
         # Buscar cliente
@@ -3562,6 +3673,10 @@ async def notify_user_timeout(phone_number, folio, image_count):
 async def notify_user_timeout_flexible(phone_number, folio, image_count):
     """Notifica con mensaje apropiado según si tiene imágenes o no"""
     try:
+        if get_active_takeover(phone_number, storage=LocalStorage()):
+            logger.critical("🚫 [TIMEOUT NOTICE BLOCK] Notificación bloqueada durante takeover para %s", phone_number)
+            return False
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         
         search_url = "https://api.chat2desk.com.mx/v1/clients"
@@ -3610,6 +3725,10 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
     Versión más detallada con información del contexto LLM.
     """
     try:
+        if get_active_takeover(phone_number, storage=LocalStorage()):
+            logger.critical("🚫 [TIMEOUT NOTICE BLOCK] Notificación bloqueada durante takeover para %s", phone_number)
+            return False
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         
         # Buscar cliente
@@ -3846,6 +3965,10 @@ async def check_inactivity():
         db = LocalStorage()
         
         for number, session in list(user_sessions.items()):
+            if get_active_takeover(number, storage=db):
+                logger.debug("Inactividad omitida para %s: takeover humano activo", number)
+                continue
+
             elapsed = (now - session.last_active).total_seconds()
             if elapsed > INACTIVITY_THRESHOLD:
                 try:
@@ -4279,11 +4402,12 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text, tran
     """Send a message via Chat2Desk API. Supports both wa_direct (WhatsApp) and widget (web chat)."""
     try:
         current_time = datetime.now().timestamp()
-        if phone_number in transferred_numbers and current_time < transferred_numbers[phone_number]:
+        active_takeover = get_active_takeover(phone_number, storage=LocalStorage())
+        if active_takeover:
             logger.warning(
                 "🚫 [OUTBOUND BLOCKED] Mensaje de bot cancelado para %s porque la conversación está tomada por humano (%ss restantes)",
                 phone_number,
-                int(transferred_numbers[phone_number] - current_time),
+                int(float(active_takeover["expires_at"]) - current_time),
             )
             return False
 
@@ -4392,6 +4516,17 @@ async def process_and_save_report(from_number, location, images=None, descriptio
         images (list): List of image URLs
         descriptions (list): List of image descriptions
     """
+    active_takeover = get_active_takeover(from_number, storage=LocalStorage())
+    if active_takeover:
+        logger.critical(
+            "🚫 [PROCESS REPORT BLOCK] Procesamiento de reporte bloqueado para %s por takeover humano",
+            from_number,
+        )
+        return {
+            "status": "validation_block",
+            "message": "La conversación está siendo atendida por un agente humano; no se creó ningún folio.",
+        }
+
     logger.debug(f"process_and_save_report: Processing report for {from_number}")
     log_operational_decision_trace(
         from_number,
@@ -4537,9 +4672,8 @@ async def remove_from_finalized(number, delay_seconds):
 
 async def remove_from_transferred(number, delay_seconds):
     await asyncio.sleep(delay_seconds)
-    if number in transferred_numbers:
-        transferred_numbers.remove(number)
-        logger.debug(f"Bot re-enabled for {number} after {delay_seconds} seconds")
+    release_takeover(number, storage=LocalStorage())
+    logger.debug(f"Bot re-enabled for {number} after {delay_seconds} seconds")
 # ------------------------------
 # Función de ciclo de vida (lifespan)
 # ------------------------------
@@ -4547,6 +4681,8 @@ async def remove_from_transferred(number, delay_seconds):
 async def lifespan(app: FastAPI):
     print("🚀 INICIANDO SERVIDOR - Creando tareas de background...")
     logger.critical("🚀 INICIANDO SERVIDOR - Creando tareas de background...")
+    logger.critical("🚀 [DEPLOYMENT] sha=%s", DEPLOYMENT_SHA)
+    ensure_conversation_control_storage(LocalStorage())
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
     asyncio.create_task(check_report_timeouts())
@@ -4944,7 +5080,13 @@ async def whatsapp(request: Request):
             logger.info(f"Human agent takeover detected for {from_number}")
             
             expiration_time = datetime.now().timestamp() + (30 * 60)
-            transferred_numbers[from_number] = expiration_time
+            activate_takeover(
+                from_number,
+                expires_at=expiration_time,
+                source="chat2desk_takeover_message",
+                message_id=message_id,
+                storage=db,
+            )
             
             try:
                 system_notification = Message(
@@ -4967,9 +5109,8 @@ async def whatsapp(request: Request):
         if message_type == 'to_client' and is_bot_return_message(message_text):
             logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Releasing control to AI immediately on {from_number}")
             
-            if from_number in transferred_numbers:
-                del transferred_numbers[from_number]
-                logger.debug(f"Removed {from_number} from transferred_numbers dictionary")
+            release_takeover(from_number, storage=db)
+            logger.debug(f"Removed {from_number} from human takeover control")
                 
             return_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time")) or datetime.now().timestamp()
             recently_returned_to_bot[from_number] = return_timestamp
@@ -5041,7 +5182,13 @@ async def whatsapp(request: Request):
 
         if human_operator_active:
             expiration_time = datetime.now().timestamp() + (30 * 60)
-            transferred_numbers[from_number] = expiration_time
+            activate_takeover(
+                from_number,
+                expires_at=expiration_time,
+                source=f"operator_outbox:{payload.get('operator_id')}",
+                message_id=message_id,
+                storage=db,
+            )
 
         if human_operator_active:
             
@@ -5072,12 +5219,14 @@ async def whatsapp(request: Request):
             logger.info(f"Ignorando detección automática para {from_number} - en período de gracia ({grace_time} segundos restantes)")
 
         # 🎯 CUARTO: Verificar si ya está transferido
-        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
-            logger.info(f"Ignoring message from {from_number} as it's being handled by a human agent (expires in {int(transferred_numbers[from_number] - current_time)} seconds)")
+        active_takeover = get_active_takeover(from_number, storage=db)
+        if active_takeover:
+            logger.info(
+                "Ignoring message from %s as it's being handled by a human agent (expires in %s seconds)",
+                from_number,
+                int(float(active_takeover["expires_at"]) - current_time),
+            )
             return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
-        elif from_number in transferred_numbers:
-            logger.info(f"Transfer for {from_number} has expired, bot is now responding again")
-            del transferred_numbers[from_number]
 
         proactive_guard = None
         if message_type == 'from_client' and from_number:
@@ -5836,7 +5985,7 @@ async def whatsapp(request: Request):
                 body = "Se recibió una notificación de imagen, pero no se encontró la URL de la imagen."
                 logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
 
-        elif body and from_number in report_sessions:
+        elif body and from_number in report_sessions and not report_sessions[from_number].get("images"):
             detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
             logger.debug(f"[{from_number}] Revisión anticipada de datos estructurados: '{body[:50]}...'")
 
@@ -5851,6 +6000,19 @@ async def whatsapp(request: Request):
                     from_number,
                 )
                 body = closure_message
+                sent = await send_chat2desk_message(
+                    from_number,
+                    client_id,
+                    channel_id,
+                    body,
+                    transport,
+                )
+                return JSONResponse(
+                    content={
+                        "status": bool(sent),
+                        "message": "Mensaje tardío respondido con folio existente" if sent else "Mensaje post-folio bloqueado",
+                    }
+                )
             else:
             
                 # Log the message to help with debugging
@@ -5895,6 +6057,7 @@ async def whatsapp(request: Request):
                 elif is_finalization:
                     # Generate a unique request ID for this report finalization request
                     request_id = f"{from_number}-{int(datetime.now().timestamp())}"
+                    folio = None
                     logger.info(f"Report finalization request {request_id} received")
                     
                     # En lugar de procesar directamente, enviar un mensaje especial al modelo
@@ -6000,47 +6163,25 @@ async def whatsapp(request: Request):
                         db.Insert(assistant_message)
                         await manage_message_history(db, from_number)
                         
-                        # Enviar directamente el mensaje a través de Chat2Desk
-                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
-                        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-                        
-                        headers = {
-                            "Authorization": api_token,
-                            "Content-Type": "application/json"
-                        }
-
-                        data = {
-                            "client_id": client_id,
-                            "channel_id": channel_id,
-                            "transport": transport,
-                            "text": body
-                        }
-
-                        log_chat2desk_outbound_attempt(
-                            "report_finalization_direct",
-                            data,
-                            from_number=from_number,
-                            message_id=message_id,
-                        )
-                        response = requests.post(chat2desk_url, json=data, headers=headers)
-                        log_chat2desk_outbound_response(
-                            "report_finalization_direct",
-                            response,
-                            from_number=from_number,
-                            message_id=message_id,
+                        sent = await send_chat2desk_message(
+                            from_number,
+                            client_id,
+                            channel_id,
+                            body,
+                            transport,
                         )
 
-                        if response.status_code == 200:
+                        if sent:
                             logger.debug(f"Mensaje de finalización enviado directamente a través de Chat2Desk")
                         else:
-                            logger.error(f"Error al enviar mensaje directo a Chat2Desk: {response.status_code} - {response.text}")
+                            logger.error("Mensaje de finalización no enviado a Chat2Desk")
                     except Exception as e:
                         logger.error(f"Error al enviar mensaje de finalización directo: {str(e)}")
                     
                     # IMPORTANTE: Devolver un resultado sin mensaje de texto para evitar el procesamiento posterior
                     # Esto evitará que el sistema envíe otro mensaje o confunda el texto de respuesta como entrada
                     return {
-                        'status': 'success',
+                        'status': result.get('status', 'error'),
                         'message': "",  # Vacío para evitar procesamiento posterior
                         'folio': folio
                     }
@@ -6142,19 +6283,17 @@ async def whatsapp(request: Request):
                     decision,
                 )
 
-    if from_number in report_sessions:
+    if assistant_asked_if_emergency(last_outbound_message):
         create_or_update_report_session(from_number)
-        with report_sessions_lock:
-
-            if assistant_asked_if_emergency(last_outbound_message):
-                emergency_answer = classify_emergency_response(body)
-                if emergency_answer is not None:
-                    report_sessions[from_number]["declared_emergency"] = emergency_answer
-                    logger.critical(
-                        "🚨 [EMERGENCY FLAG] %s respondió emergencia=%s",
-                        from_number,
-                        emergency_answer,
-                    )
+        emergency_answer = classify_emergency_response(body)
+        if emergency_answer is not None:
+            with report_sessions_lock:
+                report_sessions[from_number]["declared_emergency"] = emergency_answer
+            logger.critical(
+                "🚨 [EMERGENCY FLAG] %s respondió emergencia=%s",
+                from_number,
+                emergency_answer,
+            )
 
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -6198,7 +6337,13 @@ async def whatsapp(request: Request):
             if not isinstance(transfer_result, str) or "transferida exitosamente" not in transfer_result.lower():
                 raise RuntimeError(transfer_result or "La transferencia no confirmó éxito")
 
-            transferred_numbers[from_number] = expiration_time
+            activate_takeover(
+                from_number,
+                expires_at=expiration_time,
+                source="explicit_user_request",
+                message_id=message_id,
+                storage=db,
+            )
 
             logger.critical(
                 "✅ [DIRECT TRANSFER] %s solicitado por usuario. Resultado: %s",
@@ -6220,8 +6365,7 @@ async def whatsapp(request: Request):
 
         except Exception as transfer_error:
             logger.error(f"❌ [DIRECT TRANSFER] Error ejecutando transferencia: {str(transfer_error)}")
-            if from_number in transferred_numbers:
-                del transferred_numbers[from_number]
+            release_takeover(from_number, storage=db)
             response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
 
         assistant_message = Message(
@@ -6272,11 +6416,12 @@ async def whatsapp(request: Request):
         recent_outbound_response_keys.add(outbound_dedup_key)
 
         current_takeover_time = datetime.now().timestamp()
-        if from_number in transferred_numbers and current_takeover_time < transferred_numbers[from_number]:
+        active_takeover = get_active_takeover(from_number, storage=db)
+        if active_takeover:
             logger.warning(
                 "🚫 [WHATSAPP_MAIN BLOCKED] Respuesta de SAM cancelada para %s por takeover humano activo (%ss restantes). response=%s",
                 from_number,
-                int(transferred_numbers[from_number] - current_takeover_time),
+                int(float(active_takeover["expires_at"]) - current_takeover_time),
                 response_content[:240],
             )
             log_operational_decision_trace(
@@ -6284,7 +6429,7 @@ async def whatsapp(request: Request):
                 "outbound_blocked_human_takeover",
                 message_id=message_id,
                 response_preview=response_content[:300],
-                remaining_seconds=int(transferred_numbers[from_number] - current_takeover_time),
+                remaining_seconds=int(float(active_takeover["expires_at"]) - current_takeover_time),
             )
             return JSONResponse(content={"status": True, "message": "Respuesta bloqueada por takeover humano activo"})
 
@@ -6398,6 +6543,27 @@ async def whatsapp(request: Request):
             image_description=image_description if 'image_description' in locals() else "No se ha recibido ninguna imagen",
             fotos=fotos_string
         )
+        emergency_state = report_sessions.get(from_number, {}).get("declared_emergency")
+        if emergency_state is False:
+            system_prompt += (
+                "\n\nESTADO CONFIRMADO: El ciudadano ya indicó que NO es una emergencia. "
+                "No vuelvas a preguntarle si es una emergencia y continúa atendiendo su solicitud."
+            )
+        elif emergency_state is True:
+            system_prompt += (
+                "\n\nESTADO CONFIRMADO: El ciudadano indicó que SÍ es una emergencia. "
+                "Indícale que debe comunicarse al C4 al 81 89 88 20 00. "
+                "No transfieras automáticamente a operadores; sólo transfiere si solicita explícitamente "
+                "atención humana o si verificaste que no existe contexto para resolver otra consulta."
+            )
+        system_prompt += (
+            "\n\nPOLÍTICA DE TRANSFERENCIA: Sólo solicita transfer_to_group cuando el ciudadano pida "
+            "explícitamente atención humana o cuando, después de intentar las herramientas y el contexto "
+            "disponibles, no exista información suficiente para responder. Para este segundo caso usa "
+            "reason_code='verified_no_context' y explica en reason qué información falta. Si una herramienta "
+            "necesaria falló, usa reason_code='tool_failure'. Nunca uses falta de contexto para sacar del flujo "
+            "una emergencia, un reporte, un folio o un seguimiento."
+        )
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:
         #     system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."
@@ -6453,6 +6619,7 @@ async def whatsapp(request: Request):
             "explicit_handoff": is_explicit_human_handoff_request(body or ""),
             "report_intent": detect_report_intent(body or "", ""),
             "report_state": build_report_state_snapshot(from_number),
+            "storage": db,
         }
 
         fixed_phone_response = resolve_fixed_security_phone_response(body)
@@ -6743,11 +6910,12 @@ async def whatsapp(request: Request):
     last_response_time[from_number] = current_time
 
     try:
-        if from_number in transferred_numbers and current_time < transferred_numbers[from_number]:
+        active_takeover = get_active_takeover(from_number, storage=db)
+        if active_takeover:
             logger.warning(
                 "🚫 [WHATSAPP_MAIN FINAL BLOCK] Respuesta final de SAM cancelada para %s por takeover humano activo (%ss restantes). response=%s",
                 from_number,
-                int(transferred_numbers[from_number] - current_time),
+                int(float(active_takeover["expires_at"]) - current_time),
                 response_content[:240],
             )
             log_operational_decision_trace(
@@ -6755,7 +6923,7 @@ async def whatsapp(request: Request):
                 "final_outbound_blocked_human_takeover",
                 message_id=message_id,
                 response_preview=response_content[:300],
-                remaining_seconds=int(transferred_numbers[from_number] - current_time),
+                remaining_seconds=int(float(active_takeover["expires_at"]) - current_time),
             )
             return JSONResponse(content={"status": True, "message": "Respuesta final bloqueada por takeover humano activo"})
 
@@ -7168,6 +7336,7 @@ async def health():
         pings.append({ "domain": domain["domain"], "ping": ping, "name": domain["name"] })
 
     metrics = {
+        'deployment_sha': DEPLOYMENT_SHA,
         'processor': psutil.cpu_percent(interval=1),
         'memory': psutil.virtual_memory().percent,
         'storage': psutil.disk_usage('/').percent,
@@ -7262,9 +7431,9 @@ async def reset_conversation(phone_number: str):
             del recently_completed_reports[phone_number]
             memory_cleanup["recently_completed_reports"] = True
 
-        if phone_number in transferred_numbers:
-            del transferred_numbers[phone_number]
+        if get_active_takeover(phone_number, storage=db):
             memory_cleanup["transferred_numbers"] = True
+        release_takeover(phone_number, storage=db)
 
         if phone_number in last_response_time:
             del last_response_time[phone_number]

@@ -3,6 +3,7 @@ import unittest
 from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
+    resolve_bot_operator_ids,
 )
 
 
@@ -15,6 +16,17 @@ class EmergencyClassificationTests(unittest.TestCase):
 
     def test_risk_answer(self):
         self.assertIs(classify_emergency_answer("Puede ocasionar un socavón"), True)
+
+
+class BotOperatorClassificationTests(unittest.TestCase):
+    def test_current_chat2desk_bot_operator_is_known(self):
+        self.assertIn(228544, resolve_bot_operator_ids())
+
+    def test_runtime_operator_ids_extend_defaults(self):
+        operator_ids = resolve_bot_operator_ids("228600, 228601")
+        self.assertIn(228544, operator_ids)
+        self.assertIn(228600, operator_ids)
+        self.assertIn(228601, operator_ids)
 
 
 class TransferAuthorizationTests(unittest.TestCase):

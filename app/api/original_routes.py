@@ -108,6 +108,7 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     is_emergency_related,
+    resolve_bot_operator_ids,
 )
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
@@ -4968,8 +4969,12 @@ async def whatsapp(request: Request):
         max_retries=OPENAI_MAX_RETRIES,
     )
 
-    # Check if this is a message from a human agent with the human takeover message
-    BOT_OPERATOR_IDS = {228522, 228524}
+    # Los IDs conocidos se complementan desde Config/env para evitar falsos takeovers
+    # cuando Chat2Desk asigna un operador distinto al token del bot.
+    bot_operator_ids = resolve_bot_operator_ids(
+        os.getenv("CHAT2DESK_BOT_OPERATOR_IDS")
+        or config.get("chat2desk_bot_operator_ids")
+    )
     
     
     try:
@@ -5179,7 +5184,7 @@ async def whatsapp(request: Request):
         human_operator_active = (
             message_type == 'to_client' and
             hook_type == 'outbox' and
-            is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
+            is_non_bot_operator(payload.get('operator_id'), bot_operator_ids) and
             not is_bot_echo and
             from_number not in recently_returned_to_bot
         )
@@ -5213,7 +5218,7 @@ async def whatsapp(request: Request):
         elif (
             message_type == 'to_client' and
             hook_type == 'outbox' and
-            is_non_bot_operator(payload.get('operator_id'), BOT_OPERATOR_IDS) and
+            is_non_bot_operator(payload.get('operator_id'), bot_operator_ids) and
             from_number in recently_returned_to_bot
         ):
 

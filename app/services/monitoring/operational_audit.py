@@ -25,7 +25,11 @@ LOG_PATTERNS = {
     "outbound_error": ["Error en respuesta Chat2Desk", "Error al enviar mensaje"],
     "outbound_activity": ["📤 [CHAT2DESK:whatsapp_main] attempt", "📥 [CHAT2DESK:whatsapp_main] response"],
     "dedup": ["[PERSISTED DUPLICATE]", "[OUTBOUND DEDUP]", "[STALE INBOUND]"],
-    "human_takeover": ["Human agent takeover detected", "Deteccion automatica: Agente humano"],
+    "human_takeover": [
+        "Human agent takeover detected",
+        "Deteccion automatica: Agente humano",
+        "Detección automática: Agente humano",
+    ],
     "transfer_api": ["[TRANSFER TRACE]", "[TRANSFER GUARD]"],
     "proactive_guard": ["[PROACTIVE HSM GUARD]"],
     "stale_return_filter": ["[RETURN STALE EVENT]", "[RETURN FILTER] decision=stale"],

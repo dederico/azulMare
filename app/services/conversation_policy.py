@@ -5,6 +5,7 @@ import unicodedata
 EXPLICIT_HANDOFF = "explicit_user_request"
 VERIFIED_NO_CONTEXT = "verified_no_context"
 TOOL_FAILURE = "tool_failure"
+DEFAULT_BOT_OPERATOR_IDS = frozenset({228522, 228524, 228544})
 
 
 def normalize_policy_text(value: str | None) -> str:
@@ -12,6 +13,25 @@ def normalize_policy_text(value: str | None) -> str:
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r"[^a-zA-Z0-9\s]", " ", text.lower())
     return " ".join(text.split())
+
+
+def resolve_bot_operator_ids(configured_value=None) -> set[int]:
+    """Return known Chat2Desk bot IDs plus any IDs configured at runtime."""
+    operator_ids = set(DEFAULT_BOT_OPERATOR_IDS)
+    if configured_value is None:
+        return operator_ids
+
+    if isinstance(configured_value, (list, tuple, set, frozenset)):
+        candidates = configured_value
+    else:
+        candidates = re.findall(r"\d+", str(configured_value))
+
+    for candidate in candidates:
+        try:
+            operator_ids.add(int(candidate))
+        except (TypeError, ValueError):
+            continue
+    return operator_ids
 
 
 def classify_emergency_answer(body: str | None) -> bool | None:

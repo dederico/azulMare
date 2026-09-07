@@ -3476,7 +3476,8 @@ async def analyze_image_with_rate_limit(client, photo_url):
     
 async def manage_message_history(db, number, max_messages=20):
     """
-    Mantiene solo los últimos max_messages mensajes para un número dado
+    Mantiene los últimos max_messages mensajes conversacionales para un número.
+    Los markers bot-outbound se conservan para reconocer webhooks retrasados de Chat2Desk.
     """
     try:
         # Contar cuántos mensajes tiene este número
@@ -3484,7 +3485,15 @@ async def manage_message_history(db, number, max_messages=20):
         cursor = conn.cursor()
         
         # Contar mensajes
-        cursor.execute("SELECT COUNT(*) FROM messages WHERE number = %s", [number])
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM messages
+            WHERE number = %s
+              AND (uid IS NULL OR uid NOT LIKE 'bot-outbound-%%')
+            """,
+            [number],
+        )
         count = cursor.fetchone()[0]
         
         # Si hay más mensajes que el máximo permitido, eliminar los más antiguos
@@ -3494,7 +3503,8 @@ async def manage_message_history(db, number, max_messages=20):
                 DELETE FROM messages 
                 WHERE id IN (
                     SELECT id FROM messages 
-                    WHERE number = %s 
+                    WHERE number = %s
+                      AND (uid IS NULL OR uid NOT LIKE 'bot-outbound-%%')
                     ORDER BY time ASC 
                     LIMIT %s
                 )
@@ -4193,8 +4203,17 @@ async def check_inactivity():
                     conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
                     cursor = conn.cursor()
                     
-                    # SQL directo para eliminar mensajes por número
-                    cursor.execute("DELETE FROM messages WHERE number = %s", [number])
+                    # Limpiar el historial conversacional sin borrar los markers de
+                    # salidas de SAM. Chat2Desk puede reentregar el outbox horas más
+                    # tarde y esos IDs son la evidencia durable que evita takeovers falsos.
+                    cursor.execute(
+                        """
+                        DELETE FROM messages
+                        WHERE number = %s
+                          AND (uid IS NULL OR uid NOT LIKE 'bot-outbound-%%')
+                        """,
+                        [number],
+                    )
                     count = cursor.rowcount
                     
                     conn.commit()

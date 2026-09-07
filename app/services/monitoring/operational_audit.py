@@ -38,6 +38,7 @@ LOG_PATTERNS = {
         "[INACTIVITY CANCELLED]",
         "[INACTIVITY CLEANUP CANCELLED]",
     ],
+    "operator_outbox_guard": ["[BOT OUTBOX RECHECK]", "[STALE OPERATOR OUTBOX]"],
 }
 
 PHONE_PATTERN = re.compile(r"(?:from_number=|for |from )(?P<phone>52\d{10,13})")

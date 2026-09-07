@@ -21,6 +21,7 @@ def should_activate_human_control(
     operator_id,
     is_bot_echo: bool,
     recently_returned_to_bot: bool,
+    event_is_stale: bool = False,
 ) -> bool:
     """Treat an operator outbox event as human only after excluding known bot echoes."""
     try:
@@ -34,7 +35,33 @@ def should_activate_human_control(
         and has_operator
         and not is_bot_echo
         and not recently_returned_to_bot
+        and not event_is_stale
     )
+
+
+def is_known_automated_outbound(text: str | None) -> bool:
+    """Recognize deterministic SAM/system templates even without a provider marker."""
+    normalized = normalize_policy_text(text)
+    if not normalized:
+        return False
+
+    known_templates = (
+        (
+            "soy sam",
+            "asistente virtual de atencion ciudadana",
+        ),
+        (
+            "parece que te ausentaste",
+            "conversacion se cerro por inactividad",
+        ),
+        (
+            "reporte",
+            "concluido",
+            "comentario de conclusion",
+            "ubicacion atendida",
+        ),
+    )
+    return any(all(fragment in normalized for fragment in template) for template in known_templates)
 
 
 def inactivity_snapshot_is_still_stale(

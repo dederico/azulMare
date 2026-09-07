@@ -5,6 +5,7 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     inactivity_snapshot_is_still_stale,
+    is_known_automated_outbound,
     should_activate_human_control,
 )
 
@@ -64,6 +65,35 @@ class OperatorOutboxClassificationTests(unittest.TestCase):
                 recently_returned_to_bot=True,
             )
         )
+
+    def test_stale_operator_outbox_does_not_activate_control(self):
+        self.assertFalse(
+            should_activate_human_control(
+                message_type="to_client",
+                hook_type="outbox",
+                operator_id=228544,
+                is_bot_echo=False,
+                recently_returned_to_bot=False,
+                event_is_stale=True,
+            )
+        )
+
+    def test_known_sam_welcome_is_automated(self):
+        self.assertTrue(
+            is_known_automated_outbound(
+                "¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG."
+            )
+        )
+
+    def test_known_inactivity_notice_is_automated(self):
+        self.assertTrue(
+            is_known_automated_outbound(
+                "Parece que te ausentaste. La conversación se cerró por inactividad."
+            )
+        )
+
+    def test_normal_operator_text_is_not_automated(self):
+        self.assertFalse(is_known_automated_outbound("Buen día, revisaré personalmente su reporte."))
 
 
 class InactivityPolicyTests(unittest.TestCase):

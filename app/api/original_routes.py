@@ -866,32 +866,6 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
         # 🆕 MARCAR COMO EVALUADO
         current_time = datetime.now().timestamp()
 
-        operator_outbox_event_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time"))
-        operator_outbox_age_seconds = (
-            current_time - operator_outbox_event_timestamp
-            if operator_outbox_event_timestamp is not None
-            else None
-        )
-        outbox_precedes_bot_return = bool(
-            message_type == 'to_client'
-            and hook_type == 'outbox'
-            and operator_outbox_event_timestamp is not None
-            and from_number in bot_returned_at
-            and operator_outbox_event_timestamp <= (
-                bot_returned_at[from_number] + STALE_RETURN_EVENT_TOLERANCE_SECONDS
-            )
-        )
-        stale_operator_outbox = bool(
-            message_type == 'to_client'
-            and hook_type == 'outbox'
-            and (
-                outbox_precedes_bot_return
-                or (
-                    operator_outbox_age_seconds is not None
-                    and operator_outbox_age_seconds > STALE_OPERATOR_OUTBOX_MAX_AGE_SECONDS
-                )
-            )
-        )
         evaluated_reports[folio] = current_time
         logger.critical(f"📝 [EVALUATED] Reporte {folio} marcado como evaluado")
         
@@ -5272,6 +5246,33 @@ async def whatsapp(request: Request):
             return JSONResponse(content=hsm_result)
 
         current_time = datetime.now().timestamp()
+
+        operator_outbox_event_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time"))
+        operator_outbox_age_seconds = (
+            current_time - operator_outbox_event_timestamp
+            if operator_outbox_event_timestamp is not None
+            else None
+        )
+        outbox_precedes_bot_return = bool(
+            message_type == 'to_client'
+            and hook_type == 'outbox'
+            and operator_outbox_event_timestamp is not None
+            and from_number in bot_returned_at
+            and operator_outbox_event_timestamp <= (
+                bot_returned_at[from_number] + STALE_RETURN_EVENT_TOLERANCE_SECONDS
+            )
+        )
+        stale_operator_outbox = bool(
+            message_type == 'to_client'
+            and hook_type == 'outbox'
+            and (
+                outbox_precedes_bot_return
+                or (
+                    operator_outbox_age_seconds is not None
+                    and operator_outbox_age_seconds > STALE_OPERATOR_OUTBOX_MAX_AGE_SECONDS
+                )
+            )
+        )
         
         # Handle None values in body
         if body is None:

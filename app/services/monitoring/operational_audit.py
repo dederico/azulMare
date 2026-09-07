@@ -24,7 +24,12 @@ LOG_PATTERNS = {
     "openai_timeout": ["ConnectTimeout", "APITimeoutError", "[OPENAI REQUEST FAILURE]"],
     "outbound_error": ["Error en respuesta Chat2Desk", "Error al enviar mensaje"],
     "outbound_activity": ["📤 [CHAT2DESK:whatsapp_main] attempt", "📥 [CHAT2DESK:whatsapp_main] response"],
-    "dedup": ["[PERSISTED DUPLICATE]", "[OUTBOUND DEDUP]", "[STALE INBOUND]"],
+    "dedup": [
+        "[PERSISTED DUPLICATE]",
+        "[DISTRIBUTED INBOUND DUPLICATE]",
+        "[OUTBOUND DEDUP]",
+        "[STALE INBOUND]",
+    ],
     "human_takeover": [
         "Human agent takeover detected",
         "Deteccion automatica: Agente humano",
@@ -382,7 +387,10 @@ def _analyze_behavioral_patterns(lines: list[str]) -> dict:
                 behavior["global_silence_blocker_samples"].append(line)
             continue
 
-        if "[PERSISTED DUPLICATE]" in line and "Ignorando inbound repetido ya entregado" in line:
+        if (
+            ("[PERSISTED DUPLICATE]" in line and "Ignorando inbound repetido ya entregado" in line)
+            or "[DISTRIBUTED INBOUND DUPLICATE]" in line
+        ):
             behavior["persisted_duplicate_ignored_count"] += 1
             behavior["global_silence_blockers_count"] += 1
             if len(behavior["persisted_duplicate_ignored_samples"]) < AUDIT_LOG_SAMPLE_LIMIT:
@@ -454,7 +462,13 @@ def _classify_silence_candidates(metrics: dict, log_signals: dict) -> None:
         elif any(
             marker in line
             for line in unique_lines
-            for marker in ("[PERSISTED DUPLICATE]", "[STALE INBOUND]", "persisted_duplicate_inbound_ignored")
+            for marker in (
+                "[PERSISTED DUPLICATE]",
+                "[DISTRIBUTED INBOUND DUPLICATE]",
+                "[STALE INBOUND]",
+                "persisted_duplicate_inbound_ignored",
+                "distributed_inbound_duplicate_ignored",
+            )
         ):
             bucket = "deduplicated_or_redelivered"
         elif any(

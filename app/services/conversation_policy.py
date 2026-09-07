@@ -86,6 +86,22 @@ def inactivity_snapshot_is_still_stale(
         return False
 
 
+def should_send_initial_greeting(
+    *,
+    is_new_request: bool,
+    history_available: bool,
+    has_prior_conversation_history: bool,
+    resetting_after_human: bool,
+) -> bool:
+    """Send the institutional greeting exactly once at a conversation boundary."""
+    if resetting_after_human:
+        # The return-to-SAM webhook already sends the institutional greeting.
+        return False
+    if is_new_request:
+        return True
+    return history_available and not has_prior_conversation_history
+
+
 def classify_emergency_answer(body: str | None) -> bool | None:
     """Classify natural Spanish answers to the bot's emergency question."""
     normalized = normalize_policy_text(body)

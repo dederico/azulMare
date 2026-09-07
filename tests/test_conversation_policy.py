@@ -6,6 +6,7 @@ from app.services.conversation_policy import (
     classify_emergency_answer,
     inactivity_snapshot_is_still_stale,
     is_known_automated_outbound,
+    should_send_initial_greeting,
     should_activate_human_control,
 )
 
@@ -119,6 +120,48 @@ class InactivityPolicyTests(unittest.TestCase):
                 now=refreshed,
                 threshold_seconds=15 * 60,
                 human_control_active=False,
+            )
+        )
+
+
+class InitialGreetingPolicyTests(unittest.TestCase):
+    def test_new_request_gets_institutional_greeting(self):
+        self.assertTrue(
+            should_send_initial_greeting(
+                is_new_request=True,
+                history_available=True,
+                has_prior_conversation_history=True,
+                resetting_after_human=False,
+            )
+        )
+
+    def test_empty_history_gets_institutional_greeting(self):
+        self.assertTrue(
+            should_send_initial_greeting(
+                is_new_request=False,
+                history_available=True,
+                has_prior_conversation_history=False,
+                resetting_after_human=False,
+            )
+        )
+
+    def test_active_conversation_does_not_repeat_greeting(self):
+        self.assertFalse(
+            should_send_initial_greeting(
+                is_new_request=False,
+                history_available=True,
+                has_prior_conversation_history=True,
+                resetting_after_human=False,
+            )
+        )
+
+    def test_return_webhook_owns_its_greeting(self):
+        self.assertFalse(
+            should_send_initial_greeting(
+                is_new_request=False,
+                history_available=True,
+                has_prior_conversation_history=False,
+                resetting_after_human=True,
             )
         )
 

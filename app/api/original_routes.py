@@ -110,7 +110,13 @@ from app.services.conversation_policy import (
     inactivity_snapshot_is_still_stale,
     is_emergency_related,
     is_known_automated_outbound,
+    should_send_initial_greeting,
     should_activate_human_control,
+)
+from app.services.inbound_processing import (
+    claim_inbound_processing,
+    mark_inbound_processing_delivered,
+    release_inbound_processing_claim,
 )
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
@@ -5748,6 +5754,29 @@ async def whatsapp(request: Request):
                 body_preview=(body or "")[:240],
             )
 
+        inbound_claim_token = claim_inbound_processing(
+            uid,
+            from_number,
+            storage=db,
+        )
+        if inbound_claim_token is None:
+            logger.warning(
+                "🚫 [DISTRIBUTED INBOUND DUPLICATE] Otra réplica ya procesa o entregó "
+                "el inbound para %s uid=%s",
+                from_number,
+                uid,
+            )
+            log_operational_decision_trace(
+                from_number,
+                "distributed_inbound_duplicate_ignored",
+                uid=uid,
+                inbound_event_time=payload.get("event_time"),
+                body_preview=(body or "")[:240],
+            )
+            return JSONResponse(
+                content={"status": True, "message": "Mensaje ya reclamado por otra réplica"}
+            )
+
         if processed_message_ids.contains(uid):
             logger.debug(f"Ignorando mensaje duplicado con id={uid} antes de procesar flujos")
             return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
@@ -6491,18 +6520,15 @@ async def whatsapp(request: Request):
             logger.critical(f"🚫 [OK BLOCKED] OK ignorado para {from_number} - posible respuesta de evaluación")
             return JSONResponse(content={"status": True, "message": "OK response ignored during evaluation"})
         
-    # 🚫 VERIFICAR SI EL NÚMERO ESTÁ EN COOLDOWN POR INACTIVIDAD
-    current_time = datetime.now().timestamp()
+    # Una conversación cerrada por inactividad se reabre con el siguiente inbound.
+    # El historial ya fue limpiado por check_inactivity, por lo que más adelante se
+    # enviará el saludo institucional como inicio de una sesión nueva.
     if from_number in closed_by_inactivity:
-        cooldown_expiry = closed_by_inactivity[from_number]
-        if current_time < cooldown_expiry:
-            remaining_minutes = (cooldown_expiry - current_time) / 60
-            logger.critical(f"🚫 [COOLDOWN] {from_number} está en cooldown por inactividad. Faltan {remaining_minutes:.1f} minutos")
-            return JSONResponse(content={"status": True, "message": "Usuario en cooldown por inactividad"})
-        else:
-            # Cooldown expirado, remover del diccionario
-            del closed_by_inactivity[from_number]
-            logger.critical(f"✅ [COOLDOWN EXPIRED] {from_number} cooldown expirado, puede reactivarse")
+        closed_by_inactivity.pop(from_number, None)
+        logger.critical(
+            "✅ [INACTIVITY REOPEN] %s reabrió la conversación; se enviará saludo institucional",
+            from_number,
+        )
 
     # Crear o actualizar la sesión del usuario
     if from_number not in user_sessions:
@@ -6513,6 +6539,7 @@ async def whatsapp(request: Request):
     conversation_history = session.history
 
     # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
+    initial_greeting_required = bool(payload.get("is_new_request"))
     try:
         logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
 
@@ -6521,6 +6548,16 @@ async def whatsapp(request: Request):
         # Obtener mensajes ordenados por tiempo (los más antiguos primero)
         messages_db = [] if should_reset_context_after_human else (
             db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        )
+        has_prior_conversation_history = any(
+            msg.direction in {"inbound", "outbound"} and bool(msg.message)
+            for msg in messages_db
+        )
+        initial_greeting_required = should_send_initial_greeting(
+            is_new_request=bool(payload.get("is_new_request")),
+            history_available=True,
+            has_prior_conversation_history=has_prior_conversation_history,
+            resetting_after_human=should_reset_context_after_human,
         )
         last_outbound_message = next(
             (msg.message for msg in reversed(messages_db) if msg.direction == "outbound" and msg.message),
@@ -6645,6 +6682,7 @@ async def whatsapp(request: Request):
         except Exception as transfer_error:
             logger.error(f"❌ [DIRECT TRANSFER] Error ejecutando transferencia: {str(transfer_error)}")
             release_takeover(from_number, storage=db)
+            release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
             response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
 
         assistant_message = Message(
@@ -6728,6 +6766,7 @@ async def whatsapp(request: Request):
         if response.status_code == 200:
             persist_bot_outbound_marker(db, from_number, response, "explicit_transfer_response")
             persist_successful_delivery_marker(db, from_number, uid, message_id)
+            mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
             logger.debug("Respuesta enviada exitosamente a Chat2Desk")
             return JSONResponse(
                 content={
@@ -6750,6 +6789,54 @@ async def whatsapp(request: Request):
             },
             status_code=500,
         )
+
+    if initial_greeting_required:
+        greeting_message = build_return_to_sam_greeting(sender_name)
+        logger.critical(
+            "👋 [INITIAL SESSION GREETING] Enviando saludo institucional para %s uid=%s",
+            from_number,
+            uid,
+        )
+        try:
+            conversation_history.add_ai_message(greeting_message)
+            assistant_message = Message(
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                senderName="Assistant",
+                message=greeting_message,
+                number=from_number,
+                uid=f"assistant-initial-greeting-{uid}",
+                direction="outbound",
+                mtype="text",
+                source="whatsapp",
+            )
+            db.Insert(assistant_message)
+            await manage_message_history(db, from_number)
+            sent = await send_chat2desk_message(
+                from_number,
+                client_id,
+                channel_id,
+                greeting_message,
+                transport,
+            )
+            if sent:
+                persist_successful_delivery_marker(db, from_number, uid, message_id)
+                mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
+                return JSONResponse(
+                    content={"status": True, "message": "Saludo institucional de nueva sesión enviado"}
+                )
+        except Exception as greeting_error:
+            logger.exception(
+                "Error enviando saludo institucional de nueva sesión para %s: %s",
+                from_number,
+                greeting_error,
+            )
+
+        release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+        return JSONResponse(
+            content={"status": False, "error": "No se pudo enviar saludo institucional"},
+            status_code=500,
+        )
+
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
@@ -7172,6 +7259,7 @@ async def whatsapp(request: Request):
         error_type = type(e).__name__
         logger.error(f"Error al generar la respuesta: {str(e)}")
         logger.exception("💥 [LLM FAILURE] type=%s from_number=%s uid=%s", error_type, from_number, uid)
+        release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
         return JSONResponse(content={"error": f"Error al generar respuesta: {str(e)}"}, status_code=500)
     
     
@@ -7310,6 +7398,7 @@ async def whatsapp(request: Request):
             if response_data.get("status") == "success":
                 persist_bot_outbound_marker(db, from_number, response, "whatsapp_main")
                 persist_successful_delivery_marker(db, from_number, uid, message_id)
+                mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
                 logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
                 content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}
             else:
@@ -7363,6 +7452,9 @@ async def whatsapp(request: Request):
     except Exception as e:
         logger.error(f"Error inesperado al enviar mensaje: {str(e)}")
         content = {"status": False, "error": f"Error inesperado: {str(e)}"}
+
+    if not content.get("status"):
+        release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
 
     farewell_keywords = ["gracias", "adiós", "adios", "hasta luego", "chao", "bye", "es todo", "terminar"]
     bot_farewell_indicators = ["que tengas", "hasta luego", "adiós", "adios", "buen día", "hasta pronto"]

@@ -23,14 +23,26 @@ class EmergencyClassificationTests(unittest.TestCase):
 
 
 class OperatorOutboxClassificationTests(unittest.TestCase):
-    def test_human_operator_message_activates_control(self):
-        self.assertTrue(
+    def test_operator_outbox_alone_does_not_activate_control(self):
+        self.assertFalse(
             should_activate_human_control(
                 message_type="to_client",
                 hook_type="outbox",
                 operator_id=228544,
                 is_bot_echo=False,
                 recently_returned_to_bot=False,
+            )
+        )
+
+    def test_authoritative_dialog_transfer_activates_control(self):
+        self.assertTrue(
+            should_activate_human_control(
+                message_type=None,
+                hook_type="dialog_transferred",
+                operator_id=228544,
+                is_bot_echo=False,
+                recently_returned_to_bot=False,
+                authoritative_assignment=True,
             )
         )
 
@@ -97,6 +109,15 @@ class OperatorOutboxClassificationTests(unittest.TestCase):
         self.assertTrue(
             is_known_automated_outbound(
                 "Le atendió Karyme Montserrat, ¡Que tenga un buen día!"
+            )
+        )
+
+    def test_known_report_assignment_notice_is_automated(self):
+        self.assertTrue(
+            is_known_automated_outbound(
+                "Te informamos que tu reporte con folio *471071* fue asignado "
+                "exitosamente con el área correspondiente. Te daremos seguimiento "
+                "a través de este chat. ¡Gracias por reportar!"
             )
         )
 

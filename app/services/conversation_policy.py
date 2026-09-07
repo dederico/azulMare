@@ -22,16 +22,17 @@ def should_activate_human_control(
     is_bot_echo: bool,
     recently_returned_to_bot: bool,
     event_is_stale: bool = False,
+    authoritative_assignment: bool = False,
 ) -> bool:
-    """Treat an operator outbox event as human only after excluding known bot echoes."""
+    """Activate control only from Chat2Desk's authoritative assignment event."""
     try:
         has_operator = bool(operator_id) and int(operator_id) > 0
     except (TypeError, ValueError):
         has_operator = False
 
     return (
-        message_type == "to_client"
-        and hook_type == "outbox"
+        authoritative_assignment
+        and hook_type == "dialog_transferred"
         and has_operator
         and not is_bot_echo
         and not recently_returned_to_bot
@@ -63,6 +64,11 @@ def is_known_automated_outbound(text: str | None) -> bool:
         (
             "le atendio",
             "que tenga un buen dia",
+        ),
+        (
+            "reporte con folio",
+            "fue asignado exitosamente",
+            "area correspondiente",
         ),
     )
     return any(all(fragment in normalized for fragment in template) for template in known_templates)

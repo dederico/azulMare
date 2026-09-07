@@ -34,6 +34,7 @@ LOG_PATTERNS = {
         "Human agent takeover detected",
         "Deteccion automatica: Agente humano",
         "Detección automática: Agente humano",
+        "[DIALOG TRANSFER] Takeover humano autoritativo",
     ],
     "transfer_api": ["[TRANSFER TRACE]", "[TRANSFER GUARD]"],
     "proactive_guard": ["[PROACTIVE HSM GUARD]"],
@@ -43,7 +44,11 @@ LOG_PATTERNS = {
         "[INACTIVITY CANCELLED]",
         "[INACTIVITY CLEANUP CANCELLED]",
     ],
-    "operator_outbox_guard": ["[BOT OUTBOX RECHECK]", "[STALE OPERATOR OUTBOX]"],
+    "operator_outbox_guard": [
+        "[BOT OUTBOX RECHECK]",
+        "[STALE OPERATOR OUTBOX]",
+        "[NONAUTHORITATIVE OUTBOX]",
+    ],
 }
 
 PHONE_PATTERN = re.compile(r"(?:from_number=|for |from )(?P<phone>52\d{10,13})")

@@ -76,7 +76,13 @@ class ReportDeduplicationManager:
             if phone_number in self.post_report_protection:
                 if current_time < self.post_report_protection[phone_number]:
                     remaining = int(self.post_report_protection[phone_number] - current_time)
-                    return False, f"Protección post-reporte activa ({remaining}s restantes)", None
+                    recent_report = self.recent_reports.get(phone_number)
+                    existing_folio = recent_report.get('folio') if recent_report else None
+                    return (
+                        False,
+                        f"Protección post-reporte activa ({remaining}s restantes)",
+                        existing_folio,
+                    )
                 else:
                     # Protección expirada, limpiar
                     del self.post_report_protection[phone_number]

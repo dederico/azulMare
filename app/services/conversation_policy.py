@@ -60,6 +60,10 @@ def is_known_automated_outbound(text: str | None) -> bool:
             "comentario de conclusion",
             "ubicacion atendida",
         ),
+        (
+            "le atendio",
+            "que tenga un buen dia",
+        ),
     )
     return any(all(fragment in normalized for fragment in template) for template in known_templates)
 

@@ -163,11 +163,31 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
             reason,
         )
 
-        async with httpx.AsyncClient() as client:
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             transfer_response = await client.get(transfer_url, params=transfer_params, headers=headers)
-            
+
+        response_preview = transfer_response.text[:1000]
+        logger.critical(
+            "🔀 [TRANSFER API RESPONSE] message_id=%s group_id=%s status_code=%s body=%s",
+            message_id,
+            group_id,
+            transfer_response.status_code,
+            response_preview,
+        )
+
         if transfer_response.status_code != 200:
             error_msg = f"Error al transferir mensaje: {transfer_response.status_code} - {transfer_response.text}"
+            logger.error(error_msg)
+            return error_msg
+
+        try:
+            transfer_payload = transfer_response.json()
+        except ValueError:
+            transfer_payload = None
+
+        if isinstance(transfer_payload, dict) and transfer_payload.get("status") not in (None, "success"):
+            error_msg = f"Error al transferir mensaje: 200 - {transfer_response.text}"
             logger.error(error_msg)
             return error_msg
         

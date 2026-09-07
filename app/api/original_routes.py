@@ -6679,10 +6679,21 @@ async def whatsapp(request: Request):
             )
             db.Insert(transfer_note)
 
+            # Una transferencia exitosa es terminal: Chat2Desk controla el chat y
+            # SAM no debe enviar confirmaciones ni volver a procesar este inbound.
+            persist_successful_delivery_marker(db, from_number, uid, message_id)
+            mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Transferencia directa procesada; control entregado a humano",
+                    "transfer_result": transfer_result,
+                }
+            )
+
         except Exception as transfer_error:
             logger.error(f"❌ [DIRECT TRANSFER] Error ejecutando transferencia: {str(transfer_error)}")
             release_takeover(from_number, storage=db)
-            release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
             response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
 
         assistant_message = Message(
@@ -6755,7 +6766,24 @@ async def whatsapp(request: Request):
             from_number=from_number,
             message_id=message_id,
         )
-        response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
+        try:
+            response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
+        except requests.RequestException as send_error:
+            logger.error(
+                "Error enviando aviso de transferencia fallida a Chat2Desk para %s: %s",
+                from_number,
+                send_error,
+            )
+            recent_outbound_response_keys.remove(outbound_dedup_key)
+            release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+            return JSONResponse(
+                content={
+                    "status": False,
+                    "error": "Error enviando respuesta de transferencia directa",
+                    "transfer_result": transfer_result,
+                },
+                status_code=500,
+            )
         log_chat2desk_outbound_response(
             "whatsapp_main",
             response,
@@ -6781,6 +6809,8 @@ async def whatsapp(request: Request):
             response.status_code,
             response.text,
         )
+        recent_outbound_response_keys.remove(outbound_dedup_key)
+        release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
         return JSONResponse(
             content={
                 "status": False,

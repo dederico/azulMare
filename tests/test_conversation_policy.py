@@ -93,6 +93,13 @@ class OperatorOutboxClassificationTests(unittest.TestCase):
             )
         )
 
+    def test_known_operator_farewell_is_automated(self):
+        self.assertTrue(
+            is_known_automated_outbound(
+                "Le atendió Karyme Montserrat, ¡Que tenga un buen día!"
+            )
+        )
+
     def test_normal_operator_text_is_not_automated(self):
         self.assertFalse(is_known_automated_outbound("Buen día, revisaré personalmente su reporte."))
 

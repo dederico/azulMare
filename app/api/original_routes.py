@@ -114,6 +114,7 @@ from app.services.conversation_lifecycle import (
     get_lifecycle_state,
     inactivity_claim_is_current,
     list_inactivity_candidates,
+    mark_inactivity_failure,
     mark_inactivity_close_sent,
     mark_reopen_greeting_pending,
     mark_session_greeting_sent,
@@ -4220,6 +4221,7 @@ async def check_inactivity():
         inactivity_candidates = list_inactivity_candidates(
             threshold_seconds=INACTIVITY_THRESHOLD,
             storage=db,
+            limit=100,
         )
         for number in inactivity_candidates:
             session = user_sessions.get(number)
@@ -4263,16 +4265,28 @@ async def check_inactivity():
                 }
                 timeout = httpx.Timeout(20.0, connect=8.0)
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    lookup_response = await client.get(
-                        "https://api.chat2desk.com.mx/v1/clients",
-                        params={"phone": number},
-                        headers=headers,
-                    )
-                    lookup_response.raise_for_status()
-                    client_payload = lookup_response.json()
-                    clients = client_payload.get("data") or []
-                    if client_payload.get("status") != "success" or not clients:
-                        raise RuntimeError("Chat2Desk no devolvió el cliente")
+                    lifecycle_client_id = lifecycle_state.get("client_id")
+                    lifecycle_channel_id = lifecycle_state.get("channel_id") or 43906
+                    lifecycle_transport = lifecycle_state.get("transport") or "wa_direct"
+
+                    # New lifecycle rows carry the exact Chat2Desk identity. Legacy
+                    # WhatsApp rows may be resolved once by phone; widget/synthetic
+                    # identifiers must never enter an endless phone lookup loop.
+                    if not lifecycle_client_id:
+                        digits = "".join(ch for ch in str(number) if ch.isdigit())
+                        if lifecycle_transport == "widget" or not 10 <= len(digits) <= 15:
+                            raise ValueError("identificador Chat2Desk no resoluble")
+                        lookup_response = await client.get(
+                            "https://api.chat2desk.com.mx/v1/clients",
+                            params={"phone": number},
+                            headers=headers,
+                        )
+                        lookup_response.raise_for_status()
+                        client_payload = lookup_response.json()
+                        clients = client_payload.get("data") or []
+                        if client_payload.get("status") != "success" or not clients:
+                            raise ValueError("Chat2Desk no devolvió el cliente")
+                        lifecycle_client_id = clients[0]["id"]
 
                     if (
                         not inactivity_claim_is_current(number, claim_uid, storage=db)
@@ -4288,9 +4302,9 @@ async def check_inactivity():
                     send_response = await client.post(
                         "https://api.chat2desk.com.mx/v1/messages",
                         json={
-                            "client_id": clients[0]["id"],
-                            "channel_id": 43906,
-                            "transport": "wa_direct",
+                            "client_id": lifecycle_client_id,
+                            "channel_id": lifecycle_channel_id,
+                            "transport": lifecycle_transport,
                             "text": (
                                 "Parece que te ausentaste. La conversación se cerró por "
                                 "inactividad. Mándanos un mensaje para comenzar de nuevo. "
@@ -4327,11 +4341,21 @@ async def check_inactivity():
                     claim_uid,
                 )
             except Exception as error:
-                release_inactivity_claim(number, claim_uid, storage=db)
+                failure_count = int(lifecycle_state.get("inactivity_failure_count") or 0) + 1
+                terminal = isinstance(error, ValueError) or failure_count >= 5
+                mark_inactivity_failure(
+                    number,
+                    claim_uid,
+                    storage=db,
+                    terminal=terminal,
+                )
                 logger.error(
-                    "Error enviando mensaje de desconexión para %s: %s",
+                    "Error enviando mensaje de desconexión para %s: %s "
+                    "failure_count=%s terminal=%s",
                     number,
                     error,
+                    failure_count,
+                    terminal,
                 )
 
 
@@ -6010,6 +6034,9 @@ async def whatsapp(request: Request):
             uid,
             lifecycle_session_key,
             storage=db,
+            client_id=client_id,
+            channel_id=channel_id,
+            transport=transport,
         )
 
         if processed_message_ids.contains(uid):

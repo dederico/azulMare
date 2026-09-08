@@ -72,8 +72,25 @@ def ensure_conversation_lifecycle_storage(storage) -> bool:
                         inactivity_claim_uid TEXT,
                         inactivity_closed_for_uid TEXT,
                         reopen_greeting_pending BOOLEAN NOT NULL DEFAULT FALSE,
+                        client_id TEXT,
+                        channel_id TEXT,
+                        transport TEXT,
+                        inactivity_failure_count INTEGER NOT NULL DEFAULT 0,
+                        inactivity_next_retry_at DOUBLE PRECISION,
+                        inactivity_terminal BOOLEAN NOT NULL DEFAULT FALSE,
                         updated_at DOUBLE PRECISION NOT NULL
                     )
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    ALTER TABLE {LIFECYCLE_TABLE}
+                        ADD COLUMN IF NOT EXISTS client_id TEXT,
+                        ADD COLUMN IF NOT EXISTS channel_id TEXT,
+                        ADD COLUMN IF NOT EXISTS transport TEXT,
+                        ADD COLUMN IF NOT EXISTS inactivity_failure_count INTEGER NOT NULL DEFAULT 0,
+                        ADD COLUMN IF NOT EXISTS inactivity_next_retry_at DOUBLE PRECISION,
+                        ADD COLUMN IF NOT EXISTS inactivity_terminal BOOLEAN NOT NULL DEFAULT FALSE
                     """
                 )
             conn.commit()
@@ -97,6 +114,12 @@ def _blank_state(phone_number: str) -> dict[str, Any]:
         "inactivity_claim_uid": None,
         "inactivity_closed_for_uid": None,
         "reopen_greeting_pending": False,
+        "client_id": None,
+        "channel_id": None,
+        "transport": None,
+        "inactivity_failure_count": 0,
+        "inactivity_next_retry_at": None,
+        "inactivity_terminal": False,
         "updated_at": 0.0,
     }
 
@@ -113,7 +136,13 @@ def _row_to_state(row) -> dict[str, Any] | None:
         "inactivity_claim_uid": row[5],
         "inactivity_closed_for_uid": row[6],
         "reopen_greeting_pending": bool(row[7]),
-        "updated_at": float(row[8] or 0),
+        "client_id": row[8],
+        "channel_id": row[9],
+        "transport": row[10],
+        "inactivity_failure_count": int(row[11] or 0),
+        "inactivity_next_retry_at": float(row[12]) if row[12] is not None else None,
+        "inactivity_terminal": bool(row[13]),
+        "updated_at": float(row[14] or 0),
     }
 
 
@@ -133,6 +162,9 @@ def record_inbound_activity(
     *,
     storage=None,
     now: float | None = None,
+    client_id=None,
+    channel_id=None,
+    transport: str | None = None,
 ) -> dict[str, Any]:
     """Persist the newest accepted inbound so every replica sees the same activity."""
     key = normalize_phone_key(phone_number)
@@ -152,8 +184,17 @@ def record_inbound_activity(
                 state["last_inbound_uid"] = uid
                 state["last_inbound_at"] = timestamp
                 state["session_key"] = session_key
+                if client_id not in (None, ""):
+                    state["client_id"] = str(client_id)
+                if channel_id not in (None, ""):
+                    state["channel_id"] = str(channel_id)
+                if transport:
+                    state["transport"] = str(transport)
                 if is_newer:
                     state["inactivity_claim_uid"] = None
+                    state["inactivity_failure_count"] = 0
+                    state["inactivity_next_retry_at"] = None
+                    state["inactivity_terminal"] = False
                 state["updated_at"] = timestamp
             return state.copy()
 
@@ -166,17 +207,32 @@ def record_inbound_activity(
                 INSERT INTO {LIFECYCLE_TABLE}
                     (phone_number, last_inbound_uid, last_inbound_at, session_key,
                      greeted_session_key, inactivity_claim_uid,
-                     inactivity_closed_for_uid, reopen_greeting_pending, updated_at)
-                VALUES (%s, %s, %s, %s, NULL, NULL, NULL, FALSE, %s)
+                     inactivity_closed_for_uid, reopen_greeting_pending,
+                     client_id, channel_id, transport, inactivity_failure_count,
+                     inactivity_next_retry_at, inactivity_terminal, updated_at)
+                VALUES (%s, %s, %s, %s, NULL, NULL, NULL, FALSE,
+                        %s, %s, %s, 0, NULL, FALSE, %s)
                 ON CONFLICT (phone_number) DO UPDATE SET
                     last_inbound_uid = EXCLUDED.last_inbound_uid,
                     last_inbound_at = EXCLUDED.last_inbound_at,
                     session_key = EXCLUDED.session_key,
+                    client_id = COALESCE(EXCLUDED.client_id, {LIFECYCLE_TABLE}.client_id),
+                    channel_id = COALESCE(EXCLUDED.channel_id, {LIFECYCLE_TABLE}.channel_id),
+                    transport = COALESCE(EXCLUDED.transport, {LIFECYCLE_TABLE}.transport),
                     inactivity_claim_uid = CASE
                         WHEN {LIFECYCLE_TABLE}.last_inbound_uid IS DISTINCT FROM EXCLUDED.last_inbound_uid
                         THEN NULL
                         ELSE {LIFECYCLE_TABLE}.inactivity_claim_uid
                     END,
+                    inactivity_failure_count = CASE
+                        WHEN {LIFECYCLE_TABLE}.last_inbound_uid IS DISTINCT FROM EXCLUDED.last_inbound_uid
+                        THEN 0 ELSE {LIFECYCLE_TABLE}.inactivity_failure_count END,
+                    inactivity_next_retry_at = CASE
+                        WHEN {LIFECYCLE_TABLE}.last_inbound_uid IS DISTINCT FROM EXCLUDED.last_inbound_uid
+                        THEN NULL ELSE {LIFECYCLE_TABLE}.inactivity_next_retry_at END,
+                    inactivity_terminal = CASE
+                        WHEN {LIFECYCLE_TABLE}.last_inbound_uid IS DISTINCT FROM EXCLUDED.last_inbound_uid
+                        THEN FALSE ELSE {LIFECYCLE_TABLE}.inactivity_terminal END,
                     updated_at = EXCLUDED.updated_at
                 WHERE CASE
                     WHEN EXCLUDED.last_inbound_uid ~ '^[0-9]+$'
@@ -186,9 +242,17 @@ def record_inbound_activity(
                 END
                 RETURNING phone_number, last_inbound_uid, last_inbound_at, session_key,
                           greeted_session_key, inactivity_claim_uid,
-                          inactivity_closed_for_uid, reopen_greeting_pending, updated_at
+                          inactivity_closed_for_uid, reopen_greeting_pending,
+                          client_id, channel_id, transport, inactivity_failure_count,
+                          inactivity_next_retry_at, inactivity_terminal, updated_at
                 """,
-                (key, uid, timestamp, session_key, timestamp),
+                (
+                    key, uid, timestamp, session_key,
+                    str(client_id) if client_id not in (None, "") else None,
+                    str(channel_id) if channel_id not in (None, "") else None,
+                    str(transport) if transport else None,
+                    timestamp,
+                ),
             )
             row = cursor.fetchone()
             if row is None:
@@ -196,7 +260,9 @@ def record_inbound_activity(
                     f"""
                     SELECT phone_number, last_inbound_uid, last_inbound_at, session_key,
                            greeted_session_key, inactivity_claim_uid,
-                           inactivity_closed_for_uid, reopen_greeting_pending, updated_at
+                           inactivity_closed_for_uid, reopen_greeting_pending,
+                           client_id, channel_id, transport, inactivity_failure_count,
+                           inactivity_next_retry_at, inactivity_terminal, updated_at
                     FROM {LIFECYCLE_TABLE}
                     WHERE phone_number = %s
                     """,
@@ -216,6 +282,9 @@ def record_inbound_activity(
             session_key,
             storage=None,
             now=timestamp,
+            client_id=client_id,
+            channel_id=channel_id,
+            transport=transport,
         )
     finally:
         if conn is not None:
@@ -237,7 +306,9 @@ def get_lifecycle_state(phone_number: str, *, storage=None) -> dict[str, Any] | 
                 f"""
                 SELECT phone_number, last_inbound_uid, last_inbound_at, session_key,
                        greeted_session_key, inactivity_claim_uid,
-                       inactivity_closed_for_uid, reopen_greeting_pending, updated_at
+                       inactivity_closed_for_uid, reopen_greeting_pending,
+                       client_id, channel_id, transport, inactivity_failure_count,
+                       inactivity_next_retry_at, inactivity_terminal, updated_at
                 FROM {LIFECYCLE_TABLE}
                 WHERE phone_number = %s
                 """,
@@ -449,6 +520,7 @@ def list_inactivity_candidates(
     threshold_seconds: float,
     storage=None,
     now: float | None = None,
+    limit: int = 100,
 ) -> list[str]:
     """List durable conversations eligible for an inactivity close."""
     timestamp = float(now if now is not None else time.time())
@@ -465,7 +537,9 @@ def list_inactivity_candidates(
                 and not state.get("inactivity_claim_uid")
                 and state.get("inactivity_closed_for_uid")
                 != state.get("last_inbound_uid")
-            ]
+                and not state.get("inactivity_terminal")
+                and float(state.get("inactivity_next_retry_at") or 0) <= timestamp
+            ][: max(1, int(limit))]
 
     conn = None
     try:
@@ -479,9 +553,12 @@ def list_inactivity_candidates(
                   AND last_inbound_at <= %s
                   AND inactivity_claim_uid IS NULL
                   AND inactivity_closed_for_uid IS DISTINCT FROM last_inbound_uid
+                  AND inactivity_terminal = FALSE
+                  AND (inactivity_next_retry_at IS NULL OR inactivity_next_retry_at <= %s)
                 ORDER BY last_inbound_at ASC
+                LIMIT %s
                 """,
-                (cutoff,),
+                (cutoff, timestamp, max(1, int(limit))),
             )
             return [str(row[0]) for row in cursor.fetchall()]
     except Exception as error:
@@ -490,6 +567,7 @@ def list_inactivity_candidates(
             threshold_seconds=threshold_seconds,
             storage=None,
             now=timestamp,
+            limit=limit,
         )
     finally:
         if conn is not None:
@@ -518,6 +596,8 @@ def claim_inactivity_close(
                 float(state["last_inbound_at"]) > cutoff
                 or state.get("inactivity_claim_uid")
                 or state.get("inactivity_closed_for_uid") == uid
+                or state.get("inactivity_terminal")
+                or float(state.get("inactivity_next_retry_at") or 0) > timestamp
             ):
                 return None
             state["inactivity_claim_uid"] = uid
@@ -538,9 +618,11 @@ def claim_inactivity_close(
                   AND last_inbound_at <= %s
                   AND inactivity_claim_uid IS NULL
                   AND inactivity_closed_for_uid IS DISTINCT FROM last_inbound_uid
+                  AND inactivity_terminal = FALSE
+                  AND (inactivity_next_retry_at IS NULL OR inactivity_next_retry_at <= %s)
                 RETURNING last_inbound_uid
                 """,
-                (timestamp, key, cutoff),
+                (timestamp, key, cutoff, timestamp),
             )
             row = cursor.fetchone()
         conn.commit()
@@ -579,6 +661,9 @@ def mark_inactivity_close_sent(phone_number: str, claim_uid: str, *, storage=Non
             state["inactivity_claim_uid"] = None
             state["inactivity_closed_for_uid"] = str(claim_uid)
             state["reopen_greeting_pending"] = True
+            state["inactivity_failure_count"] = 0
+            state["inactivity_next_retry_at"] = None
+            state["inactivity_terminal"] = False
             state["updated_at"] = timestamp
             return True
 
@@ -592,6 +677,9 @@ def mark_inactivity_close_sent(phone_number: str, claim_uid: str, *, storage=Non
                 SET inactivity_claim_uid = NULL,
                     inactivity_closed_for_uid = %s,
                     reopen_greeting_pending = TRUE,
+                    inactivity_failure_count = 0,
+                    inactivity_next_retry_at = NULL,
+                    inactivity_terminal = FALSE,
                     updated_at = %s
                 WHERE phone_number = %s
                   AND last_inbound_uid = %s
@@ -637,6 +725,77 @@ def release_inactivity_claim(phone_number: str, claim_uid: str, *, storage=None)
         conn.commit()
     except Exception as error:
         logger.error("No se pudo liberar claim de inactividad para %s: %s", key, error)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def mark_inactivity_failure(
+    phone_number: str,
+    claim_uid: str,
+    *,
+    storage=None,
+    now: float | None = None,
+    terminal: bool = False,
+    base_delay_seconds: float = 300,
+    max_delay_seconds: float = 3600,
+) -> None:
+    """Release a failed inactivity claim with backoff, or quarantine it."""
+    key = normalize_phone_key(phone_number)
+    timestamp = float(now if now is not None else time.time())
+
+    if storage is None or not ensure_conversation_lifecycle_storage(storage):
+        with _memory_lock:
+            state = _memory_state.get(key)
+            if not state or str(state.get("inactivity_claim_uid")) != str(claim_uid):
+                return
+            failures = int(state.get("inactivity_failure_count") or 0) + 1
+            delay = min(
+                float(max_delay_seconds),
+                float(base_delay_seconds) * (2 ** (failures - 1)),
+            )
+            state["inactivity_claim_uid"] = None
+            state["inactivity_failure_count"] = failures
+            state["inactivity_next_retry_at"] = None if terminal else timestamp + delay
+            state["inactivity_terminal"] = bool(terminal)
+            state["updated_at"] = timestamp
+        return
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE {LIFECYCLE_TABLE}
+                SET inactivity_claim_uid = NULL,
+                    inactivity_failure_count = inactivity_failure_count + 1,
+                    inactivity_next_retry_at = CASE
+                        WHEN %s THEN NULL
+                        ELSE %s + LEAST(%s, %s * POWER(2, inactivity_failure_count))
+                    END,
+                    inactivity_terminal = %s,
+                    updated_at = %s
+                WHERE phone_number = %s AND inactivity_claim_uid = %s
+                """,
+                (
+                    bool(terminal), timestamp, float(max_delay_seconds),
+                    float(base_delay_seconds), bool(terminal), timestamp,
+                    key, str(claim_uid),
+                ),
+            )
+        conn.commit()
+    except Exception as error:
+        logger.error("No se pudo registrar fallo de inactividad para %s: %s", key, error)
+        mark_inactivity_failure(
+            key,
+            claim_uid,
+            storage=None,
+            now=timestamp,
+            terminal=terminal,
+            base_delay_seconds=base_delay_seconds,
+            max_delay_seconds=max_delay_seconds,
+        )
     finally:
         if conn is not None:
             conn.close()

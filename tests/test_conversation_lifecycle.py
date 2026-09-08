@@ -9,6 +9,7 @@ from app.services.conversation_lifecycle import (
     inactivity_claim_is_current,
     list_inactivity_candidates,
     mark_inactivity_close_sent,
+    mark_inactivity_failure,
     mark_reopen_greeting_pending,
     mark_session_greeting_sent,
     record_inbound_activity,
@@ -113,6 +114,52 @@ class ConversationLifecycleTests(unittest.TestCase):
             list_inactivity_candidates(threshold_seconds=900, now=1001),
             [self.phone],
         )
+
+    def test_activity_persists_delivery_identity(self):
+        record_inbound_activity(
+            self.phone,
+            100,
+            "request:1",
+            now=100,
+            client_id=305183524,
+            channel_id=43906,
+            transport="wa_direct",
+        )
+
+        state = get_lifecycle_state(self.phone)
+        self.assertEqual(state["client_id"], "305183524")
+        self.assertEqual(state["channel_id"], "43906")
+        self.assertEqual(state["transport"], "wa_direct")
+
+    def test_inactivity_failure_uses_backoff(self):
+        record_inbound_activity(self.phone, 100, "request:1", now=100)
+        claim_uid = claim_inactivity_close(
+            self.phone, threshold_seconds=900, now=1001
+        )
+        mark_inactivity_failure(self.phone, claim_uid, now=1001)
+
+        self.assertEqual(
+            list_inactivity_candidates(threshold_seconds=900, now=1200),
+            [],
+        )
+        self.assertEqual(
+            list_inactivity_candidates(threshold_seconds=900, now=1301),
+            [self.phone],
+        )
+
+    def test_terminal_inactivity_failure_is_quarantined_until_new_inbound(self):
+        record_inbound_activity(self.phone, 100, "request:1", now=100)
+        claim_uid = claim_inactivity_close(
+            self.phone, threshold_seconds=900, now=1001
+        )
+        mark_inactivity_failure(self.phone, claim_uid, now=1001, terminal=True)
+        self.assertEqual(
+            list_inactivity_candidates(threshold_seconds=900, now=9999),
+            [],
+        )
+
+        record_inbound_activity(self.phone, 101, "request:1", now=10000)
+        self.assertFalse(get_lifecycle_state(self.phone)["inactivity_terminal"])
 
     def test_new_inbound_cancels_pending_inactivity_claim(self):
         session_key = build_session_key(1, 10)

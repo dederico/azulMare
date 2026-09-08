@@ -238,12 +238,14 @@ def record_inbound_activity(
                         WHEN {LIFECYCLE_TABLE}.last_inbound_uid IS DISTINCT FROM EXCLUDED.last_inbound_uid
                         THEN FALSE ELSE {LIFECYCLE_TABLE}.inactivity_terminal END,
                     updated_at = EXCLUDED.updated_at
-                WHERE CASE
-                    WHEN EXCLUDED.last_inbound_uid ~ '^[0-9]+$'
-                     AND {LIFECYCLE_TABLE}.last_inbound_uid ~ '^[0-9]+$'
-                    THEN EXCLUDED.last_inbound_uid::NUMERIC >= {LIFECYCLE_TABLE}.last_inbound_uid::NUMERIC
-                    ELSE EXCLUDED.last_inbound_at >= {LIFECYCLE_TABLE}.last_inbound_at
-                END
+                WHERE {LIFECYCLE_TABLE}.last_inbound_uid IS NULL
+                   OR {LIFECYCLE_TABLE}.last_inbound_at IS NULL
+                   OR CASE
+                        WHEN EXCLUDED.last_inbound_uid ~ '^[0-9]+$'
+                         AND {LIFECYCLE_TABLE}.last_inbound_uid ~ '^[0-9]+$'
+                        THEN EXCLUDED.last_inbound_uid::NUMERIC >= {LIFECYCLE_TABLE}.last_inbound_uid::NUMERIC
+                        ELSE EXCLUDED.last_inbound_at >= {LIFECYCLE_TABLE}.last_inbound_at
+                      END
                 RETURNING phone_number, last_inbound_uid, last_inbound_at, session_key,
                           greeted_session_key, inactivity_claim_uid,
                           inactivity_closed_for_uid, reopen_greeting_pending,

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import app.services.conversation_lifecycle as lifecycle
 from app.services.conversation_lifecycle import (
@@ -225,6 +226,94 @@ class ConversationLifecycleTests(unittest.TestCase):
         state = get_lifecycle_state(self.phone)
         self.assertIsNone(state["last_inbound_uid"])
         self.assertEqual(state["conversation_epoch"], 1)
+
+    def test_admin_reset_accepts_next_inbound_activity(self):
+        record_inbound_activity(self.phone, 101, "request:1", now=100)
+        reset_conversation_lifecycle(self.phone)
+
+        state = record_inbound_activity(
+            self.phone,
+            102,
+            "request:2",
+            now=200,
+            client_id=305183524,
+            channel_id=43906,
+            transport="wa_direct",
+        )
+
+        self.assertEqual(state["last_inbound_uid"], "102")
+        self.assertEqual(state["last_inbound_at"], 200)
+        self.assertEqual(
+            list_inactivity_candidates(threshold_seconds=900, now=1101),
+            [self.phone],
+        )
+
+    def test_persistent_activity_upsert_explicitly_accepts_null_reset_row(self):
+        executed_sql = []
+        row = (
+            self.phone,
+            "102",
+            200.0,
+            "request:2",
+            None,
+            None,
+            None,
+            False,
+            "305183524",
+            "43906",
+            "wa_direct",
+            0,
+            None,
+            False,
+            2,
+            200.0,
+        )
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, sql, params):
+                executed_sql.append(sql)
+
+            def fetchone(self):
+                return row
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        with (
+            patch.object(lifecycle, "ensure_conversation_lifecycle_storage", return_value=True),
+            patch.object(lifecycle, "_connect", return_value=Connection()),
+        ):
+            state = record_inbound_activity(
+                self.phone,
+                102,
+                "request:2",
+                storage=object(),
+                now=200,
+                client_id=305183524,
+                channel_id=43906,
+                transport="wa_direct",
+            )
+
+        normalized_sql = " ".join(executed_sql[0].split())
+        self.assertIn(
+            "WHERE conversation_lifecycle.last_inbound_uid IS NULL OR "
+            "conversation_lifecycle.last_inbound_at IS NULL OR CASE",
+            normalized_sql,
+        )
+        self.assertEqual(state["last_inbound_uid"], "102")
 
     def test_epoch_invalidates_work_started_before_boundary(self):
         record_inbound_activity(self.phone, 101, "request:1", now=100)

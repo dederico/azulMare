@@ -15,6 +15,7 @@ from app.services.conversation_policy import (
     is_verified_public_phone,
     should_replace_unconfirmed_transfer_response,
     should_confirm_operator_outbox_takeover,
+    should_accept_bot_return_event,
     should_send_initial_greeting,
 )
 
@@ -170,6 +171,32 @@ class HumanControlPolicyTests(unittest.TestCase):
             is_human_takeover_message(
                 "Buen día, gracias por comunicarse a Atención Ciudadana, "
                 "le atiende Ana Silvia Reyes Tovar ¿en qué le puedo ayudar?"
+            )
+        )
+
+    def test_fresh_return_macro_can_release_takeover(self):
+        text = (
+            "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar "
+            "el chatbot para que pueda generar más reportes usando SAM."
+        )
+        self.assertTrue(
+            should_accept_bot_return_event(
+                message_type="to_client",
+                text=text,
+                stale=False,
+            )
+        )
+
+    def test_stale_return_macro_cannot_release_current_takeover(self):
+        text = (
+            "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar "
+            "el chatbot para que pueda generar más reportes usando SAM."
+        )
+        self.assertFalse(
+            should_accept_bot_return_event(
+                message_type="to_client",
+                text=text,
+                stale=True,
             )
         )
 

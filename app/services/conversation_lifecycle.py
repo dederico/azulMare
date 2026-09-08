@@ -258,6 +258,34 @@ def get_lifecycle_state(phone_number: str, *, storage=None) -> dict[str, Any] | 
             conn.close()
 
 
+def reset_conversation_lifecycle(phone_number: str, *, storage=None) -> bool:
+    """Remove all durable and local lifecycle state for an administrative reset."""
+    key = normalize_phone_key(phone_number)
+    with _memory_lock:
+        memory_removed = _memory_state.pop(key, None) is not None
+
+    if storage is None or not ensure_conversation_lifecycle_storage(storage):
+        return memory_removed
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM {LIFECYCLE_TABLE} WHERE phone_number = %s",
+                (key,),
+            )
+            database_removed = cursor.rowcount > 0
+        conn.commit()
+        return database_removed or memory_removed
+    except Exception as error:
+        logger.error("No se pudo reiniciar lifecycle para %s: %s", key, error)
+        return memory_removed
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def claim_session_greeting(
     phone_number: str,
     session_key: str,

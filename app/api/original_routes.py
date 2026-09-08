@@ -117,6 +117,7 @@ from app.services.conversation_lifecycle import (
     mark_session_greeting_sent,
     record_inbound_activity,
     release_inactivity_claim,
+    reset_conversation_lifecycle,
 )
 from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
@@ -131,6 +132,7 @@ from app.services.conversation_policy import (
     is_non_authoritative_control_source,
     is_verified_public_phone,
     history_after_latest_context_reset,
+    should_accept_bot_return_event,
     should_confirm_operator_outbox_takeover,
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
@@ -5386,7 +5388,34 @@ async def whatsapp(request: Request):
             return JSONResponse(content={"status": True, "message": "Human agent takeover registered"})
 
         # 🎯 SEGUNDO: Verificar return to AI
-        if message_type == 'to_client' and is_bot_return_message(message_text):
+        if (
+            message_type == 'to_client'
+            and is_bot_return_message(message_text)
+            and stale_operator_outbox
+        ):
+            logger.warning(
+                "🚫 [STALE RETURN TO SAM] Devolución tardía ignorada sin liberar "
+                "el takeover actual. from_number=%s message_id=%s operator_id=%s "
+                "age_seconds=%s precedes_bot_return=%s",
+                from_number,
+                message_id,
+                operator_id,
+                (
+                    f"{operator_outbox_age_seconds:.1f}"
+                    if operator_outbox_age_seconds is not None
+                    else "unknown"
+                ),
+                outbox_precedes_bot_return,
+            )
+            return JSONResponse(
+                content={"status": True, "message": "Stale return-to-SAM event ignored"}
+            )
+
+        if should_accept_bot_return_event(
+            message_type=message_type,
+            text=message_text,
+            stale=stale_operator_outbox,
+        ):
             released_control = consume_trusted_human_control(from_number, storage=db)
             if not released_control:
                 logger.warning(
@@ -7983,6 +8012,7 @@ async def reset_conversation(phone_number: str):
             "hsm_sent_reports": False,
             "sent_evaluation_messages": False,
             "finalized_report_numbers": False,
+            "conversation_lifecycle": False,
         }
 
         with report_sessions_lock:
@@ -8014,6 +8044,10 @@ async def reset_conversation(phone_number: str):
         if get_active_takeover(phone_number, storage=db):
             memory_cleanup["transferred_numbers"] = True
         release_takeover(phone_number, storage=db)
+        memory_cleanup["conversation_lifecycle"] = reset_conversation_lifecycle(
+            phone_number,
+            storage=db,
+        )
 
         if phone_number in last_response_time:
             del last_response_time[phone_number]

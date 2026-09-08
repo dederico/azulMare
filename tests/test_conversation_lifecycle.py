@@ -13,6 +13,7 @@ from app.services.conversation_lifecycle import (
     mark_session_greeting_sent,
     record_inbound_activity,
     release_inactivity_claim,
+    reset_conversation_lifecycle,
 )
 
 
@@ -151,6 +152,13 @@ class ConversationLifecycleTests(unittest.TestCase):
         record_inbound_activity(self.phone, 99, session_key, now=200)
 
         self.assertEqual(get_lifecycle_state(self.phone)["last_inbound_uid"], "101")
+
+    def test_admin_reset_removes_lifecycle_state(self):
+        session_key = build_session_key(1, 10)
+        record_inbound_activity(self.phone, 101, session_key, now=100)
+
+        self.assertTrue(reset_conversation_lifecycle(self.phone))
+        self.assertIsNone(get_lifecycle_state(self.phone))
 
 
 if __name__ == "__main__":

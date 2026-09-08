@@ -81,6 +81,20 @@ def is_bot_return_message(text: str | None) -> bool:
     )
 
 
+def should_accept_bot_return_event(
+    *,
+    message_type: str | None,
+    text: str | None,
+    stale: bool,
+) -> bool:
+    """Only a fresh outbound return macro may release current human control."""
+    return bool(
+        message_type == "to_client"
+        and not stale
+        and is_bot_return_message(text)
+    )
+
+
 def should_replace_unconfirmed_transfer_response(
     *,
     transfer_attempted: bool,

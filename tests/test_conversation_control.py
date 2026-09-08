@@ -10,6 +10,7 @@ from app.services.conversation_control import (
     get_active_human_control,
     normalize_phone_key,
     release_human_control,
+    release_human_control_if_matches,
 )
 
 
@@ -55,6 +56,19 @@ class ConversationControlTests(unittest.TestCase):
         self.assertIsNone(control["expires_at"])
 
         release_human_control(self.phone)
+        self.assertIsNone(get_active_human_control(self.phone))
+
+    def test_conditional_release_cannot_remove_a_newer_takeover(self):
+        activate_human_control(
+            self.phone,
+            expires_at=None,
+            source="confirmed_operator_outbox:1",
+            transfer_message_id=200,
+        )
+
+        self.assertFalse(release_human_control_if_matches(self.phone, 100))
+        self.assertIsNotNone(get_active_human_control(self.phone))
+        self.assertTrue(release_human_control_if_matches(self.phone, 200))
         self.assertIsNone(get_active_human_control(self.phone))
 
     def test_persistent_absence_clears_stale_replica_memory(self):

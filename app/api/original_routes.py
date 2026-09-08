@@ -104,6 +104,7 @@ from app.services.conversation_control import (
     get_active_human_control,
     normalize_phone_key,
     release_human_control,
+    release_human_control_if_matches,
 )
 from app.services.conversation_lifecycle import (
     build_session_key,
@@ -3385,6 +3386,42 @@ def get_latest_persisted_context_reset_timestamp(db, phone_number: str) -> float
         if connection is not None:
             connection.close()
 
+
+def rollback_takeover_if_preceding_context_boundary(
+    db,
+    phone_number: str,
+    event_timestamp: float | None,
+    message_id,
+) -> bool:
+    """Undo only this webhook's takeover if a concurrent reset superseded it."""
+    latest_boundary = get_latest_persisted_context_reset_timestamp(
+        db,
+        phone_number,
+    )
+    if not event_precedes_context_boundary(
+        event_timestamp=event_timestamp,
+        boundary_timestamp=latest_boundary,
+        tolerance_seconds=STALE_RETURN_EVENT_TOLERANCE_SECONDS,
+    ):
+        return False
+
+    removed = release_human_control_if_matches(
+        phone_number,
+        message_id,
+        storage=db,
+    )
+    transferred_numbers.pop(normalize_phone_key(phone_number), None)
+    logger.warning(
+        "🚫 [CONTEXT BOUNDARY ROLLBACK] Takeover anterior al reset descartado. "
+        "from_number=%s message_id=%s event_time=%s boundary_time=%s removed=%s",
+        phone_number,
+        message_id,
+        format_event_timestamp_for_log(event_timestamp),
+        format_event_timestamp_for_log(latest_boundary),
+        removed,
+    )
+    return True
+
 def has_recent_report(phone_number, max_age_minutes=15):
     """
     Verifica si un número tiene un reporte creado recientemente.
@@ -5388,6 +5425,15 @@ async def whatsapp(request: Request):
                 message_id=message_id,
                 storage=db,
             )
+            if rollback_takeover_if_preceding_context_boundary(
+                db,
+                from_number,
+                operator_outbox_event_timestamp,
+                message_id,
+            ):
+                return JSONResponse(
+                    content={"status": True, "message": "Superseded human takeover event ignored"}
+                )
             
             try:
                 system_notification = Message(
@@ -5435,6 +5481,32 @@ async def whatsapp(request: Request):
             text=message_text,
             stale=stale_operator_outbox,
         ):
+            active_control_before_return = get_active_takeover(
+                from_number,
+                storage=db,
+            )
+            if not active_control_before_return:
+                logger.warning(
+                    "🚫 [DUPLICATE RETURN TO SAM] Mensaje de retorno ignorado porque el "
+                    "takeover ya fue liberado o no estaba activo. from_number=%s "
+                    "operator_id=%s message_id=%s",
+                    from_number,
+                    operator_id,
+                    message_id,
+                )
+                return JSONResponse(
+                    content={"status": True, "message": "Return-to-SAM ya consumido o sin takeover activo"}
+                )
+
+            # Publicar el límite antes de liberar el control. Así cualquier
+            # outbox anterior que ya esté corriendo en otra réplica lo verá al
+            # hacer su verificación final y no podrá reactivar el takeover.
+            reset_marker = persist_context_reset_marker(
+                db,
+                from_number,
+                "human-return",
+                message_id,
+            )
             released_control = consume_human_control(from_number, storage=db)
             if not released_control:
                 logger.warning(
@@ -5454,12 +5526,6 @@ async def whatsapp(request: Request):
             logger.debug(f"Removed {from_number} from human takeover control")
 
             clear_local_conversation_context(from_number, drop_session=True)
-            reset_marker = persist_context_reset_marker(
-                db,
-                from_number,
-                "human-return",
-                message_id,
-            )
             user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
             closed_by_inactivity.pop(from_number, None)
             logger.info("⏱️ [INACTIVITY RESET] Temporizador reiniciado tras devolución a SAM para %s", from_number)
@@ -5597,6 +5663,40 @@ async def whatsapp(request: Request):
                 OPERATOR_OUTBOX_MARKER_GRACE_SECONDS,
             )
 
+        # La devolución a SAM puede ocurrir en otra réplica mientras este
+        # webhook espera la verificación del marcador del bot. No reutilizar la
+        # decisión de antigüedad tomada antes de ese await: volver a consultar
+        # el límite durable justo antes de autorizar cualquier takeover.
+        if (
+            message_type == 'to_client'
+            and hook_type == 'outbox'
+            and operator_outbox_event_timestamp is not None
+            and not stale_operator_outbox
+        ):
+            refreshed_context_reset_timestamp = (
+                get_latest_persisted_context_reset_timestamp(db, from_number)
+            )
+            if event_precedes_context_boundary(
+                event_timestamp=operator_outbox_event_timestamp,
+                boundary_timestamp=refreshed_context_reset_timestamp,
+                tolerance_seconds=STALE_RETURN_EVENT_TOLERANCE_SECONDS,
+            ):
+                stale_operator_outbox = True
+                outbox_precedes_context_boundary = True
+                logger.warning(
+                    "🚫 [CONTEXT BOUNDARY RACE] Takeover cancelado porque la "
+                    "conversación volvió a SAM durante el procesamiento. "
+                    "from_number=%s message_id=%s operator_id=%s "
+                    "event_time=%s boundary_time=%s",
+                    from_number,
+                    message_id,
+                    payload.get('operator_id'),
+                    payload.get('event_time'),
+                    format_event_timestamp_for_log(
+                        refreshed_context_reset_timestamp
+                    ),
+                )
+
         if stale_operator_outbox:
             logger.warning(
                 "🚫 [STALE OPERATOR OUTBOX] Ignorando takeover tardío para %s message_id=%s "
@@ -5641,6 +5741,15 @@ async def whatsapp(request: Request):
                 message_id=message_id,
                 storage=db,
             )
+            if rollback_takeover_if_preceding_context_boundary(
+                db,
+                from_number,
+                operator_outbox_event_timestamp,
+                message_id,
+            ):
+                return JSONResponse(
+                    content={"status": True, "message": "Superseded operator outbox ignored"}
+                )
             logger.info(
                 "👤 [CONFIRMED OPERATOR OUTBOX] Takeover humano persistido. "
                 "from_number=%s message_id=%s operator_id=%s",
@@ -8044,6 +8153,14 @@ async def reset_conversation(phone_number: str):
     try:
         db = LocalStorage()
         deleted_messages = db.delete_messages_by_number(phone_number)
+        # Publicar primero el nuevo límite: ningún webhook previo que continúe
+        # ejecutándose en otra réplica podrá reinstalar el control borrado.
+        admin_reset_marker = persist_context_reset_marker(
+            db,
+            normalize_phone_key(phone_number),
+            "admin-reset",
+            datetime.now().timestamp(),
+        )
         dedup_items_cleared = dedup_manager.force_clear_protection(phone_number)
 
         memory_cleanup = {
@@ -8135,16 +8252,6 @@ async def reset_conversation(phone_number: str):
         if phone_number in finalized_report_numbers:
             finalized_report_numbers.discard(phone_number)
             memory_cleanup["finalized_report_numbers"] = True
-
-        # Aunque el historial visible se borra, conservamos un único marcador
-        # interno para que una reentrega vieja de Chat2Desk no reactive takeover
-        # ni vuelva a introducir contexto anterior después del reset.
-        admin_reset_marker = persist_context_reset_marker(
-            db,
-            normalize_phone_key(phone_number),
-            "admin-reset",
-            datetime.now().timestamp(),
-        )
 
         logger.warning(
             f"🧹 [ADMIN RESET] Conversación reiniciada para {phone_number}. "

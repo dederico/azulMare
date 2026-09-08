@@ -162,6 +162,59 @@ def release_human_control(phone_number: str, *, storage=None) -> None:
             conn.close()
 
 
+def release_human_control_if_matches(
+    phone_number: str,
+    transfer_message_id: str | int | None,
+    *,
+    storage=None,
+) -> bool:
+    """Release only the takeover created by the specified webhook."""
+    key = normalize_phone_key(phone_number)
+    expected_message_id = str(transfer_message_id or "")
+
+    if storage is None or not ensure_conversation_control_storage(storage):
+        with _memory_lock:
+            control = _memory_controls.get(key)
+            if not control or str(control.get("transfer_message_id") or "") != expected_message_id:
+                return False
+            _memory_controls.pop(key, None)
+            return True
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                DELETE FROM {CONTROL_TABLE}
+                WHERE phone_number = %s
+                  AND transfer_message_id = %s
+                RETURNING phone_number
+                """,
+                (key, expected_message_id),
+            )
+            removed = bool(cursor.fetchone())
+        conn.commit()
+    except Exception as error:
+        logger.error(
+            "No se pudo liberar takeover coincidente para %s message_id=%s: %s",
+            key,
+            expected_message_id,
+            error,
+        )
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if removed:
+        with _memory_lock:
+            current = _memory_controls.get(key)
+            if str((current or {}).get("transfer_message_id") or "") == expected_message_id:
+                _memory_controls.pop(key, None)
+    return removed
+
+
 def consume_human_control(phone_number: str, *, storage=None) -> dict[str, Any] | None:
     """Atomically release any active human takeover exactly once.
 

@@ -2,6 +2,7 @@ import json
 import openai
 import httpx
 import asyncio
+import os
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
@@ -13,6 +14,16 @@ OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=25.0)
 OPENAI_MAX_RETRIES = 3
 OPENAI_LOCAL_RETRY_ATTEMPTS = 2
 OPENAI_LOCAL_RETRY_BACKOFF_SECONDS = 1.0
+DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
+DEFAULT_REASONING_EFFORT = "high"
+SUPPORTED_REASONING_EFFORTS = {
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+}
 
 
 class OpenAIService(LLMService):
@@ -119,6 +130,22 @@ class OpenAIService(LLMService):
             or "ConnectTimeout" in type(error).__name__
         )
 
+    def _reasoning_effort(self) -> str:
+        configured = (
+            os.getenv("OPENAI_REASONING_EFFORT")
+            or self.config.get("reasoning_effort")
+            or DEFAULT_REASONING_EFFORT
+        )
+        normalized = str(configured).strip().lower()
+        if normalized not in SUPPORTED_REASONING_EFFORTS:
+            logger.warning(
+                "OPENAI_REASONING_EFFORT=%s no es válido; usando %s",
+                configured,
+                DEFAULT_REASONING_EFFORT,
+            )
+            return DEFAULT_REASONING_EFFORT
+        return normalized
+
     async def _create_chat_completion_with_local_retry(self, **kwargs: Any):
         last_error: Exception | None = None
 
@@ -209,8 +236,9 @@ class OpenAIService(LLMService):
         
         self.add_to_conversation("user", user_input)
         logger.critical(
-            "🧠 [LLM TRACE] start model=%s history_messages=%s user_input=%s",
-            "gpt-5.6-luna",
+            "🧠 [LLM TRACE] start model=%s reasoning_effort=%s history_messages=%s user_input=%s",
+            DEFAULT_OPENAI_MODEL,
+            self._reasoning_effort(),
             # "gpt-5.4-mini-2026-03-17",
             len(self.conversation_history),
             self._preview_text(user_input),
@@ -299,10 +327,10 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         try:
             # Crear una solicitud separada para resumir el contexto
             summary_response = await self._create_chat_completion_with_local_retry(
-                model="gpt-5.6-luna",  # model="gpt-5.4-mini-2026-03-17"
+                model=DEFAULT_OPENAI_MODEL,
                 #model=self.config.get("model") or "gpt-3.5-turbo-1106",
                 messages=[{"role": "user", "content": summary_prompt}],
-                temperature=0.1,
+                reasoning_effort="low",
             )
             
             summary = summary_response.choices[0].message.content
@@ -327,36 +355,18 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             self.add_to_conversation("system", "Nota: Parte del historial de conversación anterior ha sido eliminado para optimizar el rendimiento.")
 
     async def llm_generator(self):
-        # Usar o3-mini si está configurado
-        model = "gpt-5.6-luna"
-        # model = "gpt-5.4-mini-2026-03-17"
-        #model = self.config.get("model") or "gpt-5.4-mini-2026-03-17"
+        model = DEFAULT_OPENAI_MODEL
         tools_payload = self.function_manager.get_function_definition()
         self._log_tools_payload(model, tools_payload)
-        
-        # Comprobar si estamos usando un modelo de razonamiento (o3-mini)
-        if model == "o3-mini":
-            # Si es un modelo de razonamiento, incluir el parámetro reasoning_effort
-            generator = await self._create_chat_completion_with_local_retry(
-                model=model,
-                messages=self.conversation_history,
-                stream=True,
-                reasoning_effort=self.config.get("reasoning_effort", "medium"),
-                tool_choice="auto",
-                tools=tools_payload,
-            )
-        else:
-            # Para modelos regulares, incluir temperature
-            generator = await self._create_chat_completion_with_local_retry(
-                model=model,
-                messages=self.conversation_history,
-                stream=True,
-                reasoning_effort="none",
-                tool_choice="auto",
-                #temperature=0.1,
-                tools=tools_payload,
-            )
-        return generator
+
+        return await self._create_chat_completion_with_local_retry(
+            model=model,
+            messages=self.conversation_history,
+            stream=True,
+            reasoning_effort=self._reasoning_effort(),
+            tool_choice="auto",
+            tools=tools_payload,
+        )
 
     def handle_tool_call(self, tool_call_chunks) -> None:
         for tool_call in tool_call_chunks:

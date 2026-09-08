@@ -148,6 +148,13 @@ from app.services.inbound_processing import (
     mark_inbound_processing_delivered,
     release_inbound_processing_claim,
 )
+from app.services.webhook_jobs import (
+    claim_webhook_job,
+    complete_webhook_job,
+    enqueue_webhook_job,
+    ensure_webhook_job_storage,
+    fail_webhook_job,
+)
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 evaluated_reports = {}
@@ -4959,6 +4966,77 @@ async def remove_from_transferred(number, delay_seconds):
     await asyncio.sleep(delay_seconds)
     release_takeover(number, storage=LocalStorage())
     logger.debug(f"Bot re-enabled for {number} after {delay_seconds} seconds")
+
+
+class QueuedWebhookRequest:
+    """Minimal Request adapter used by the durable webhook worker."""
+
+    def __init__(self, payload, query_params=None):
+        self._payload = payload
+        self.query_params = query_params or {}
+        self.headers = {}
+        self.client = None
+
+    async def json(self):
+        return self._payload
+
+
+async def process_chat2desk_webhook_jobs():
+    concurrency = max(1, int(os.getenv("CHAT2DESK_WEBHOOK_WORKERS", "2")))
+
+    async def worker(worker_number):
+        logger.critical("📥 [WEBHOOK WORKER] worker=%s iniciado", worker_number)
+        while True:
+            job = None
+            try:
+                storage = LocalStorage()
+                job = await asyncio.to_thread(claim_webhook_job, storage)
+                if not job:
+                    await asyncio.sleep(0.2)
+                    continue
+
+                result = await _process_whatsapp_request(
+                    QueuedWebhookRequest(job["payload"], job["query_params"])
+                )
+                status_code = int(getattr(result, "status_code", 200) or 200)
+                if status_code >= 500:
+                    raise RuntimeError(f"procesador devolvió HTTP {status_code}")
+                result_body = getattr(result, "body", b"")
+                if result_body:
+                    decoded = json.loads(result_body.decode("utf-8"))
+                    if decoded.get("status") is False or decoded.get("error"):
+                        raise RuntimeError(decoded.get("error") or "procesamiento no confirmado")
+
+                await asyncio.to_thread(
+                    complete_webhook_job,
+                    storage,
+                    job["id"],
+                    job["claim_token"],
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.exception(
+                    "💥 [WEBHOOK JOB FAILURE] worker=%s event_key=%s error=%s",
+                    worker_number,
+                    job.get("event_key") if job else None,
+                    error,
+                )
+                if job:
+                    try:
+                        await asyncio.to_thread(
+                            fail_webhook_job,
+                            LocalStorage(),
+                            job["id"],
+                            job["claim_token"],
+                            error,
+                            attempts=job["attempts"],
+                        )
+                    except Exception:
+                        logger.exception("No se pudo reprogramar el webhook fallido")
+                await asyncio.sleep(0.5)
+
+    await asyncio.gather(*(worker(index + 1) for index in range(concurrency)))
 # ------------------------------
 # Función de ciclo de vida (lifespan)
 # ------------------------------
@@ -4969,6 +5047,8 @@ async def lifespan(app: FastAPI):
     logger.critical("🚀 [DEPLOYMENT] sha=%s", DEPLOYMENT_SHA)
     ensure_conversation_control_storage(LocalStorage())
     ensure_conversation_lifecycle_storage(LocalStorage())
+    ensure_webhook_job_storage(LocalStorage())
+    asyncio.create_task(process_chat2desk_webhook_jobs())
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
     if automatic_report_timeouts_enabled(os.getenv("ENABLE_AUTO_REPORT_TIMEOUTS")):
@@ -5237,8 +5317,7 @@ def get_images_from_payload(payload):
     return fotos_urls
 
 
-@router.post("/whatsapp")
-async def whatsapp(request: Request):
+async def _process_whatsapp_request(request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
     # Configuración de base de datos y demás servicios
     db = LocalStorage()
@@ -6040,13 +6119,10 @@ async def whatsapp(request: Request):
         )
 
         if processed_message_ids.contains(uid):
-            logger.debug(f"Ignorando mensaje duplicado con id={uid} antes de procesar flujos")
-            release_inbound_processing_claim(
-                uid,
-                inbound_claim_token,
-                storage=db,
-            )
-            return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
+            # The durable claim above is authoritative. A previous local attempt
+            # may have failed after touching this cache, so it must not suppress
+            # a durable retry.
+            logger.info("♻️ [LOCAL RETRY] Reprocesando uid=%s con claim durable", uid)
 
         processed_message_ids.add(uid)
         if len(processed_message_ids) > 1000:
@@ -6344,7 +6420,8 @@ async def whatsapp(request: Request):
                                         from_number=from_number,
                                         message_id=message_id,
                                     )
-                                    direct_response = requests.post(chat2desk_url, json=data, headers=headers)
+                                    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
+                                        direct_response = await http_client.post(chat2desk_url, json=data, headers=headers)
                                     log_chat2desk_outbound_response(
                                         "nearest_office_direct",
                                         direct_response,
@@ -6436,7 +6513,8 @@ async def whatsapp(request: Request):
                             from_number=from_number,
                             message_id=message_id,
                         )
-                        response = requests.post(chat2desk_url, json=data, headers=headers)
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
+                            response = await http_client.post(chat2desk_url, json=data, headers=headers)
                         log_chat2desk_outbound_response(
                             "post_folio_image_ignore",
                             response,
@@ -6536,7 +6614,8 @@ async def whatsapp(request: Request):
                             from_number=from_number,
                             message_id=message_id,
                         )
-                        response = requests.post(chat2desk_url, json=data, headers=headers)
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
+                            response = await http_client.post(chat2desk_url, json=data, headers=headers)
                         log_chat2desk_outbound_response(
                             "image_ack",
                             response,
@@ -7149,8 +7228,9 @@ async def whatsapp(request: Request):
             message_id=message_id,
         )
         try:
-            response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
-        except requests.RequestException as send_error:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
+                response = await http_client.post(chat2desk_url, json=data, headers=headers)
+        except httpx.HTTPError as send_error:
             logger.error(
                 "Error enviando aviso de transferencia fallida a Chat2Desk para %s: %s",
                 from_number,
@@ -7806,7 +7886,8 @@ async def whatsapp(request: Request):
             message_id=message_id,
         )
         # Envío robusto con manejo de errores específicos
-        response = requests.post(chat2desk_url, json=data, headers=headers, timeout=30)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
+            response = await http_client.post(chat2desk_url, json=data, headers=headers)
         log_chat2desk_outbound_response(
             "whatsapp_main",
             response,
@@ -7858,15 +7939,15 @@ async def whatsapp(request: Request):
             logger.error(f"Error HTTP {response.status_code}: {response.text}")
             content = {"status": False, "error": f"Error HTTP {response.status_code}"}
             
-    except requests.Timeout:
+    except httpx.TimeoutException:
         logger.error(f"Timeout enviando mensaje a {from_number}")
         content = {"status": False, "error": "Timeout en Chat2Desk"}
         
-    except requests.ConnectionError:
+    except httpx.ConnectError:
         logger.error(f"Error de conexión con Chat2Desk para {from_number}")
         content = {"status": False, "error": "Error de conexión con Chat2Desk"}
         
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         logger.error(f"Error de conexión con Chat2Desk: {str(e)}")
         content = {"status": False, "error": f"Error de conexión: {str(e)}"}
         
@@ -7876,6 +7957,7 @@ async def whatsapp(request: Request):
 
     if not content.get("status"):
         release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+        processed_message_ids.remove(uid)
 
     farewell_keywords = ["gracias", "adiós", "adios", "hasta luego", "chao", "bye", "es todo", "terminar"]
     bot_farewell_indicators = ["que tengas", "hasta luego", "adiós", "adios", "buen día", "hasta pronto"]
@@ -7887,6 +7969,42 @@ async def whatsapp(request: Request):
         )
 
     return JSONResponse(content=content)
+
+
+@router.post("/whatsapp")
+async def whatsapp(request: Request):
+    """Durably accept Chat2Desk events before any slow downstream operation."""
+    try:
+        payload = await request.json()
+        query_params = dict(request.query_params)
+        inserted, event_key = await asyncio.to_thread(
+            enqueue_webhook_job,
+            LocalStorage(),
+            payload,
+            query_params,
+        )
+        logger.info(
+            "📥 [WEBHOOK ACCEPTED] event_key=%s queued=%s message_id=%s",
+            event_key,
+            inserted,
+            payload.get("message_id"),
+        )
+        return JSONResponse(
+            content={
+                "status": True,
+                "message": "Webhook encolado" if inserted else "Webhook duplicado ya recibido",
+                "event_key": event_key,
+            }
+        )
+    except Exception as error:
+        # A non-2xx response is intentional here: Chat2Desk must retry when the
+        # durable write did not happen.
+        logger.exception("No se pudo persistir webhook de Chat2Desk: %s", error)
+        return JSONResponse(
+            content={"status": False, "error": "No se pudo encolar el webhook"},
+            status_code=503,
+        )
+
 
 def format_phone_number(phone):
     """

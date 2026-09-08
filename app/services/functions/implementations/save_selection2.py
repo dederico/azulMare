@@ -30,7 +30,7 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
         string: Número de folio del reporte.
     """
 
-    import requests
+    import httpx
     import json
     from app.util.logger import logger
     import re
@@ -201,7 +201,8 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
         
         # Enviar la solicitud
         logger.debug(f"Enviando payload a {url}")
-        response = requests.post(url, json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0)) as http_client:
+            response = await http_client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         
         logger.info(f"POST to {url} successful. Response: {response.status_code} {response.text}")

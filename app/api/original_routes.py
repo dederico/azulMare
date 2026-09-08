@@ -125,6 +125,7 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     extract_confirmed_folio,
+    event_precedes_context_boundary,
     inactivity_snapshot_is_still_stale,
     is_bot_return_message,
     is_emergency_related,
@@ -137,6 +138,7 @@ from app.services.conversation_policy import (
     should_confirm_operator_outbox_takeover,
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
+    return_greeting_covers_current_inbound,
 )
 from app.services.inbound_processing import (
     claim_inbound_processing,
@@ -3342,6 +3344,47 @@ def persist_context_reset_marker(db, phone_number: str, reason: str, event_id) -
     applied_context_reset_markers[phone_number] = marker_uid
     return marker_uid
 
+
+def get_latest_persisted_context_reset_timestamp(db, phone_number: str) -> float | None:
+    """Read the newest durable session boundary shared by every replica."""
+    connection = None
+    try:
+        connection = psycopg2.connect(
+            dbname=db.dbName,
+            user=db.user,
+            password=db.password,
+            host=db.host,
+            port=db.port,
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT EXTRACT(
+                    EPOCH FROM (NULLIF(time, '')::timestamp AT TIME ZONE 'UTC')
+                )
+                FROM messages
+                WHERE number = %s
+                  AND uid LIKE %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalize_phone_key(phone_number), "conversation-reset-%"),
+            )
+            row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        return float(row[0])
+    except Exception as error:
+        logger.error(
+            "No se pudo consultar el límite persistente de contexto para %s: %s",
+            phone_number,
+            error,
+        )
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
 def has_recent_report(phone_number, max_age_minutes=15):
     """
     Verifica si un número tiene un reporte creado recientemente.
@@ -5276,20 +5319,37 @@ async def whatsapp(request: Request):
             if operator_outbox_event_timestamp is not None
             else None
         )
-        outbox_precedes_bot_return = bool(
+        persisted_context_reset_timestamp = (
+            get_latest_persisted_context_reset_timestamp(db, from_number)
+            if message_type == 'to_client' and hook_type == 'outbox'
+            else None
+        )
+        in_memory_context_reset_timestamp = bot_returned_at.get(from_number)
+        context_reset_timestamps = [
+            timestamp
+            for timestamp in (
+                persisted_context_reset_timestamp,
+                in_memory_context_reset_timestamp,
+            )
+            if timestamp is not None
+        ]
+        latest_context_reset_timestamp = (
+            max(context_reset_timestamps) if context_reset_timestamps else None
+        )
+        outbox_precedes_context_boundary = bool(
             message_type == 'to_client'
             and hook_type == 'outbox'
-            and operator_outbox_event_timestamp is not None
-            and from_number in bot_returned_at
-            and operator_outbox_event_timestamp <= (
-                bot_returned_at[from_number] + STALE_RETURN_EVENT_TOLERANCE_SECONDS
+            and event_precedes_context_boundary(
+                event_timestamp=operator_outbox_event_timestamp,
+                boundary_timestamp=latest_context_reset_timestamp,
+                tolerance_seconds=STALE_RETURN_EVENT_TOLERANCE_SECONDS,
             )
         )
         stale_operator_outbox = bool(
             message_type == 'to_client'
             and hook_type == 'outbox'
             and (
-                outbox_precedes_bot_return
+                outbox_precedes_context_boundary
                 or (
                     operator_outbox_age_seconds is not None
                     and operator_outbox_age_seconds > STALE_OPERATOR_OUTBOX_MAX_AGE_SECONDS
@@ -5311,12 +5371,12 @@ async def whatsapp(request: Request):
             if stale_operator_outbox:
                 logger.warning(
                     "🚫 [STALE OPERATOR OUTBOX] Ignorando takeover explícito tardío para %s "
-                    "message_id=%s operator_id=%s age_seconds=%s precedes_bot_return=%s",
+                    "message_id=%s operator_id=%s age_seconds=%s precedes_context_boundary=%s",
                     from_number,
                     message_id,
                     operator_id,
                     f"{operator_outbox_age_seconds:.1f}" if operator_outbox_age_seconds is not None else "unknown",
-                    outbox_precedes_bot_return,
+                    outbox_precedes_context_boundary,
                 )
                 return JSONResponse(content={"status": True, "message": "Stale human takeover event ignored"})
 
@@ -5355,7 +5415,7 @@ async def whatsapp(request: Request):
             logger.warning(
                 "🚫 [STALE RETURN TO SAM] Devolución tardía ignorada sin liberar "
                 "el takeover actual. from_number=%s message_id=%s operator_id=%s "
-                "age_seconds=%s precedes_bot_return=%s",
+                "age_seconds=%s precedes_context_boundary=%s",
                 from_number,
                 message_id,
                 operator_id,
@@ -5364,7 +5424,7 @@ async def whatsapp(request: Request):
                     if operator_outbox_age_seconds is not None
                     else "unknown"
                 ),
-                outbox_precedes_bot_return,
+                outbox_precedes_context_boundary,
             )
             return JSONResponse(
                 content={"status": True, "message": "Stale return-to-SAM event ignored"}
@@ -5421,6 +5481,28 @@ async def whatsapp(request: Request):
                 reset_activity=True,
             )
 
+            # El webhook de devolución y el primer inbound pueden llegar a
+            # réplicas distintas. Sólo una de ellas puede apropiarse del saludo.
+            return_greeting_claimed = claim_session_greeting(
+                from_number,
+                lifecycle_session_key,
+                boundary_requested=True,
+                storage=db,
+            )
+            if not return_greeting_claimed:
+                logger.info(
+                    "👋 [RETURN AUTOGREETING CLAIMED] Otra réplica ya reclamó el "
+                    "saludo de retorno para %s session_key=%s",
+                    from_number,
+                    lifecycle_session_key,
+                )
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Control released to AI; SAM greeting already claimed",
+                    }
+                )
+
             logger.critical(
                 "👋 [RETURN AUTOGREETING] Enviando saludo institucional de SAM "
                 "inmediatamente para %s reset_marker=%s",
@@ -5474,6 +5556,11 @@ async def whatsapp(request: Request):
                 "No se pudo enviar saludo inmediato de retorno para %s; el lifecycle "
                 "persistente lo reintentará con el siguiente inbound",
                 from_number,
+            )
+            mark_reopen_greeting_pending(
+                from_number,
+                storage=db,
+                reset_activity=True,
             )
             return JSONResponse(content={"status": True, "message": "Control released to AI; greeting pending next inbound"})
 
@@ -6620,7 +6707,10 @@ async def whatsapp(request: Request):
             is_new_request=bool(payload.get("is_new_request")),
             history_available=True,
             has_prior_conversation_history=has_prior_conversation_history,
-            resetting_after_human=False,
+            resetting_after_human=return_greeting_covers_current_inbound(
+                context_reset_marker,
+                messages_db,
+            ),
         )
         initial_greeting_required = claim_session_greeting(
             from_number,
@@ -8046,9 +8136,20 @@ async def reset_conversation(phone_number: str):
             finalized_report_numbers.discard(phone_number)
             memory_cleanup["finalized_report_numbers"] = True
 
+        # Aunque el historial visible se borra, conservamos un único marcador
+        # interno para que una reentrega vieja de Chat2Desk no reactive takeover
+        # ni vuelva a introducir contexto anterior después del reset.
+        admin_reset_marker = persist_context_reset_marker(
+            db,
+            normalize_phone_key(phone_number),
+            "admin-reset",
+            datetime.now().timestamp(),
+        )
+
         logger.warning(
             f"🧹 [ADMIN RESET] Conversación reiniciada para {phone_number}. "
-            f"Mensajes borrados: {deleted_messages}, protecciones: {dedup_items_cleared}, memoria: {memory_cleanup}"
+            f"Mensajes borrados: {deleted_messages}, protecciones: {dedup_items_cleared}, "
+            f"boundary: {admin_reset_marker}, memoria: {memory_cleanup}"
         )
 
         return {
@@ -8057,6 +8158,7 @@ async def reset_conversation(phone_number: str):
             "phone": phone_number,
             "deleted_messages": deleted_messages,
             "dedup_items_cleared": dedup_items_cleared,
+            "context_reset_marker": admin_reset_marker,
             "memory_cleanup": memory_cleanup,
             "timestamp": datetime.now().isoformat(),
         }

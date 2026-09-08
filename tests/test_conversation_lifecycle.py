@@ -65,6 +65,21 @@ class ConversationLifecycleTests(unittest.TestCase):
             )
         )
 
+    def test_immediate_return_greeting_blocks_duplicate_inbound_greeting(self):
+        session_key = build_session_key(1, 10)
+        mark_reopen_greeting_pending(self.phone, reset_activity=True)
+
+        self.assertTrue(
+            claim_session_greeting(
+                self.phone, session_key, boundary_requested=True
+            )
+        )
+        self.assertFalse(
+            claim_session_greeting(
+                self.phone, session_key, boundary_requested=True
+            )
+        )
+
     def test_human_return_does_not_inherit_old_inactivity_timer(self):
         session_key = build_session_key(1, 10)
         record_inbound_activity(self.phone, 100, session_key, now=100)

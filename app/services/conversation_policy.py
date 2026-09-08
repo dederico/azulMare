@@ -186,6 +186,44 @@ def should_confirm_operator_outbox_takeover(
     )
 
 
+def event_precedes_context_boundary(
+    *,
+    event_timestamp: float | None,
+    boundary_timestamp: float | None,
+    tolerance_seconds: float = 1.0,
+) -> bool:
+    """Reject a delayed webhook whose original event predates a durable reset."""
+    if event_timestamp is None or boundary_timestamp is None:
+        return False
+    try:
+        return float(event_timestamp) <= (
+            float(boundary_timestamp) + float(tolerance_seconds)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def return_greeting_covers_current_inbound(
+    context_reset_marker: str | None,
+    messages_after_boundary,
+) -> bool:
+    """A human-return boundary owns the greeting until a new inbound is stored."""
+    if not str(context_reset_marker or "").startswith(
+        "conversation-reset-human-return-"
+    ):
+        return False
+
+    return not any(
+        (
+            item.get("direction")
+            if isinstance(item, dict)
+            else getattr(item, "direction", None)
+        )
+        == "inbound"
+        for item in (messages_after_boundary or [])
+    )
+
+
 def inactivity_snapshot_is_still_stale(
     *,
     observed_last_active,

@@ -5,6 +5,7 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    event_precedes_context_boundary,
     extract_confirmed_folio,
     inactivity_snapshot_is_still_stale,
     is_bot_return_message,
@@ -13,6 +14,7 @@ from app.services.conversation_policy import (
     is_non_authoritative_control_source,
     is_trusted_human_control,
     is_verified_public_phone,
+    return_greeting_covers_current_inbound,
     should_replace_unconfirmed_transfer_response,
     should_confirm_operator_outbox_takeover,
     should_accept_bot_return_event,
@@ -252,6 +254,22 @@ class HumanControlPolicyTests(unittest.TestCase):
 
 class OperatorOutboxClassificationTests(unittest.TestCase):
 
+    def test_delayed_operator_event_before_reset_is_stale(self):
+        self.assertTrue(
+            event_precedes_context_boundary(
+                event_timestamp=100.0,
+                boundary_timestamp=200.0,
+            )
+        )
+
+    def test_operator_event_after_reset_remains_a_valid_takeover(self):
+        self.assertFalse(
+            event_precedes_context_boundary(
+                event_timestamp=201.1,
+                boundary_timestamp=200.0,
+            )
+        )
+
     def test_known_sam_welcome_is_automated(self):
         self.assertTrue(
             is_known_automated_outbound(
@@ -314,6 +332,22 @@ class InactivityPolicyTests(unittest.TestCase):
 
 
 class InitialGreetingPolicyTests(unittest.TestCase):
+    def test_return_boundary_owns_greeting_before_first_inbound_is_stored(self):
+        self.assertTrue(
+            return_greeting_covers_current_inbound(
+                "conversation-reset-human-return-970590300",
+                [{"direction": "outbound", "message": "saludo"}],
+            )
+        )
+
+    def test_return_boundary_stops_owning_greeting_after_inbound(self):
+        self.assertFalse(
+            return_greeting_covers_current_inbound(
+                "conversation-reset-human-return-970590300",
+                [{"direction": "inbound", "message": "Hola"}],
+            )
+        )
+
     def test_new_request_gets_institutional_greeting(self):
         self.assertTrue(
             should_send_initial_greeting(

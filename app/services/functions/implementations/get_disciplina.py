@@ -1,8 +1,8 @@
 TC = """
 ---
-documento: "Reglamento de Disciplina Escolar del Colegio Militarizado General Mariano Escobedo"
+documento: "Reglamento de Disciplina Escolar del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León"
 tipo_documento: "Reglamento interno"
-institucion: "Colegio Militarizado General Mariano Escobedo del Estado de Nuevo León"
+institucion: "Colegio Ciudadano de Excelencia y Disciplina en Nuevo León"
 limpieza_aplicada:
   - "Se removieron números de página sueltos."
   - "Se normalizaron encabezados de títulos, capítulos y artículos."
@@ -12,22 +12,22 @@ advertencia:
   - "Versión de trabajo limpia a partir del Markdown proporcionado; no sustituye documento oficial firmado."
 ---
 
-## COLEGIO MILITARIZADO “GENERAL MARIANO ESCOBEDO” DEL ESTADO DE NUEVO LEÓN
+## COLEGIO CIUDADANO DE EXCELENCIA Y DISCIPLINA EN NUEVO LEÓN
 ## REGLAMENTO DE DISCIPLINA ESCOLAR
-## REGLAMENTO DE DISCIPLINA ESCOLAR DEL COLEGIO MILITARIZADO “GENERAL MARIANO ESCOBEDO” DEL ESTADO DE NUEVO LEÓN
+## REGLAMENTO DE DISCIPLINA ESCOLAR DEL COLEGIO CIUDADANO DE EXCELENCIA Y DISCIPLINA EN NUEVO LEÓN
 ## TÍTULO PRIMERO DISPOSICIONES GENERALES
 ### CAPÍTULO I EL OBJETO
 #### Artículo 1.
 
-El presente Reglamento tiene por objeto normar la conducta de los estudiantes pertenecientes al Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León dentro y fuera del plantel, desarrollando su potencial dentro de las diversas actividades de este sistema escolar militarizado, propiciando relaciones interpersonales respetuosas y una sana convivencia; generando condiciones idóneas para alcanzar el presente objetivo.
+El presente Reglamento tiene por objeto normar la conducta de los estudiantes pertenecientes al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León dentro y fuera del plantel, desarrollando su potencial dentro de las diversas actividades de este sistema escolar militarizado, propiciando relaciones interpersonales respetuosas y una sana convivencia; generando condiciones idóneas para alcanzar el presente objetivo.
 
 #### Artículo 2.
 
-La aplicación de este reglamento, será de carácter obligatorio para todos los estudiantes pertenecientes al Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León quienes se desenvolverán en una ambiente pacífico y respetuoso, siendo garante de todos los integrantes de la comunidad escolar.
+La aplicación de este reglamento, será de carácter obligatorio para todos los estudiantes pertenecientes al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León quienes se desenvolverán en una ambiente pacífico y respetuoso, siendo garante de todos los integrantes de la comunidad escolar.
 
 #### Artículo 3.
 
-La observancia general de este reglamento estará respaldada por el marco normativo vigente en materia educativa, siendo responsabilidad de su aplicación las coordinación de cuerpo de alumnos de cada plantel del Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León.
+La observancia general de este reglamento estará respaldada por el marco normativo vigente en materia educativa, siendo responsabilidad de su aplicación las coordinación de cuerpo de alumnos de cada plantel del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 #### Artículo 4.
 
@@ -42,7 +42,7 @@ Para los efectos del presente reglamento, las siguientes definiciones, se entend
 
 - II. **Actividades administrativas:** son todas aquellas desarrolladas para el funcionamiento de las diversas áreas de esta institución.
 
-- III. **Actividades del Cuerpo de Alumnos** : es el conjunto de actividades desarrolladas de manera integral en todas las áreas, tiempo y espacio, dentro y fuera del plantel, robusteciendo el desarrollo académico, cultural, físico y moral de los alumnos pertenecientes al Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León.
+- III. **Actividades del Cuerpo de Alumnos** : es el conjunto de actividades desarrolladas de manera integral en todas las áreas, tiempo y espacio, dentro y fuera del plantel, robusteciendo el desarrollo académico, cultural, físico y moral de los alumnos pertenecientes al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 - IV. **Falta disciplinaria:** conducta que entorpece la buena marcha de las actividades, y da lugar a la imposición de una sanción a quien incurra en ella, se configura por: Incumplimiento de deberes.
 
@@ -50,7 +50,7 @@ Para los efectos del presente reglamento, las siguientes definiciones, se entend
 
 - VII. **Ambiente seguro:** son espacios físicos, sociales y culturales que propician y buscan garantizar el desarrollo integral de todos los estudiantes.
 
-- VIII. **Colegio:** Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León y los planteles que lo integran.
+- VIII. **Colegio:** Colegio Ciudadano de Excelencia y Disciplina en Nuevo León y los planteles que lo integran.
 
 ### CAPÍTULO III GENERALIDADES
 #### Artículo 6.
@@ -504,7 +504,7 @@ Para los efectos del presente Reglamento, se establece la clave de las medidas d
 
 - XV. Actividades de acondicionamiento físico adicionales, al concluir las actividades del día, y previo a la salida del plantel, por margen de 60 minutos, siempre bajo supervisión del instructor.
 
-- XVI. Cambio de Plantel dentro del Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León previo acuerdo de la Dirección Académica del Colegio.
+- XVI. Cambio de Plantel dentro del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León previo acuerdo de la Dirección Académica del Colegio.
 
 - XVII. Reparación económica, previa acta administrativa por daño causado. 0
 
@@ -523,7 +523,7 @@ Todos los alumnos por compañías, tendrán un expediente disciplinario con anot
 """
 
 async def get_disciplina():
-    """Obtener información acerca del Reglamento de Disciplina Escolar del Colegio Militarizado General Mariano Escobedo.
+    """Obtener información acerca del Reglamento de Disciplina Escolar del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Información sobre el reglamento de disciplina escolar.

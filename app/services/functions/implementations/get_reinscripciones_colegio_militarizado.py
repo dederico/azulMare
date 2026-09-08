@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información sobre reinscripciones del Colegio Militarizado General Mariano Escobedo.
+Este documento contiene información sobre reinscripciones del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 ¿Cuándo fueron las reinscripciones de alumnos regularizados?
 Del 24 al 28 de agosto de 2026.
@@ -13,7 +13,7 @@ Consultar directamente con el plantel donde estudia el alumno. No se deben prome
 
 
 async def get_reinscripciones_colegio_militarizado():
-    """Obtener información disponible sobre reinscripciones del Colegio Militarizado General Mariano Escobedo.
+    """Obtener información disponible sobre reinscripciones del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Fechas y estatus vigente de las reinscripciones de agosto de 2026.

@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información sobre inscripciones al Colegio Militarizado General Mariano Escobedo para el ciclo de ingreso de agosto de 2026.
+Este documento contiene información sobre inscripciones al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León para el ciclo de ingreso de agosto de 2026.
 
 ¿Cuándo ocurre la inscripción?
 Las inscripciones de nuevo ingreso se realizaron del 18 al 21 de agosto de 2026, de 08:00 a 12:00 horas.
@@ -29,7 +29,7 @@ ACLARACIÓN IMPORTANTE
 
 
 async def get_inscripciones_colegio_militarizado():
-    """Obtener información sobre inscripciones al Colegio Militarizado General Mariano Escobedo.
+    """Obtener información sobre inscripciones al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Información de inscripción posterior a la asignación 2026.

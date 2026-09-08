@@ -31,7 +31,7 @@ class ChatResponse(BaseModel):
 INTERNAL_STAFF_PROMPT = """
 
 CONTEXTO INTERNO DEL CANAL:
-Este chat es un canal interno para personal autorizado del Colegio Militarizado General Mariano Escobedo.
+Este chat es un canal interno para personal autorizado del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 La persona autenticada pertenece al colegio y puede ser personal administrativo, docente, coordinación o dirección.
 
 IDENTIDAD DEL USUARIO INTERNO:

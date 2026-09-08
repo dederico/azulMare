@@ -1,7 +1,7 @@
 TC = """
-Este documento contiene información de los planteles participantes del Colegio Militarizado General Mariano Escobedo en el Proceso de Asignación de Espacios 2026 en Nuevo León.
+Este documento contiene información de los planteles participantes del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León en el Proceso de Asignación de Espacios 2026 en Nuevo León.
 
-¿Qué planteles del Colegio Militarizado participan?
+¿Qué planteles del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León participan?
 Plantel San Bernabé, Monterrey: Prol. Aztlán 9610, San Bernabé, Monterrey, N.L. Tel. 81 1180 1156. Horario: 08:00 a 16:00. Correo: direccionplantel01sb@gmail.com
 Oferta: Bachillerato Tecnológico en Logística.
 
@@ -42,7 +42,7 @@ Facebook: colegiomilitarizadoNL
 
 
 async def get_planteles_colegio_militarizado():
-    """Obtener información de planteles del Colegio Militarizado General Mariano Escobedo.
+    """Obtener información de planteles del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Directorio resumido de planteles participantes y su oferta.

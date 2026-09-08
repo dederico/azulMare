@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información sobre admisiones al Colegio Militarizado General Mariano Escobedo dentro del Proceso de Asignación de Espacios en la Educación Media Superior del Estado de Nuevo León para ingreso en agosto de 2026.
+Este documento contiene información sobre admisiones al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León dentro del Proceso de Asignación de Espacios en la Educación Media Superior del Estado de Nuevo León para ingreso en agosto de 2026.
 
 ¿En qué consiste el proceso?
 El ingreso se realiza por medio del Proceso de Asignación de Espacios en la Educación Media Superior del Estado de Nuevo León. El registro es en línea y la asignación considera preferencias de plantel y puntaje obtenido.
@@ -41,7 +41,7 @@ Responsable de la convocatoria: Centro de Evaluaciones UANL.
 
 
 async def get_admisiones_colegio_militarizado():
-    """Obtener información sobre admisiones al Colegio Militarizado General Mariano Escobedo.
+    """Obtener información sobre admisiones al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Información del proceso de admisión y asignación de espacios 2026.

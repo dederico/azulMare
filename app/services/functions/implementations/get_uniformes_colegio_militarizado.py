@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información de uniformes, precios y punto de venta oficial compartido del Colegio Militarizado General Mariano Escobedo.
+Este documento contiene información de uniformes, precios y punto de venta oficial compartido del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 ¿Dónde se pueden comprar o pedir los uniformes?
 En la tienda oficial Kikiriprint.
@@ -37,7 +37,7 @@ Si preguntan por uniformes, vestuario, precios, dónde comprar, dónde pedir o c
 
 
 async def get_uniformes_colegio_militarizado():
-    """Obtener información de uniformes, precios y tienda oficial del Colegio Militarizado General Mariano Escobedo.
+    """Obtener información de uniformes, precios y tienda oficial del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Precios de uniformes, ubicación y contacto de la tienda oficial.

@@ -81,7 +81,7 @@ def _get_cell(row: list[str], index: int | None) -> str:
 
 
 async def get_calificacion_alumno(nombre_alumno: str = "", matricula: str = ""):
-    """Consultar la calificación de un alumno del Colegio Militarizado General Mariano Escobedo.
+    """Consultar la calificación de un alumno del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     nombre_alumno (string, optional): Nombre completo o parcial del alumno para buscar en la hoja.
     matricula (string, optional): Matrícula del alumno para buscar coincidencia exacta.

@@ -40,7 +40,7 @@ DEFAULT_CHAT2DESK_CHANNEL_ID = 43906
 PROACTIVE_AUDIENCE_FTYPE = "proactive_audience"
 PROACTIVE_AUDIENCE_PREFIX = "audience::"
 PROACTIVE_HSM_REPLY_GUARD_KEY = "proactive_hsm_guard"
-DEFAULT_RETURN_TO_SAM_MESSAGE = "Gracias por comunicarte con el Colegio Militarizado. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO."
+DEFAULT_RETURN_TO_SAM_MESSAGE = "Gracias por comunicarte con el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO."
 APPROVED_HSM_TEMPLATES = {
     "invitacion_evento": {
         "label": "Invitación a evento",

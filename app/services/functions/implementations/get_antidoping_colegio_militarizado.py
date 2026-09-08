@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información de las fechas de antidoping por plantel del Colegio Militarizado General Mariano Escobedo.
+Este documento contiene información de las fechas de antidoping por plantel del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 ¿Qué incluye el antidoping de 5 elementos?
 THC.
@@ -42,7 +42,7 @@ Si preguntan por antidoping, fechas por plantel, qué día le toca a un plantel,
 
 
 async def get_antidoping_colegio_militarizado():
-    """Obtener las fechas de antidoping por plantel del Colegio Militarizado General Mariano Escobedo.
+    """Obtener las fechas de antidoping por plantel del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Fechas de antidoping por plantel, costo, laboratorio y datos de contacto.

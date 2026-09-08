@@ -2,11 +2,11 @@ TC = """
 COMUNICADO OFICIAL
 
 A LA OPINIÓN PÚBLICA, A NUESTRA COMUNIDAD ESTUDIANTIL Y A LAS FAMILIAS DE NUEVO LEÓN
-Colegio de Bachilleres Militarizado “General Mariano Escobedo” del Estado de Nuevo León
+Colegio Ciudadano de Excelencia y Disciplina en Nuevo León
 
 Sobre el oficio UR-100/OCSEP/0180/2026 de la SEP
 
-El Colegio de Bachilleres Militarizado “General Mariano Escobedo” del Estado de Nuevo León informa que el comunicado emitido por la Secretaría de Educación Pública el 22 de julio de 2026 no guarda relación alguna con la operación, naturaleza jurídica ni oferta educativa de esta institución.
+El Colegio Ciudadano de Excelencia y Disciplina en Nuevo León informa que el comunicado emitido por la Secretaría de Educación Pública el 22 de julio de 2026 no guarda relación alguna con la operación, naturaleza jurídica ni oferta educativa de esta institución.
 
 El oficio de la SEP es explícito en su ámbito de aplicación: educación básica —preescolar, primaria y secundaria—. En él se señala que no está autorizada la modalidad “Militarizada”, “Militar” o “Castrense” en ese nivel, con sustento en un oficio de la propia Secretaría de la Defensa Nacional.
 
@@ -30,6 +30,6 @@ async def get_comunicado_oficio_sep_2026():
     """Obtener el comunicado oficial sobre el oficio UR-100/OCSEP/0180/2026 de la SEP.
 
     Returns:
-        string: El comunicado oficial del Colegio Militarizado sobre el oficio UR-100/OCSEP/0180/2026.
+        string: El comunicado oficial del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León sobre el oficio UR-100/OCSEP/0180/2026.
     """
     return TC

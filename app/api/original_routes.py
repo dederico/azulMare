@@ -4019,7 +4019,7 @@ async def whatsapp(request: Request):
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
 
             ai_greeting = (
-                "👋 ¡Bienvenido! Soy GUERRERO, asistente virtual del Colegio Militarizado General Mariano Escobedo.\n\n"
+                "👋 ¡Bienvenido! Soy GUERRERO, asistente virtual del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.\n\n"
                 "¿En qué puedo ayudarte hoy?"
             )
             
@@ -5004,7 +5004,7 @@ async def whatsapp(request: Request):
                 "El nombre del cliente es un identificador técnico/autogenerado del widget. "
                 "No lo menciones en el saludo ni en la respuesta. "
                 "Saluda de forma breve y genérica, por ejemplo: "
-                '"¡Bienvenido! Soy GUERRERO, asistente virtual del Colegio Militarizado General Mariano Escobedo. '
+                '"¡Bienvenido! Soy GUERRERO, asistente virtual del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León. '
                 '¿En qué puedo ayudarte?"'
             )
         # Añadir instrucción para evitar generación automática de reportes

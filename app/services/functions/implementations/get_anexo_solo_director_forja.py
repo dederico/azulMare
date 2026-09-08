@@ -1,7 +1,7 @@
 TC = """
 ANEXO SOLO DIRECTOR · PROYECTO FORJA
 Banco de respuestas para preguntas de padres de familia
-Documento confidencial de trabajo para planteles del Colegio Militarizado “General Mariano Escobedo”
+Documento confidencial de trabajo para planteles del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León
 
 NATURALEZA DEL DOCUMENTO
 - Es un documento confidencial de trabajo.

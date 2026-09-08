@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene los requisitos de admisión al Colegio Militarizado General Mariano Escobedo dentro del Proceso de Asignación de Espacios en la Educación Media Superior del Estado de Nuevo León 2026.
+Este documento contiene los requisitos de admisión al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León dentro del Proceso de Asignación de Espacios en la Educación Media Superior del Estado de Nuevo León 2026.
 
 ¿Cuáles son los requisitos generales para registrarse?
 Tener secundaria concluida o estar por concluirla al momento del registro.
@@ -33,7 +33,7 @@ Los actos fraudulentos quedan sujetos a la normatividad aplicable.
 
 
 async def get_requisitos_admision_colegio_militarizado():
-    """Obtener requisitos de admisión al Colegio Militarizado General Mariano Escobedo.
+    """Obtener requisitos de admisión al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Requisitos y documentos del proceso de admisión 2026.

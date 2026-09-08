@@ -3,7 +3,13 @@ COMUNICADO OFICIAL
 
 EL COLEGIO SE TRANSFORMA. NUESTRA ESENCIA, PERMANECE.
 
-Este documento contiene el comunicado oficial del Colegio "General Mariano Escobedo" del Estado de Nuevo León sobre la transformación institucional derivada de la disposición federal que establece que ninguna institución educativa del país debe prestar servicios bajo denominaciones de tipo militarizado.
+Este documento contiene el comunicado oficial sobre la transformación institucional y el cambio de nombre del Colegio.
+
+NOMBRE OFICIAL ACTUAL
+- La denominación oficial vigente es: Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
+- Este es el único nombre que debe utilizarse para identificar actualmente a la institución.
+- La denominación anterior solo debe mencionarse si la persona pregunta expresamente por el cambio de nombre o por documentos históricos.
+- En saludos, respuestas generales, cierres y orientación institucional siempre debe utilizarse el nombre oficial actual.
 
 Puntos clave del comunicado:
 
@@ -14,7 +20,7 @@ Puntos clave del comunicado:
 - El próximo ciclo escolar inicia con total normalidad: mismos planteles, mismos maestros y mismos horarios.
 
 2. Cambia el nombre. No cambia lo que somos.
-- La institución tendrá una nueva imagen y una nueva denominación.
+- La institución ahora se llama Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 - La esencia del Colegio permanece: seguirá siendo una institución presencial de bachillerato y estudios superiores de alto rendimiento.
 - Se mantiene la formación en responsabilidad, orden, compromiso, alto sentido del deber, valores cívicos y amor a México.
 - Las escoltas, los honores a la bandera y las ceremonias cívicas seguirán formando parte del modelo educativo.

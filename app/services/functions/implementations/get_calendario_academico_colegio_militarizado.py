@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información del calendario académico de agosto y septiembre de 2026 del Colegio Militarizado General Mariano Escobedo.
+Este documento contiene información del calendario académico de agosto y septiembre de 2026 del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 ¿Aplica para todos los planteles?
 Sí. La información compartida aplica para todos los planteles.
@@ -34,7 +34,7 @@ Si preguntan por inscripciones, reinscripciones, inicio de semestre, días sin c
 
 
 async def get_calendario_academico_colegio_militarizado():
-    """Obtener el calendario académico de agosto y septiembre de 2026 del Colegio Militarizado General Mariano Escobedo.
+    """Obtener el calendario académico de agosto y septiembre de 2026 del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Fechas de actividades administrativas, inscripciones, reinscripciones, inicio de semestre y asuetos.

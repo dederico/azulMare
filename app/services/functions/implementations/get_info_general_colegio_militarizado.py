@@ -1,7 +1,7 @@
 TC = """
-Este documento contiene información general del Colegio Militarizado General Mariano Escobedo con base en el Proceso de Asignación de Espacios en la Educación Media Superior del Estado de Nuevo León 2026.
+Este documento contiene información general del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León con base en el Proceso de Asignación de Espacios en la Educación Media Superior del Estado de Nuevo León 2026.
 
-¿Qué es el Colegio Militarizado General Mariano Escobedo?
+¿Qué es el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León?
 Es una de las instituciones participantes en el proceso estatal de asignación de espacios para Educación Media Superior en Nuevo León.
 
 ¿Qué tipo de ingreso cubre esta información?
@@ -24,7 +24,7 @@ Acudir directamente al plantel elegido o asignado, ya que cada escuela puede ten
 
 
 async def get_info_general_colegio_militarizado():
-    """Obtener información general del Colegio Militarizado General Mariano Escobedo.
+    """Obtener información general del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Información general institucional y alcance de la convocatoria compartida.

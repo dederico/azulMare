@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información del paquete de libros y del calendario de venta 2026 del Colegio Militarizado de Nuevo León.
+Este documento contiene información del paquete de libros y del calendario de venta 2026 del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León de Nuevo León.
 
 ¿Dónde se adquiere el paquete de libros?
 El precio preferencial se encuentra únicamente en el plantel correspondiente, conforme al calendario de venta compartido.
@@ -58,7 +58,7 @@ Si preguntan por libros, paquete de libros, precio de libros, qué incluye cada 
 
 
 async def get_libros_colegio_militarizado():
-    """Obtener información del paquete de libros y del calendario de venta 2026 del Colegio Militarizado de Nuevo León.
+    """Obtener información del paquete de libros y del calendario de venta 2026 del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León de Nuevo León.
 
     Returns:
         string: Precios, contenido por semestre y calendario de venta por plantel.

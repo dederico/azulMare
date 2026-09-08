@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene la guía compartida para obtener el Número de Seguridad Social (NSS) en línea para alumnos del Colegio Militarizado General Mariano Escobedo.
+Este documento contiene la guía compartida para obtener el Número de Seguridad Social (NSS) en línea para alumnos del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 ¿Cómo obtener el NSS? Parte 1 de 2.
 1. Busca en Google: "consultar nss".

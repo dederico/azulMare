@@ -1,11 +1,11 @@
 TC = """
 POSICIONAMIENTO OFICIAL
 
-Colegio de Bachilleres Militarizado "General Mariano Escobedo" del Estado de Nuevo León
+Colegio Ciudadano de Excelencia y Disciplina en Nuevo León
 
 Sobre el oficio UR-100/OCSEP/0180/2026 de la SEP
 
-El Colegio de Bachilleres Militarizado "General Mariano Escobedo" del Estado de Nuevo León informa que el comunicado emitido por la Secretaría de Educación Pública el 22 de julio de 2026 no guarda relación alguna con la operación, naturaleza jurídica ni oferta educativa de esta institución.
+El Colegio Ciudadano de Excelencia y Disciplina en Nuevo León informa que el comunicado emitido por la Secretaría de Educación Pública el 22 de julio de 2026 no guarda relación alguna con la operación, naturaleza jurídica ni oferta educativa de esta institución.
 
 El oficio de la SEP es explícito en su ámbito de aplicación: educación básica - preescolar, primaria y secundaria -. En él se señala que no está autorizada la modalidad "Militarizada", "Militar" o "Castrense" en ese nivel, con sustento en un oficio de la propia Secretaría de la Defensa Nacional.
 
@@ -27,6 +27,6 @@ async def get_posicionamiento_caso_dafne():
     """Obtener el posicionamiento oficial sobre el caso Dafne y el oficio UR-100/OCSEP/0180/2026.
 
     Returns:
-        string: El posicionamiento oficial del Colegio Militarizado sobre el caso Dafne.
+        string: El posicionamiento oficial del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León sobre el caso Dafne.
     """
     return TC

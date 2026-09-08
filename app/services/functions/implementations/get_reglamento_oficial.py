@@ -1,7 +1,7 @@
 TC = """
 ---
 documento: "Reglamento General de Estudios"
-institucion: "Colegio Militarizado General Mariano Escobedo del Estado de Nuevo León"
+institucion: "Colegio Ciudadano de Excelencia y Disciplina en Nuevo León"
 tipo_documento: "Reglamento interno"
 vigencia_indicada: "enero de 2022"
 limpieza_aplicada:
@@ -38,7 +38,7 @@ CAPÍTULO VII: Sanciones. 30 CAPÍTULO VIII: 35 Del egreso. Del CAPÍTULO IX: 36
 
 ## AUTORIZACION
 
-Con fundamento en los artículos 3 fracción XXII, 10 fracción XII y 13 fracción XIV de la Ley que Crea el Colegio Militarizado, he tenido a bien expedir el REGLAMENTO GENERAL DE ESTUDIOS DEL COLEGIO MILITARIZADO “GENERAL MARIANO ESCOBEDO” DEL ESTADO DE NUEVO LEÓN el cual tiene como propósito la sólida formación integral del alumnado para enfrentar de manera efectiva las nuevas formas de relación entre la educación media superior y superior y el mundo del trabajo, hacer frente a las demandas emergentes, la investigación y prestacién de servicios a su comunidad académica y a la sociedad. P, GRAL. AUTORIZO l / BGDA. D.E.M.RET.7MANUEL ZOZAYA GALLEGOS DIRECTOR GENERAL COLEGIO MILITARIZADO “GENERAL MARIANO ESCOBEDO” DEL ESTADO DE NUEVO LEÓN
+Con fundamento en los artículos 3 fracción XXII, 10 fracción XII y 13 fracción XIV de la Ley que Crea el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León, he tenido a bien expedir el REGLAMENTO GENERAL DE ESTUDIOS DEL COLEGIO CIUDADANO DE EXCELENCIA Y DISCIPLINA EN NUEVO LEÓN el cual tiene como propósito la sólida formación integral del alumnado para enfrentar de manera efectiva las nuevas formas de relación entre la educación media superior y superior y el mundo del trabajo, hacer frente a las demandas emergentes, la investigación y prestacién de servicios a su comunidad académica y a la sociedad. P, GRAL. AUTORIZO l / BGDA. D.E.M.RET.7MANUEL ZOZAYA GALLEGOS DIRECTOR GENERAL COLEGIO CIUDADANO DE EXCELENCIA Y DISCIPLINA EN NUEVO LEÓN
 
 ELABORO \ / LIC. amen eprifagEZ SOTELO
 
@@ -58,29 +58,29 @@ Formar líderes, capaces de desenvolverse como referentes de conocimiento, guía
 
 ## Visión
 
-El Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León sera identificado como una institución de excelencia internacional por los amplios conocimientos, habilidades, actitudes y valores de sus egresados, sus aportaciones al desarrollo académico y de instrucción militarizada y su firme compromiso con el entorno social y ambiental.
+El Colegio Ciudadano de Excelencia y Disciplina en Nuevo León sera identificado como una institución de excelencia internacional por los amplios conocimientos, habilidades, actitudes y valores de sus egresados, sus aportaciones al desarrollo académico y de instrucción militarizada y su firme compromiso con el entorno social y ambiental.
 
 ## CAPÍTULO I. Del objeto del Colegio
 
 #### Artículo 1.
 
-El presente Reglamento es de observancia general para todas las áreas y planteles que integran el Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León.
+El presente Reglamento es de observancia general para todas las áreas y planteles que integran el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 #### Artículo 2.
 
 Para efectos del presente Reglamento se entendera por:
 
-I. Colegio: El Colegio Militarizado “General Mariano Escobedo” del Estado de Nuevo León;
+I. Colegio: El Colegio Ciudadano de Excelencia y Disciplina en Nuevo León;
 
-II. Ley: La Ley que crea el Colegio Militarizado “General Escobedo” del Estado de Nuevo Ledén;
+II. Ley: La Ley que crea el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León;
 
-III. Director: El Director General del Colegio Militarizado “General Escobedo” del Estado de Nuevo León;
+III. Director: El Director General del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León;
 
-IV. Reglamento Interior: El Reglamento Interior del Colegio Militarizado “General Escobedo” del Estado de Nuevo León;
+IV. Reglamento Interior: El Reglamento Interior del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León;
 
 V. Aspirante: Aquel que pretende ingresar al nivel bachillerato o nivel superior que ofrece el Colegio, para lo cual le asignará al aspirante un número de registro;
 
-VI. Estudiante: A la persona inscrita en algún programa académico que se imparta en cualquier nivel educativo y modalidad educativa que ofrece el Colegio Militarizado “General Escobedo” del Estado de Nuevo Le6én;
+VI. Estudiante: A la persona inscrita en algún programa académico que se imparta en cualquier nivel educativo y modalidad educativa que ofrece el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León;
 
 VII. Estudiante de nuevo ingreso: Aquel que por primera vez se le otorga la matrícula, asi como la inscripción al programa educativo del Colegio. Se incluye en esta clasificaciéón a la persona que ingrese a un grado escolar posterior al primero, mediante revalidacidn o establecimiento de equivalencias de estudios;
 
@@ -92,7 +92,7 @@ xX. Armas Blancas. Son los instrumentos lesivos manejados manualmente que pueden
 
 XI. Armas de fuego. Instrumento termodinamico, disehado y destinado para expulsar violentamente desde su interior un proyectil, con direccién y sentido determinado, para alcanzar un objetivo, ocasionar efectos, utilizando para esto la energia proveniente de la deflagración de la pólvora.
 
-XII. Unidad de Plantel. Espacio físico, inmueble, terreno en propiedad o en uso legitimo del Colegio Militarizado “General Mariano Escobedo”, en que se encuentran ubicadas las instalaciones propias o bajo el control y uso de la Institución y de sus diversos planteles.
+XII. Unidad de Plantel. Espacio físico, inmueble, terreno en propiedad o en uso legitimo del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León, en que se encuentran ubicadas las instalaciones propias o bajo el control y uso de la Institución y de sus diversos planteles.
 
 .
 
@@ -154,7 +154,7 @@ mS
 
 #### Artículo 3.
 
-El Colegio Militarizado "General Mariano Escobedo" del Estado de Nuevo León, tendra por objeto impartir e impulsar la educación media superior y superior, en sus caracteristicas propedéuticas y terminal, con las finalidades siguientes:
+El Colegio Ciudadano de Excelencia y Disciplina en Nuevo León, tendra por objeto impartir e impulsar la educación media superior y superior, en sus caracteristicas propedéuticas y terminal, con las finalidades siguientes:
 
 I. Impartir la educación media superior y superior, formando estudiantes bajo un régimen militar, inculcandoles el amor a la patria, la lealtad institucional, la honestidad, la conciencia de servicio y superacion;
 
@@ -244,11 +244,11 @@ Aquellos tramites que no requieran la presencia del interesado, podran ser reali
 
 #### Artículo 7.
 
-Todos los estudiantes del Colegio Militarizado “General Mariano Escobedo”, tienen los mismos derechos y obligaciones generales, además de las atribuciones y deberes que correspondana su jerarquia.
+Todos los estudiantes del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León, tienen los mismos derechos y obligaciones generales, además de las atribuciones y deberes que correspondana su jerarquia.
 
 #### Artículo 8.
 
-Todos los estudiantes deben conocer y cumplir los Principios y reglamentos del Colegio Militarizado “General Mariano Escobedo” en lo que les corresponda, asi como aceptar y conducirse de manera congruente con los valores establecidos en la Visión del Colegio.
+Todos los estudiantes deben conocer y cumplir los Principios y reglamentos del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León en lo que les corresponda, asi como aceptar y conducirse de manera congruente con los valores establecidos en la Visión del Colegio.
 
 #### Artículo 9.
 
@@ -304,7 +304,7 @@ Por su seguridad física y la de la comunidad académica, todos los estudiantes 
 
 #### Artículo 21.
 
-Todos los estudiantes del Colegio Militarizado "General Mariano Escobedo" del Estado de Nuevo León, estan obligados a suscribir por escrito el compromiso de acatar el contenido del presente Reglamento, asi como demás disposiciones legales del Colegio.
+Todos los estudiantes del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León, estan obligados a suscribir por escrito el compromiso de acatar el contenido del presente Reglamento, asi como demás disposiciones legales del Colegio.
 
 La suscripcién de tal compromiso, en caso de los estudiantes menores de edad, debe hacerse por quien ejerce la patria potestad o la tutoria.
 
@@ -434,7 +434,7 @@ IV. Acuerdo de revalidacién de estudios previos emitido por instituciones ofici
 
 #### Artículo 43.
 
-El ingreso al Colegio Militarizado “General Mariano Escobedo” es únicamente al primer semestre de estudios y por concurso de ubicacién que consta de:
+El ingreso al Colegio Ciudadano de Excelencia y Disciplina en Nuevo León es únicamente al primer semestre de estudios y por concurso de ubicacién que consta de:
 
 I. Examen médico;
 
@@ -458,7 +458,7 @@ Los estudiantes que hayan entregado certificados de estudio o documentos falsos 
 
 #### Artículo 47.
 
-El Colegio Militarizado “General Mariano Escobedo” se compromete a mantener como confidencial la información personal de sus estudiantes, incluyendo la referente a su desempeño académico, a excepcidn de aquellas situaciones que pongan en riesgo su vida, la de terceros, la del Colegio o cuando dicha información sea solicitada por escrito y oficialmente por algúna autoridad competente.P
+El Colegio Ciudadano de Excelencia y Disciplina en Nuevo León se compromete a mantener como confidencial la información personal de sus estudiantes, incluyendo la referente a su desempeño académico, a excepcidn de aquellas situaciones que pongan en riesgo su vida, la de terceros, la del Colegio o cuando dicha información sea solicitada por escrito y oficialmente por algúna autoridad competente.P
 
 ## CAPÍTULO VI. De las evaluaciones ordinarias y extraordinarias
 
@@ -824,7 +824,7 @@ IV. Demas requisitos solicitados por el programa de su interés.
 
 #### Artículo 94.
 
-Las visitas escolares de los estudiantes se realizan de acuerdo al plan de estudios del Colegio Militarizado aprobado por la Dirección Académica.
+Las visitas escolares de los estudiantes se realizan de acuerdo al plan de estudios del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León aprobado por la Dirección Académica.
 
 Actividades que el alumno debe realizar antes, durante y después de una Salida 0 Viaje académico:
 
@@ -922,16 +922,16 @@ IX. Cumplir con el horario asignado.
 
 ## TRANSITORIOS
 
-UNICO.- Este Reglamento General de Estudios, fue aprobado por el General Bgda. D.E.M. Ret. José Manuel Zozaya Gallegos, Director General del Colegio Militarizado “General Mariano Escobedo”, quien ordenó la _ publicación correspondiente y entrara en vigor a partir de enero del 2022.
+UNICO.- Este Reglamento General de Estudios, fue aprobado por el General Bgda. D.E.M. Ret. José Manuel Zozaya Gallegos, Director General del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León, quien ordenó la _ publicación correspondiente y entrara en vigor a partir de enero del 2022.
 
 Quedan sin efecto todas las disposiciones internas que se opongan o resulten incompatibles con lo señalado en el presente Reglamento.
 
 """
 
 async def get_reglamento_oficial():
-    """Obtener el reglamento oficial del Colegio Militarizado General Mariano Escobedo.
+    """Obtener el reglamento oficial del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
-        string: El reglamento oficial del Colegio Militarizado General Mariano Escobedo.
+        string: El reglamento oficial del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
     """
     return TC

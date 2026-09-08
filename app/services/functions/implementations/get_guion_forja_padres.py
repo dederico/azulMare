@@ -1,7 +1,7 @@
 TC = """
 GUÍA OPERATIVA SOBRE EL GUIÓN BASE PARA LA REUNIÓN CON PADRES Y MADRES DE FAMILIA
 Proyecto FORJA · Ciclo agosto-diciembre 2026
-Uso interno para planteles del Colegio Militarizado “General Mariano Escobedo”
+Uso interno para planteles del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León
 
 PROPÓSITO DEL DOCUMENTO
 - Es un documento de trabajo para directores de plantel.

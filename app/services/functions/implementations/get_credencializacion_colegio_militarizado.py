@@ -1,5 +1,5 @@
 TC = """
-Este documento contiene información del proceso de credencialización y toma de fotografía para credencial del Colegio Militarizado General Mariano Escobedo.
+Este documento contiene información del proceso de credencialización y toma de fotografía para credencial del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
 ¿Cuál es el proceso general de credencialización?
 1. Enterarse de la fecha de toma de fotografía por conducto del plantel respectivo.
@@ -25,7 +25,7 @@ Si preguntan por credencialización, toma de fotografía, foto para credencial o
 
 
 async def get_credencializacion_colegio_militarizado():
-    """Obtener información de credencialización y toma de fotografía del Colegio Militarizado General Mariano Escobedo.
+    """Obtener información de credencialización y toma de fotografía del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
 
     Returns:
         string: Proceso general y fechas compartidas de fotografía por plantel.

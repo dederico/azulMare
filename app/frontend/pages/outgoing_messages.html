@@ -269,7 +269,7 @@
             <input type="hidden" name="action" value="create">
             {% set selected_template = form_data.get('approved_template_name', 'invitacion_evento') %}
             {% set return_to_sam_enabled = form_data.get('return_to_sam_enabled', 'on') %}
-            {% set return_to_sam_message = form_data.get('return_to_sam_message', 'Gracias por comunicarte con el Colegio Militarizado. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO.') %}
+            {% set return_to_sam_message = form_data.get('return_to_sam_message', 'Gracias por comunicarte con el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO.') %}
             {% set followup_delay_minutes = form_data.get('followup_delay_minutes', '15') %}
             <input type="hidden" name="campaign_kind" value="hsm_sequence">
             <div class="grid">
@@ -279,7 +279,7 @@
               </div>
               <div class="field">
                 <label for="created_by">Responsable</label>
-                <input id="created_by" name="created_by" type="text" value="{{ form_data.get('created_by', '') }}" placeholder="Colegio Militarizado">
+                <input id="created_by" name="created_by" type="text" value="{{ form_data.get('created_by', '') }}" placeholder="Colegio Ciudadano de Excelencia y Disciplina en Nuevo León">
               </div>
               <div class="field">
                 <label for="scheduled_at">Fecha y hora programada</label>
@@ -510,7 +510,7 @@
       textarea.disabled = !enabled;
       textarea.style.opacity = enabled ? '1' : '0.55';
       if (enabled && !textarea.value.trim()) {
-        textarea.value = 'Gracias por comunicarte con el Colegio Militarizado. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO.';
+        textarea.value = 'Gracias por comunicarte con el Colegio Ciudadano de Excelencia y Disciplina en Nuevo León. Procederé a reiniciar el chatbot para que puedas continuar con GUERRERO.';
       }
     }
 

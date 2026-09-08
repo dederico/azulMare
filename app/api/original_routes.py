@@ -104,15 +104,34 @@ from app.services.conversation_control import (
     normalize_phone_key,
     release_human_control,
 )
+from app.services.conversation_lifecycle import (
+    build_session_key,
+    claim_inactivity_close,
+    claim_session_greeting,
+    ensure_conversation_lifecycle_storage,
+    get_lifecycle_state,
+    inactivity_claim_is_current,
+    list_inactivity_candidates,
+    mark_inactivity_close_sent,
+    mark_reopen_greeting_pending,
+    mark_session_greeting_sent,
+    record_inbound_activity,
+    release_inactivity_claim,
+)
 from app.services.conversation_policy import (
+    automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    extract_confirmed_folio,
     inactivity_snapshot_is_still_stale,
     is_bot_return_message,
     is_emergency_related,
     is_human_takeover_message,
     is_known_automated_outbound,
     is_non_authoritative_control_source,
+    is_verified_public_phone,
+    history_after_latest_context_reset,
+    should_confirm_operator_outbox_takeover,
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
 )
@@ -1413,6 +1432,7 @@ finalized_report_numbers = set()
 recently_returned_to_bot = {}
 bot_returned_at = {}
 pending_bot_greeting = {}
+applied_context_reset_markers = {}
 recent_bot_outbound_messages = {}  # key: phone_number, value: {text: normalized_text, expires_at: timestamp}
 STALE_RETURN_EVENT_TOLERANCE_SECONDS = 1.0
 STALE_INBOUND_EVENT_MAX_AGE_SECONDS = 30 * 60
@@ -2494,9 +2514,6 @@ def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = N
     if not message:
         return message
 
-    allowed_phone_digits = {
-        "8189882000",
-    }
     customer_digits = "".join(ch for ch in (customer_phone or "") if ch.isdigit())
     url_pattern = re.compile(r"https?://[^\s]+", re.IGNORECASE)
     phone_pattern = re.compile(r"(?<![\w/])(?:\+?\d[\d\-\s\(\)]{8,}\d)")
@@ -2518,14 +2535,11 @@ def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = N
             logger.warning("📵 [SANITIZE] Ocultando teléfono del cliente en respuesta: %s", raw)
             return "[teléfono oculto]"
 
-        if digits in allowed_phone_digits:
+        if is_verified_public_phone(digits):
             return raw
 
-        if len(digits) >= 11:
-            logger.warning("📵 [SANITIZE] Ocultando teléfono no verificado en respuesta: %s", raw)
-            return "[contacto disponible con Atención Ciudadana]"
-
-        return raw
+        logger.warning("📵 [SANITIZE] Ocultando teléfono no verificado en respuesta: %s", raw)
+        return "[contacto disponible con Atención Ciudadana]"
 
     protected_message = url_pattern.sub(protect_url, message)
     sanitized_message = phone_pattern.sub(replace_phone, protected_message)
@@ -2565,10 +2579,16 @@ def resolve_fixed_security_phone_response(message: str) -> str | None:
         return "Claro: C4 San Pedro: 81 89 88 20 00."
 
     if "c2" in normalized:
-        return "Claro: C2 San Pedro: 81 89 88 11 00 Ext. 6011."
+        return (
+            "Para reportes de seguridad o tránsito, comunícate al "
+            "C4 San Pedro: 81 89 88 20 00."
+        )
 
-    if "ciac" in normalized or "atencion ciudadana" in normalized:
-        return "Claro: Atención Ciudadana / CIAC: 81 84 00 44 00 Ext. 2762."
+    if "ciac" in normalized:
+        return "Claro: Conmutador / CIAC: 81 84 00 44 00."
+
+    if "atencion ciudadana" in normalized or "atención ciudadana" in normalized:
+        return "Claro: Atención Ciudadana: 81 12 12 12 12."
 
     return None
 
@@ -2733,9 +2753,23 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
     if not can_create:
         logger.warning(f"🚫 [BLOCKED] Reporte bloqueado para {yoga_number}: {reason}")
         if existing_folio:
-            return f"Folio: {existing_folio}"
+            existing_number = extract_confirmed_folio(f"Folio: {existing_folio}")
+            if existing_number:
+                return f"Folio: {existing_number}"
+            logger.error(
+                "El deduplicador devolvió un folio existente inválido para %s: %s",
+                yoga_number,
+                existing_folio,
+            )
+            return (
+                "VALIDATION_BLOCK: Detecté un reporte reciente, pero no pude "
+                "confirmar su folio. No anuncies un número de reporte."
+            )
         else:
-            return f"Error: {reason}"
+            return (
+                "VALIDATION_BLOCK: El reporte no se creó porque ya hay una "
+                "operación reciente o en proceso. No anuncies ningún folio."
+            )
     
     # MARCAR INICIO DE CREACIÓN
     request_id = dedup_manager.mark_report_creation_start(yoga_number)
@@ -2758,19 +2792,24 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             descriptions_list=descriptions_list
         )
         
-        if folio and "Folio:" in folio:
+        confirmed_folio = extract_confirmed_folio(folio)
+        if confirmed_folio:
+            canonical_folio = f"Folio: {confirmed_folio}"
             # MARCAR COMO EXITOSO
             dedup_manager.mark_report_creation_success(
-                yoga_number, folio, selection_data, images_list
+                yoga_number, canonical_folio, selection_data, images_list
             )
             
-            logger.critical(f"✅ [SUCCESS] Reporte creado: {folio} para {yoga_number}")
-            return folio
+            logger.critical(f"✅ [SUCCESS] Reporte creado: {canonical_folio} para {yoga_number}")
+            return canonical_folio
         else:
             # MARCAR COMO FALLIDO
             dedup_manager.mark_report_creation_failure(yoga_number)
             logger.error(f"❌ [FAILED] Fallo al crear reporte para {yoga_number}: {folio}")
-            return folio
+            return (
+                "VALIDATION_BLOCK: No fue posible confirmar la creación del reporte. "
+                "No anuncies ningún folio y explica que el reporte no se generó."
+            )
             
     except Exception as e:
         # MARCAR COMO FALLIDO
@@ -3257,6 +3296,44 @@ def build_return_to_sam_greeting(sender_name: str) -> str:
         f"Hola {clean_name}, ¿en qué podemos ayudarte? ¿Es una emergencia?"
     )
 
+
+def clear_local_conversation_context(phone_number: str, *, drop_session: bool = False) -> None:
+    """Clear replica-local conversational state without weakening report deduplication."""
+    with report_sessions_lock:
+        report_sessions.pop(phone_number, None)
+    user_answers.pop(phone_number, None)
+    with reports_lock:
+        reports_in_progress.pop(phone_number, None)
+    recently_completed_reports.pop(phone_number, None)
+    finalized_report_numbers.discard(phone_number)
+    if drop_session:
+        user_sessions.pop(phone_number, None)
+
+
+def persist_context_reset_marker(db, phone_number: str, reason: str, event_id) -> str:
+    """Persist a durable boundary so every replica excludes the previous session."""
+    safe_reason = re.sub(r"[^a-z0-9_-]", "-", str(reason or "boundary").lower())
+    safe_event_id = re.sub(
+        r"[^a-zA-Z0-9_-]",
+        "-",
+        str(event_id or datetime.now().timestamp()),
+    )
+    marker_uid = f"conversation-reset-{safe_reason}-{safe_event_id}"
+    db.Insert(
+        Message(
+            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            senderName="System",
+            message=f"[SYSTEM] Conversation context reset: {safe_reason}",
+            number=phone_number,
+            uid=marker_uid,
+            direction="system",
+            mtype="text",
+            source="whatsapp",
+        )
+    )
+    applied_context_reset_markers[phone_number] = marker_uid
+    return marker_uid
+
 def has_recent_report(phone_number, max_age_minutes=15):
     """
     Verifica si un número tiene un reporte creado recientemente.
@@ -3493,7 +3570,10 @@ async def manage_message_history(db, number, max_messages=20):
             SELECT COUNT(*)
             FROM messages
             WHERE number = %s
-              AND (uid IS NULL OR uid NOT LIKE 'bot-outbound-%%')
+              AND (uid IS NULL OR (
+                    uid NOT LIKE 'bot-outbound-%%'
+                AND uid NOT LIKE 'conversation-reset-%%'
+              ))
             """,
             [number],
         )
@@ -3507,7 +3587,10 @@ async def manage_message_history(db, number, max_messages=20):
                 WHERE id IN (
                     SELECT id FROM messages 
                     WHERE number = %s
-                      AND (uid IS NULL OR uid NOT LIKE 'bot-outbound-%%')
+                      AND (uid IS NULL OR (
+                            uid NOT LIKE 'bot-outbound-%%'
+                        AND uid NOT LIKE 'conversation-reset-%%'
+                      ))
                     ORDER BY time ASC 
                     LIMIT %s
                 )
@@ -4084,183 +4167,131 @@ class WhatsAppSession:
 
 async def check_inactivity():
     """
-    Tarea en background que revisa cada minuto las sesiones activas.
-    Si alguna sesión ha estado inactiva más de 15 minutos, se envía un mensaje
-    de alerta por Chat2Desk, elimina los mensajes de la base de datos y elimina la sesión.
+    Close inactive sessions exactly once across all replicas.
+
+    Durable activity is authoritative. Conversation messages remain available for
+    audit; a reset marker separates the next session from the old model context.
     """
     while True:
-        await asyncio.sleep(60)  # Revisar cada minuto
-        now = datetime.now(pytz.timezone('America/Mexico_City'))
+        await asyncio.sleep(60)
         db = LocalStorage()
-        
-        for number, session in list(user_sessions.items()):
+
+        inactivity_candidates = list_inactivity_candidates(
+            threshold_seconds=INACTIVITY_THRESHOLD,
+            storage=db,
+        )
+        for number in inactivity_candidates:
+            session = user_sessions.get(number)
             if get_active_takeover(number, storage=db):
                 logger.debug("Inactividad omitida para %s: takeover humano activo", number)
                 continue
 
-            observed_last_active = session.last_active
-            elapsed = (now - observed_last_active).total_seconds()
-            if elapsed > INACTIVITY_THRESHOLD:
-                try:
-                    # 🆕 VERIFICAR SI HAY EVALUACIÓN PENDIENTE
-                    if (hasattr(session, 'evaluation_state') and 
-                        session.evaluation_state and
-                        hasattr(session, 'evaluation_folio')):
-                        
-                        folio = session.evaluation_folio
-                        
-                        # 🆕 SI YA FUE EVALUADO, NO REENVIAR
-                        if folio in evaluated_reports:
-                            logger.critical(f"🚫 [INACTIVITY] Reporte {folio} ya fue evaluado, limpiando sesión")
-                            session.evaluation_state = None
-                            session.evaluation_folio = None
-                            session.last_hsm_time = None
-                            # Continuar con limpieza normal de inactividad
-                        else:
-                            logger.critical(f"⏰ [INACTIVITY] Evaluación pendiente para reporte {folio}, manteniendo sesión")
-                            # NO limpiar la sesión si hay evaluación pendiente sin completar
-                            continue
+            lifecycle_state = get_lifecycle_state(number, storage=db)
+            if not lifecycle_state:
+                # Legacy in-memory sessions become durable on their next inbound.
+                continue
 
-                    # Notificar al usuario usando Chat2Desk
-                    api_token = os.getenv("CHAT2DESK_API_TOKEN")
-                    chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-                    
-                    # Buscar cliente en Chat2Desk para obtener client_id
-                    search_url = "https://api.chat2desk.com.mx/v1/clients"
-                    params = {"phone": number}
-                    
-                    headers = {
-                        "Authorization": api_token,
-                        "Content-Type": "application/json"
-                    }
-                    
-                    async with httpx.AsyncClient() as client:
-                        response = await client.get(search_url, params=params, headers=headers)
-                    
-                    if response.status_code == 200:
-                        client_data = response.json()
-                        if client_data.get("status") == "success" and client_data.get("data"):
-                            current_session = user_sessions.get(number)
-                            inactivity_still_valid = (
-                                current_session is session
-                                and inactivity_snapshot_is_still_stale(
-                                    observed_last_active=observed_last_active,
-                                    current_last_active=current_session.last_active,
-                                    now=datetime.now(pytz.timezone('America/Mexico_City')),
-                                    threshold_seconds=INACTIVITY_THRESHOLD,
-                                    human_control_active=bool(get_active_takeover(number, storage=db)),
-                                )
-                            )
-                            if not inactivity_still_valid:
-                                logger.info(
-                                    "🛑 [INACTIVITY CANCELLED] No se enviará cierre para %s: "
-                                    "hubo actividad nueva, takeover o cambio de sesión",
-                                    number,
-                                )
-                                continue
+            claim_uid = claim_inactivity_close(
+                number,
+                threshold_seconds=INACTIVITY_THRESHOLD,
+                storage=db,
+            )
+            if not claim_uid:
+                continue
 
-                            client_id = client_data["data"][0]["id"]
-                            channel_id = 43906  # Canal fijo para WhatsApp
-                            
-                            # Enviar mensaje de desconexión
-                            message_data = {
-                                "client_id": client_id,
-                                "channel_id": channel_id,
-                                "transport": "wa_direct",
-                                "text": "Parece que te ausentaste. La conversación se cerró por inactividad. Mándanos un mensaje para comenzar de nuevo. ¡Aquí estaremos!😊"
-                            }
-                            
-                            async with httpx.AsyncClient() as client:
-                                send_response = await client.post(chat2desk_url, json=message_data, headers=headers)
-                            persist_bot_outbound_marker(
-                                db,
-                                number,
-                                send_response,
-                                "inactivity_disconnect",
-                            )
-
-                            if number in transferred_numbers:
-                                del transferred_numbers[number]
-                                logger.critical(f"🧹 [INACTIVITY] Eliminado {number} de transferred_numbers por inactividad")
-
-                    current_session = user_sessions.get(number)
-                    inactivity_still_valid = (
-                        current_session is session
-                        and inactivity_snapshot_is_still_stale(
-                            observed_last_active=observed_last_active,
-                            current_last_active=current_session.last_active,
-                            now=datetime.now(pytz.timezone('America/Mexico_City')),
-                            threshold_seconds=INACTIVITY_THRESHOLD,
-                            human_control_active=bool(get_active_takeover(number, storage=db)),
+            try:
+                if session and session.evaluation_state and session.evaluation_folio:
+                    if session.evaluation_folio not in evaluated_reports:
+                        logger.critical(
+                            "⏰ [INACTIVITY] Evaluación pendiente para reporte %s; sesión conservada",
+                            session.evaluation_folio,
                         )
+                        release_inactivity_claim(number, claim_uid, storage=db)
+                        continue
+                    session.evaluation_state = None
+                    session.evaluation_folio = None
+                    session.last_hsm_time = None
+
+                api_token = os.getenv("CHAT2DESK_API_TOKEN")
+                if not api_token:
+                    raise RuntimeError("CHAT2DESK_API_TOKEN no está configurado")
+
+                headers = {
+                    "Authorization": api_token,
+                    "Content-Type": "application/json",
+                }
+                timeout = httpx.Timeout(20.0, connect=8.0)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    lookup_response = await client.get(
+                        "https://api.chat2desk.com.mx/v1/clients",
+                        params={"phone": number},
+                        headers=headers,
                     )
-                    if not inactivity_still_valid:
+                    lookup_response.raise_for_status()
+                    client_payload = lookup_response.json()
+                    clients = client_payload.get("data") or []
+                    if client_payload.get("status") != "success" or not clients:
+                        raise RuntimeError("Chat2Desk no devolvió el cliente")
+
+                    if (
+                        not inactivity_claim_is_current(number, claim_uid, storage=db)
+                        or get_active_takeover(number, storage=db)
+                    ):
                         logger.info(
-                            "🛑 [INACTIVITY CLEANUP CANCELLED] No se limpiará %s: "
-                            "hubo actividad nueva, takeover o cambio de sesión",
+                            "🛑 [INACTIVITY CANCELLED] Actividad nueva o takeover para %s",
                             number,
                         )
+                        release_inactivity_claim(number, claim_uid, storage=db)
                         continue
-                    
-                    # Eliminar todos los mensajes de este número de la base de datos
-                    conn = psycopg2.connect(dbname=db.dbName, user=db.user, password=db.password, host=db.host, port=db.port)
-                    cursor = conn.cursor()
-                    
-                    # Limpiar el historial conversacional sin borrar los markers de
-                    # salidas de SAM. Chat2Desk puede reentregar el outbox horas más
-                    # tarde y esos IDs son la evidencia durable que evita takeovers falsos.
-                    cursor.execute(
-                        """
-                        DELETE FROM messages
-                        WHERE number = %s
-                          AND (uid IS NULL OR uid NOT LIKE 'bot-outbound-%%')
-                        """,
-                        [number],
+
+                    send_response = await client.post(
+                        "https://api.chat2desk.com.mx/v1/messages",
+                        json={
+                            "client_id": clients[0]["id"],
+                            "channel_id": 43906,
+                            "transport": "wa_direct",
+                            "text": (
+                                "Parece que te ausentaste. La conversación se cerró por "
+                                "inactividad. Mándanos un mensaje para comenzar de nuevo. "
+                                "¡Aquí estaremos!😊"
+                            ),
+                        },
+                        headers=headers,
                     )
-                    count = cursor.rowcount
-                    
-                    conn.commit()
-                    conn.close()
-                    
-                    logger.debug(f"Se eliminaron {count} mensajes para el número {number} por inactividad.")
-                    
-                    # Eliminar la sesión
-                    del user_sessions[number]
-                    # Eliminar también cualquier reporte en progreso
-                    if number in report_sessions:
-                        del report_sessions[number]
+                    send_response.raise_for_status()
 
-                    # 🚫 MARCAR NÚMERO COMO CERRADO POR INACTIVIDAD
-                    # SOLO si NO estaba transferido a un agente humano
-                    was_transferred = number in transferred_numbers
-                    if not was_transferred:
-                        closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
-                        logger.critical(f"🚫 [INACTIVITY] {number} marcado como cerrado - cooldown de {INACTIVITY_COOLDOWN/60:.0f} minutos")
-                    else:
-                        logger.critical(f"✅ [INACTIVITY] {number} estaba transferido, NO se aplica cooldown")
+                persist_bot_outbound_marker(
+                    db,
+                    number,
+                    send_response,
+                    "inactivity_disconnect",
+                )
+                if not mark_inactivity_close_sent(number, claim_uid, storage=db):
+                    logger.warning(
+                        "⚠️ [INACTIVITY RACE] El cierre se envió pero llegó actividad "
+                        "concurrente para %s uid=%s",
+                        number,
+                        claim_uid,
+                    )
+                    continue
 
-                    logger.debug(f"Sesión de {number} desconectada por inactividad.")
-                except Exception as e:
-                    logger.error(f"Error enviando mensaje de desconexión para {number}: {str(e)}")
-                    # Aún intentamos eliminar la sesión incluso si falló el envío del mensaje
-                    if number in user_sessions:
-                        del user_sessions[number]
-                    if number in report_sessions:
-                        del report_sessions[number]
-
-                    # Verificar si estaba transferido antes de eliminarlo
-                    was_transferred = number in transferred_numbers
-                    if number in transferred_numbers:
-                        del transferred_numbers[number]
-                        logger.critical(f"🧹 [INACTIVITY ERROR] Eliminado {number} de transferred_numbers por error")
-
-                    # 🚫 TAMBIÉN MARCAR EN CASO DE ERROR
-                    # SOLO si NO estaba transferido
-                    if not was_transferred:
-                        closed_by_inactivity[number] = datetime.now().timestamp() + INACTIVITY_COOLDOWN
-                        logger.critical(f"🚫 [INACTIVITY ERROR] {number} marcado como cerrado (error handler)")
-                    else:
-                        logger.critical(f"✅ [INACTIVITY ERROR] {number} estaba transferido, NO se aplica cooldown")
+                persist_context_reset_marker(db, number, "inactivity", claim_uid)
+                clear_local_conversation_context(number, drop_session=True)
+                closed_by_inactivity[number] = (
+                    datetime.now().timestamp() + INACTIVITY_COOLDOWN
+                )
+                logger.critical(
+                    "✅ [INACTIVITY CLOSED] %s cerrado una sola vez para uid=%s",
+                    number,
+                    claim_uid,
+                )
+            except Exception as error:
+                release_inactivity_claim(number, claim_uid, storage=db)
+                logger.error(
+                    "Error enviando mensaje de desconexión para %s: %s",
+                    number,
+                    error,
+                )
 
 
 async def cleanup_hsm_reports():
@@ -4514,7 +4545,7 @@ async def save_client_selection2_with_auto_marking(yoga_number: str, selection1:
         )
         
         # Si fue exitoso, hacer auto-marking
-        if folio and "Folio:" in folio and folio != "Folio: Generado":
+        if extract_confirmed_folio(folio):
             logger.critical(f"✅ [AUTO-MARKING] Marcando {yoga_number} como completado con {folio}")
             
             # El dedup_manager ya maneja la protección post-reporte
@@ -4806,12 +4837,17 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             current_time=current_time,
         )
 
-        if isinstance(folio, str) and folio.startswith("Folio:"):
-            logger.info(f"Report successfully created for {from_number}, folio: {folio}")
+        confirmed_folio = extract_confirmed_folio(folio)
+        if confirmed_folio:
+            logger.info(
+                "Report successfully created for %s, folio: %s",
+                from_number,
+                confirmed_folio,
+            )
             return {
                 'status': 'success',
-                'message': f"Reporte creado exitosamente. Folio: {folio}",
-                'folio': folio
+                'message': f"Reporte creado exitosamente. Folio: {confirmed_folio}",
+                'folio': confirmed_folio
             }
 
         if isinstance(folio, str) and folio.startswith("VALIDATION_BLOCK:"):
@@ -4826,20 +4862,20 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             logger.error(f"Report creation returned error for {from_number}: {folio}")
             return {
                 'status': 'error',
-                'message': folio
+                'message': "No fue posible crear el reporte y no se generó ningún folio."
             }
 
         logger.error(f"Unexpected report creation result for {from_number}: {folio}")
         return {
             'status': 'error',
-            'message': f"Resultado inesperado al crear el reporte: {folio}"
+            'message': "No fue posible confirmar la creación del reporte; no se generó ningún folio."
         }
         
     except Exception as e:
         logger.error(f"Error processing report for {from_number}: {str(e)}")
         return {
             'status': 'error',
-            'message': f"Error al procesar el reporte: {str(e)}"
+            'message': "No fue posible procesar el reporte; no se generó ningún folio."
         }
     finally:
         # Always release the "in progress" state
@@ -4867,9 +4903,19 @@ async def lifespan(app: FastAPI):
     logger.critical("🚀 INICIANDO SERVIDOR - Creando tareas de background...")
     logger.critical("🚀 [DEPLOYMENT] sha=%s", DEPLOYMENT_SHA)
     ensure_conversation_control_storage(LocalStorage())
+    ensure_conversation_lifecycle_storage(LocalStorage())
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
-    asyncio.create_task(check_report_timeouts())
+    if automatic_report_timeouts_enabled(os.getenv("ENABLE_AUTO_REPORT_TIMEOUTS")):
+        logger.warning(
+            "⚠️ [AUTO REPORT TIMEOUTS ENABLED] Se habilitó explícitamente la "
+            "creación automática de reportes por timeout"
+        )
+        asyncio.create_task(check_report_timeouts())
+    else:
+        logger.critical(
+            "🛡️ [AUTO REPORT TIMEOUTS DISABLED] La inactividad nunca creará folios"
+        )
     asyncio.create_task(monitor_reply_detection())
     
     # 🆕 NUEVA TAREA: Limpieza del gestor anti-duplicación
@@ -5358,10 +5404,14 @@ async def whatsapp(request: Request):
             transferred_numbers.pop(normalize_phone_key(from_number), None)
             logger.debug(f"Removed {from_number} from human takeover control")
 
-            if from_number not in user_sessions:
-                user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
-            else:
-                user_sessions[from_number].update_activity()
+            clear_local_conversation_context(from_number, drop_session=True)
+            reset_marker = persist_context_reset_marker(
+                db,
+                from_number,
+                "human-return",
+                message_id,
+            )
+            user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
             closed_by_inactivity.pop(from_number, None)
             logger.info("⏱️ [INACTIVITY RESET] Temporizador reiniciado tras devolución a SAM para %s", from_number)
                 
@@ -5372,10 +5422,21 @@ async def whatsapp(request: Request):
 
             sender_name = payload.get('client', {}).get('name', 'Usuario')
             greeting_message = build_return_to_sam_greeting(sender_name)
+            lifecycle_session_key = build_session_key(
+                request_id,
+                payload.get("dialog_id"),
+            )
+            mark_reopen_greeting_pending(
+                from_number,
+                storage=db,
+                reset_activity=True,
+            )
 
             logger.critical(
-                "👋 [RETURN AUTOGREETING] Enviando saludo institucional de SAM inmediatamente para %s",
+                "👋 [RETURN AUTOGREETING] Enviando saludo institucional de SAM "
+                "inmediatamente para %s reset_marker=%s",
                 from_number,
+                reset_marker,
             )
 
             try:
@@ -5413,10 +5474,18 @@ async def whatsapp(request: Request):
             )
 
             if sent:
+                mark_session_greeting_sent(
+                    from_number,
+                    lifecycle_session_key,
+                    storage=db,
+                )
                 return JSONResponse(content={"status": True, "message": "Control released to AI and SAM greeting sent"})
 
-            pending_bot_greeting[from_number] = True
-            logger.warning("No se pudo enviar saludo inmediato de retorno para %s; se reintentará con el siguiente inbound", from_number)
+            logger.warning(
+                "No se pudo enviar saludo inmediato de retorno para %s; el lifecycle "
+                "persistente lo reintentará con el siguiente inbound",
+                from_number,
+            )
             return JSONResponse(content={"status": True, "message": "Control released to AI; greeting pending next inbound"})
 
         # 🎯 TERCERO: Clasificar outbox sin inferir takeover por operator_id
@@ -5470,8 +5539,9 @@ async def whatsapp(request: Request):
                 payload.get('operator_id'),
             )
 
-        # operator_id también aparece en automatizaciones de Chat2Desk. Un
-        # outbox aislado no es evidencia suficiente para entregar el control.
+        # operator_id también aparece en automatizaciones de Chat2Desk. Sólo un
+        # outbox fresco que no coincide con un eco de SAM ni con una plantilla
+        # automática confirma que un operador humano ya escribió en el chat.
         if (
             message_type == 'to_client' and
             hook_type == 'outbox' and
@@ -5481,19 +5551,26 @@ async def whatsapp(request: Request):
 
             grace_time = int(BOT_GRACE_PERIOD - (datetime.now().timestamp() - recently_returned_to_bot[from_number]))
             logger.info(f"Ignorando detección automática para {from_number} - en período de gracia ({grace_time} segundos restantes)")
-        elif (
-            message_type == 'to_client' and
-            hook_type == 'outbox' and
-            bool(payload.get('operator_id')) and
-            not stale_operator_outbox
+        elif should_confirm_operator_outbox_takeover(
+            message_type=message_type,
+            hook_type=hook_type,
+            operator_id=payload.get('operator_id'),
+            is_bot_echo=is_bot_echo,
+            stale=stale_operator_outbox,
+            in_return_grace=False,
         ):
+            activate_takeover(
+                from_number,
+                source=f"confirmed_operator_outbox:{payload.get('operator_id')}",
+                message_id=message_id,
+                storage=db,
+            )
             logger.info(
-                "👤 [NONAUTHORITATIVE OUTBOX] No se activará takeover solamente por operator_id. "
-                "from_number=%s message_id=%s operator_id=%s is_bot_echo=%s",
+                "👤 [CONFIRMED OPERATOR OUTBOX] Takeover humano persistido. "
+                "from_number=%s message_id=%s operator_id=%s",
                 from_number,
                 message_id,
                 payload.get('operator_id'),
-                is_bot_echo,
             )
 
         # 🎯 CUARTO: Verificar si ya está transferido
@@ -5680,47 +5757,6 @@ async def whatsapp(request: Request):
             )
             logger.info(f"✅ [RETURN FRESH EVENT] Primer inbound nuevo aceptado para {from_number} después de -bot")
 
-        if from_number in pending_bot_greeting:
-            sender_name = payload.get('client', {}).get('name', 'Usuario')
-            greeting_message = build_return_to_sam_greeting(sender_name)
-
-            logger.critical(
-                "👋 [RETURN AUTOGREETING] Enviando saludo de SAM tras return-to-bot para %s",
-                from_number,
-            )
-
-            try:
-                assistant_message = Message(
-                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    senderName="Assistant",
-                    message=greeting_message,
-                    number=from_number,
-                    uid=f"assistant-return-greeting-{datetime.now().timestamp()}",
-                    direction="outbound",
-                    mtype="text",
-                    source="whatsapp"
-                )
-                db.Insert(assistant_message)
-                await manage_message_history(db, from_number)
-            except Exception as e:
-                logger.error("Error guardando saludo de retorno para %s: %s", from_number, str(e))
-
-            pending_bot_greeting.pop(from_number, None)
-            recently_returned_to_bot.pop(from_number, None)
-
-            sent = await send_chat2desk_message(
-                from_number,
-                payload.get('client_id'),
-                payload.get('channel_id'),
-                greeting_message,
-                payload.get('transport', 'wa_direct'),
-            )
-
-            if sent:
-                return JSONResponse(content={"status": True, "message": "Saludo de SAM enviado tras return-to-bot"})
-
-            logger.error("No se pudo enviar saludo de SAM tras return-to-bot para %s", from_number)
-
         # Deduplicar mensajes entrantes solo cuando ya exista evidencia de entrega exitosa.
         # Si el primer intento guardó el inbound pero falló antes de responder, debemos permitir el retry.
         if has_successful_delivery_marker_for_inbound_uid(db, uid):
@@ -5780,8 +5816,24 @@ async def whatsapp(request: Request):
                 content={"status": True, "message": "Mensaje ya reclamado por otra réplica"}
             )
 
+        lifecycle_session_key = build_session_key(
+            request_id,
+            payload.get("dialog_id"),
+        )
+        record_inbound_activity(
+            from_number,
+            uid,
+            lifecycle_session_key,
+            storage=db,
+        )
+
         if processed_message_ids.contains(uid):
             logger.debug(f"Ignorando mensaje duplicado con id={uid} antes de procesar flujos")
+            release_inbound_processing_claim(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
             return JSONResponse(content={"status": True, "message": "Mensaje duplicado ignorado"})
 
         processed_message_ids.add(uid)
@@ -6523,9 +6575,7 @@ async def whatsapp(request: Request):
             logger.critical(f"🚫 [OK BLOCKED] OK ignorado para {from_number} - posible respuesta de evaluación")
             return JSONResponse(content={"status": True, "message": "OK response ignored during evaluation"})
         
-    # Una conversación cerrada por inactividad se reabre con el siguiente inbound.
-    # El historial ya fue limpiado por check_inactivity, por lo que más adelante se
-    # enviará el saludo institucional como inicio de una sesión nueva.
+    # El cierre durable de inactividad obliga un único saludo en el siguiente inbound.
     if from_number in closed_by_inactivity:
         closed_by_inactivity.pop(from_number, None)
         logger.critical(
@@ -6541,27 +6591,76 @@ async def whatsapp(request: Request):
     session.update_activity()
     conversation_history = session.history
 
-    # Recuperar mensajes históricos desde la base de datos y agregarlos al historial
-    initial_greeting_required = bool(payload.get("is_new_request"))
+    # Recuperar sólo el historial posterior al último límite de sesión.
+    initial_greeting_required = False
+    last_outbound_message = ""
     try:
         logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
 
-        should_reset_context_after_human = from_number in recently_returned_to_bot
-
-        # Obtener mensajes ordenados por tiempo (los más antiguos primero)
-        messages_db = [] if should_reset_context_after_human else (
-            db.Search(Message(number=from_number, source="whatsapp"), order='asc', limit=50) or []
+        # Search devuelve primero los más recientes; se invierten para alimentar
+        # al modelo cronológicamente y mantener visible el marcador más reciente.
+        recent_messages = (
+            db.Search(
+                Message(number=from_number, source="whatsapp"),
+                order="desc",
+                limit=200,
+            )
+            or []
         )
+        messages_db, context_reset_marker = history_after_latest_context_reset(
+            list(reversed(recent_messages))
+        )
+        if (
+            context_reset_marker
+            and applied_context_reset_markers.get(from_number) != context_reset_marker
+        ):
+            clear_local_conversation_context(from_number, drop_session=False)
+            applied_context_reset_markers[from_number] = context_reset_marker
+            logger.critical(
+                "🧹 [CONTEXT BOUNDARY APPLIED] phone=%s marker=%s",
+                from_number,
+                context_reset_marker,
+            )
+
         has_prior_conversation_history = any(
             msg.direction in {"inbound", "outbound"} and bool(msg.message)
             for msg in messages_db
         )
-        initial_greeting_required = should_send_initial_greeting(
+        greeting_boundary_requested = should_send_initial_greeting(
             is_new_request=bool(payload.get("is_new_request")),
             history_available=True,
             has_prior_conversation_history=has_prior_conversation_history,
-            resetting_after_human=should_reset_context_after_human,
+            resetting_after_human=False,
         )
+        initial_greeting_required = claim_session_greeting(
+            from_number,
+            lifecycle_session_key,
+            boundary_requested=greeting_boundary_requested,
+            storage=db,
+        )
+
+        # Chat2Desk puede conservar is_new_request=True en varios webhooks. Sólo
+        # la réplica que reclamó el saludo crea el límite de la nueva sesión.
+        if (
+            initial_greeting_required
+            and bool(payload.get("is_new_request"))
+            and has_prior_conversation_history
+        ):
+            context_reset_marker = persist_context_reset_marker(
+                db,
+                from_number,
+                "new-request",
+                uid,
+            )
+            clear_local_conversation_context(from_number, drop_session=False)
+            messages_db = []
+            has_prior_conversation_history = False
+            logger.critical(
+                "🧹 [NEW REQUEST CONTEXT RESET] phone=%s marker=%s",
+                from_number,
+                context_reset_marker,
+            )
+
         last_outbound_message = next(
             (msg.message for msg in reversed(messages_db) if msg.direction == "outbound" and msg.message),
             "",
@@ -6570,20 +6669,13 @@ async def whatsapp(request: Request):
         # Limpiar el historial antes de agregar mensajes para evitar duplicados
         conversation_history.messages.clear()
 
-        if should_reset_context_after_human:
-            logger.critical(
-                "🧹 [RETURN CONTEXT RESET] Reiniciando historial conversacional para %s tras regreso desde agente humano",
-                from_number,
-            )
-        else:
-            # Añadir los mensajes al historial en el orden correcto
-            for msg in messages_db:
-                if msg.direction == "inbound":
-                    conversation_history.add_user_message(msg.message)
-                    logger.debug(f"Mensaje histórico (usuario): {msg.message[:30]}...")
-                elif msg.direction == "outbound":
-                    conversation_history.add_ai_message(msg.message)
-                    logger.debug(f"Mensaje histórico (asistente): {msg.message[:30]}...")
+        for msg in messages_db:
+            if msg.direction == "inbound":
+                conversation_history.add_user_message(msg.message)
+                logger.debug(f"Mensaje histórico (usuario): {msg.message[:30]}...")
+            elif msg.direction == "outbound":
+                conversation_history.add_ai_message(msg.message)
+                logger.debug(f"Mensaje histórico (asistente): {msg.message[:30]}...")
             
     except Exception as e:
         logger.error(f"Error al recuperar mensajes históricos: {str(e)}")
@@ -6634,6 +6726,77 @@ async def whatsapp(request: Request):
     await manage_message_history(db, from_number)
 
     message_id = payload.get('message_id')
+
+    # El saludo institucional pertenece al inicio de sesión, no reemplaza el
+    # contenido del primer mensaje. Si el ciudadano sólo saludó, el saludo
+    # completa el turno; si ya hizo una solicitud, SAM la procesa enseguida.
+    if initial_greeting_required:
+        greeting_message = build_return_to_sam_greeting(sender_name)
+        logger.critical(
+            "👋 [INITIAL SESSION GREETING] Enviando saludo institucional para %s uid=%s",
+            from_number,
+            uid,
+        )
+        try:
+            assistant_message = Message(
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                senderName="Assistant",
+                message=greeting_message,
+                number=from_number,
+                uid=f"assistant-initial-greeting-{uid}",
+                direction="outbound",
+                mtype="text",
+                source="whatsapp",
+            )
+            db.Insert(assistant_message)
+            await manage_message_history(db, from_number)
+            sent = await send_chat2desk_message(
+                from_number,
+                client_id,
+                channel_id,
+                greeting_message,
+                transport,
+            )
+            if not sent:
+                raise RuntimeError("Chat2Desk no confirmó el saludo institucional")
+
+            mark_session_greeting_sent(
+                from_number,
+                lifecycle_session_key,
+                storage=db,
+            )
+
+            if is_simple_greeting(body):
+                persist_successful_delivery_marker(db, from_number, uid, message_id)
+                mark_inbound_processing_delivered(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Saludo institucional de nueva sesión enviado",
+                    }
+                )
+
+            logger.info(
+                "💬 [INITIAL MESSAGE CONTINUES] El primer inbound de %s contiene "
+                "una solicitud; se procesará después del saludo",
+                from_number,
+            )
+        except Exception as greeting_error:
+            mark_reopen_greeting_pending(from_number, storage=db)
+            logger.exception(
+                "Error enviando saludo institucional de nueva sesión para %s: %s",
+                from_number,
+                greeting_error,
+            )
+            release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+            return JSONResponse(
+                content={"status": False, "error": "No se pudo enviar saludo institucional"},
+                status_code=500,
+            )
 
     if is_explicit_human_handoff_request(body):
         logger.critical(
@@ -6823,53 +6986,6 @@ async def whatsapp(request: Request):
             status_code=500,
         )
 
-    if initial_greeting_required:
-        greeting_message = build_return_to_sam_greeting(sender_name)
-        logger.critical(
-            "👋 [INITIAL SESSION GREETING] Enviando saludo institucional para %s uid=%s",
-            from_number,
-            uid,
-        )
-        try:
-            conversation_history.add_ai_message(greeting_message)
-            assistant_message = Message(
-                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                senderName="Assistant",
-                message=greeting_message,
-                number=from_number,
-                uid=f"assistant-initial-greeting-{uid}",
-                direction="outbound",
-                mtype="text",
-                source="whatsapp",
-            )
-            db.Insert(assistant_message)
-            await manage_message_history(db, from_number)
-            sent = await send_chat2desk_message(
-                from_number,
-                client_id,
-                channel_id,
-                greeting_message,
-                transport,
-            )
-            if sent:
-                persist_successful_delivery_marker(db, from_number, uid, message_id)
-                mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
-                return JSONResponse(
-                    content={"status": True, "message": "Saludo institucional de nueva sesión enviado"}
-                )
-        except Exception as greeting_error:
-            logger.exception(
-                "Error enviando saludo institucional de nueva sesión para %s: %s",
-                from_number,
-                greeting_error,
-            )
-
-        release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
-        return JSONResponse(
-            content={"status": False, "error": "No se pudo enviar saludo institucional"},
-            status_code=500,
-        )
-
     mexico_tz = pytz.timezone('America/Mexico_City')
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
@@ -6964,6 +7080,12 @@ async def whatsapp(request: Request):
             "necesaria falló, usa reason_code='tool_failure'. Nunca uses falta de contexto para sacar del flujo "
             "una emergencia, un reporte, un folio o un seguimiento."
         )
+        if initial_greeting_required:
+            system_prompt += (
+                "\n\nSALUDO YA ENVIADO: El sistema ya envió el saludo institucional de esta "
+                "sesión. Responde directamente a la solicitud del ciudadano sin repetir el "
+                "aviso de privacidad ni el mensaje de bienvenida."
+            )
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:
         #     system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."

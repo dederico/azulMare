@@ -2,17 +2,51 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.services.conversation_policy import (
+    automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    extract_confirmed_folio,
     inactivity_snapshot_is_still_stale,
     is_bot_return_message,
     is_human_takeover_message,
     is_known_automated_outbound,
     is_non_authoritative_control_source,
     is_trusted_human_control,
+    is_verified_public_phone,
     should_replace_unconfirmed_transfer_response,
+    should_confirm_operator_outbox_takeover,
     should_send_initial_greeting,
 )
+
+
+class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_automatic_reports_are_disabled_by_default(self):
+        self.assertFalse(automatic_report_timeouts_enabled(None))
+        self.assertFalse(automatic_report_timeouts_enabled("false"))
+
+    def test_automatic_reports_require_explicit_opt_in(self):
+        self.assertTrue(automatic_report_timeouts_enabled("true"))
+
+
+class FolioValidationTests(unittest.TestCase):
+    def test_accepts_only_numeric_backend_folio(self):
+        self.assertEqual(extract_confirmed_folio("Folio: 471149"), "471149")
+        self.assertEqual(extract_confirmed_folio("Folio: *471149*"), "471149")
+
+    def test_rejects_errors_disguised_as_folios(self):
+        self.assertIsNone(extract_confirmed_folio("Folio: Error 500"))
+        self.assertIsNone(extract_confirmed_folio("Error al procesar la solicitud"))
+        self.assertIsNone(extract_confirmed_folio("No pude crear el reporte"))
+
+
+class PublicPhoneValidationTests(unittest.TestCase):
+    def test_official_public_numbers_are_allowed(self):
+        self.assertTrue(is_verified_public_phone("81 89 88 20 00"))
+        self.assertTrue(is_verified_public_phone("81 84 00 44 00"))
+        self.assertTrue(is_verified_public_phone("81 12 12 12 12"))
+
+    def test_unverified_number_is_rejected(self):
+        self.assertFalse(is_verified_public_phone("81 89 88 11 00"))
 
 
 class EmergencyClassificationTests(unittest.TestCase):
@@ -70,6 +104,61 @@ class HumanControlPolicyTests(unittest.TestCase):
         self.assertFalse(
             is_trusted_human_control(
                 {"mode": "human", "source": "operator_outbox:228543"}
+            )
+        )
+
+    def test_confirmed_operator_message_is_trusted(self):
+        self.assertTrue(
+            is_trusted_human_control(
+                {
+                    "mode": "human",
+                    "source": "confirmed_operator_outbox:228543",
+                }
+            )
+        )
+
+    def test_fresh_non_bot_operator_outbox_confirms_takeover(self):
+        self.assertTrue(
+            should_confirm_operator_outbox_takeover(
+                message_type="to_client",
+                hook_type="outbox",
+                operator_id=228543,
+                is_bot_echo=False,
+                stale=False,
+                in_return_grace=False,
+            )
+        )
+
+    def test_bot_and_stale_outbox_do_not_confirm_takeover(self):
+        common = {
+            "message_type": "to_client",
+            "hook_type": "outbox",
+            "operator_id": 228522,
+            "stale": False,
+            "in_return_grace": False,
+        }
+        self.assertFalse(
+            should_confirm_operator_outbox_takeover(
+                **common,
+                is_bot_echo=True,
+            )
+        )
+        self.assertFalse(
+            should_confirm_operator_outbox_takeover(
+                **{**common, "stale": True},
+                is_bot_echo=False,
+            )
+        )
+
+    def test_return_greeting_grace_does_not_retake_conversation(self):
+        self.assertFalse(
+            should_confirm_operator_outbox_takeover(
+                message_type="to_client",
+                hook_type="outbox",
+                operator_id=228522,
+                is_bot_echo=False,
+                stale=False,
+                in_return_grace=True,
             )
         )
 

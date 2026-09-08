@@ -5,6 +5,33 @@ import unicodedata
 EXPLICIT_HANDOFF = "explicit_user_request"
 VERIFIED_NO_CONTEXT = "verified_no_context"
 TOOL_FAILURE = "tool_failure"
+VERIFIED_PUBLIC_PHONE_DIGITS = frozenset(
+    {
+        "8189882000",  # C4
+        "8184004400",  # Conmutador / CIAC
+        "8112121212",  # Atención Ciudadana
+    }
+)
+
+
+def automatic_report_timeouts_enabled(value: str | None) -> bool:
+    """Automatic report creation is opt-in; silence must never create a folio."""
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def extract_confirmed_folio(value) -> str | None:
+    """Accept only a complete, numeric folio returned by the report backend."""
+    match = re.fullmatch(
+        r"\s*Folio:\s*\*?(\d{4,12})\*?\s*",
+        str(value or ""),
+        flags=re.IGNORECASE,
+    )
+    return match.group(1) if match else None
+
+
+def is_verified_public_phone(value) -> bool:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    return digits in VERIFIED_PUBLIC_PHONE_DIGITS
 
 
 def normalize_policy_text(value: str | None) -> str:
@@ -23,6 +50,7 @@ def is_trusted_human_control(control: dict | None) -> bool:
     return (
         source == EXPLICIT_HANDOFF
         or source == "chat2desk_takeover_message"
+        or source.startswith("confirmed_operator_outbox:")
         or source.startswith("tool:")
     )
 
@@ -81,7 +109,10 @@ def history_after_latest_context_reset(messages, *, uid_prefix: str = "conversat
     """Return only messages belonging to the session after the latest reset marker."""
     items = list(messages or [])
     for index in range(len(items) - 1, -1, -1):
-        uid = str(getattr(items[index], "uid", "") or "")
+        item = items[index]
+        uid = str(
+            item.get("uid", "") if isinstance(item, dict) else getattr(item, "uid", "")
+        )
         if uid.startswith(uid_prefix):
             return items[index + 1 :], uid
     return items, None
@@ -119,6 +150,26 @@ def is_known_automated_outbound(text: str | None) -> bool:
         ),
     )
     return any(all(fragment in normalized for fragment in template) for template in known_templates)
+
+
+def should_confirm_operator_outbox_takeover(
+    *,
+    message_type: str | None,
+    hook_type: str | None,
+    operator_id,
+    is_bot_echo: bool,
+    stale: bool,
+    in_return_grace: bool,
+) -> bool:
+    """Confirm human control only from a fresh, non-bot operator message."""
+    return bool(
+        message_type == "to_client"
+        and hook_type == "outbox"
+        and operator_id not in (None, "")
+        and not is_bot_echo
+        and not stale
+        and not in_return_grace
+    )
 
 
 def inactivity_snapshot_is_still_stale(

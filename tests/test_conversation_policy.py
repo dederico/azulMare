@@ -5,9 +5,13 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     inactivity_snapshot_is_still_stale,
+    is_bot_return_message,
+    is_human_takeover_message,
     is_known_automated_outbound,
+    is_non_authoritative_control_source,
+    is_trusted_human_control,
+    should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
-    should_activate_human_control,
 )
 
 
@@ -22,74 +26,115 @@ class EmergencyClassificationTests(unittest.TestCase):
         self.assertIs(classify_emergency_answer("Puede ocasionar un socavón"), True)
 
 
-class OperatorOutboxClassificationTests(unittest.TestCase):
-    def test_operator_outbox_alone_does_not_activate_control(self):
-        self.assertFalse(
-            should_activate_human_control(
-                message_type="to_client",
-                hook_type="outbox",
-                operator_id=228544,
-                is_bot_echo=False,
-                recently_returned_to_bot=False,
-            )
-        )
-
-    def test_authoritative_dialog_transfer_activates_control(self):
+class HumanControlPolicyTests(unittest.TestCase):
+    def test_explicit_user_transfer_is_trusted(self):
         self.assertTrue(
-            should_activate_human_control(
-                message_type=None,
-                hook_type="dialog_transferred",
-                operator_id=228544,
-                is_bot_echo=False,
-                recently_returned_to_bot=False,
-                authoritative_assignment=True,
+            is_trusted_human_control(
+                {"mode": "human", "source": "explicit_user_request"}
             )
         )
 
-    def test_same_operator_on_bot_echo_does_not_activate_control(self):
-        self.assertFalse(
-            should_activate_human_control(
-                message_type="to_client",
-                hook_type="outbox",
-                operator_id=228544,
-                is_bot_echo=True,
-                recently_returned_to_bot=False,
+    def test_guarded_tool_transfer_is_trusted(self):
+        self.assertTrue(
+            is_trusted_human_control(
+                {"mode": "human", "source": "tool:verified_no_context"}
             )
         )
 
-    def test_outbox_without_operator_does_not_activate_control(self):
-        self.assertFalse(
-            should_activate_human_control(
-                message_type="to_client",
-                hook_type="outbox",
-                operator_id=None,
-                is_bot_echo=False,
-                recently_returned_to_bot=False,
+    def test_operator_takeover_macro_is_trusted(self):
+        self.assertTrue(
+            is_trusted_human_control(
+                {"mode": "human", "source": "chat2desk_takeover_message"}
             )
         )
 
-    def test_return_to_bot_grace_suppresses_takeover(self):
+    def test_dialog_transfer_assignment_is_not_trusted(self):
         self.assertFalse(
-            should_activate_human_control(
-                message_type="to_client",
-                hook_type="outbox",
-                operator_id=228544,
-                is_bot_echo=False,
-                recently_returned_to_bot=True,
+            is_trusted_human_control(
+                {"mode": "human", "source": "dialog_transferred:228522"}
+            )
+        )
+        self.assertTrue(
+            is_non_authoritative_control_source("dialog_transferred:228522")
+        )
+
+    def test_trusted_sources_are_not_marked_for_cleanup(self):
+        self.assertFalse(
+            is_non_authoritative_control_source("chat2desk_takeover_message")
+        )
+        self.assertFalse(
+            is_non_authoritative_control_source("explicit_user_request")
+        )
+
+    def test_legacy_operator_outbox_is_not_trusted(self):
+        self.assertFalse(
+            is_trusted_human_control(
+                {"mode": "human", "source": "operator_outbox:228543"}
             )
         )
 
-    def test_stale_operator_outbox_does_not_activate_control(self):
-        self.assertFalse(
-            should_activate_human_control(
-                message_type="to_client",
-                hook_type="outbox",
-                operator_id=228544,
-                is_bot_echo=False,
-                recently_returned_to_bot=False,
-                event_is_stale=True,
+    def test_missing_control_is_not_trusted(self):
+        self.assertFalse(is_trusted_human_control(None))
+
+    def test_official_operator_greeting_confirms_takeover(self):
+        self.assertTrue(
+            is_human_takeover_message(
+                "Buen día, gracias por comunicarse a Atención Ciudadana, "
+                "le atiende Ana Silvia Reyes Tovar ¿en qué le puedo ayudar?"
             )
         )
+
+    def test_automated_report_notice_is_not_operator_takeover(self):
+        self.assertFalse(
+            is_human_takeover_message(
+                "Te informamos que tu reporte con folio 471071 fue asignado exitosamente."
+            )
+        )
+
+    def test_official_return_macro_is_recognized(self):
+        self.assertTrue(
+            is_bot_return_message(
+                "Gracias por comunicarse a Atención Ciudadana. Procederé a reiniciar "
+                "el chatbot para que pueda generar más reportes usando SAM."
+            )
+        )
+
+    def test_inactivity_notice_is_not_return_macro(self):
+        self.assertFalse(
+            is_bot_return_message(
+                "Parece que te ausentaste. La conversación se cerró por inactividad."
+            )
+        )
+
+    def test_blocked_transfer_claim_is_replaced(self):
+        self.assertTrue(
+            should_replace_unconfirmed_transfer_response(
+                transfer_attempted=True,
+                transfer_succeeded=False,
+                response="Como solicitaste hablar con una persona, te canalizaré.",
+            )
+        )
+
+    def test_normal_response_survives_blocked_transfer_attempt(self):
+        self.assertFalse(
+            should_replace_unconfirmed_transfer_response(
+                transfer_attempted=True,
+                transfer_succeeded=False,
+                response="Entendido, no es una emergencia. ¿Qué deseas reportar?",
+            )
+        )
+
+    def test_confirmed_transfer_response_is_not_replaced(self):
+        self.assertFalse(
+            should_replace_unconfirmed_transfer_response(
+                transfer_attempted=True,
+                transfer_succeeded=True,
+                response="Te transfiero con atención humana.",
+            )
+        )
+
+
+class OperatorOutboxClassificationTests(unittest.TestCase):
 
     def test_known_sam_welcome_is_automated(self):
         self.assertTrue(

@@ -162,6 +162,70 @@ def release_human_control(phone_number: str, *, storage=None) -> None:
             conn.close()
 
 
+def _trusted_source(source: str | None) -> bool:
+    source = str(source or "")
+    return (
+        source == "explicit_user_request"
+        or source == "chat2desk_takeover_message"
+        or source.startswith("tool:")
+    )
+
+
+def consume_trusted_human_control(phone_number: str, *, storage=None) -> dict[str, Any] | None:
+    """Atomically release and return a trusted takeover exactly once."""
+    key = normalize_phone_key(phone_number)
+
+    if storage is None or not ensure_conversation_control_storage(storage):
+        with _memory_lock:
+            control = _memory_controls.get(key)
+            if not control or not _trusted_source(control.get("source")):
+                return None
+            return _memory_controls.pop(key).copy()
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                DELETE FROM {CONTROL_TABLE}
+                WHERE phone_number = %s
+                  AND mode = %s
+                  AND (
+                      source = 'explicit_user_request'
+                      OR source = 'chat2desk_takeover_message'
+                      OR source LIKE 'tool:%%'
+                  )
+                RETURNING phone_number, mode, expires_at, source,
+                          transfer_message_id, updated_at
+                """,
+                (key, HUMAN_MODE),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    except Exception as error:
+        logger.error("No se pudo consumir takeover humano para %s: %s", key, error)
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+    with _memory_lock:
+        _memory_controls.pop(key, None)
+
+    if not row:
+        return None
+
+    return {
+        "phone_number": row[0],
+        "mode": row[1],
+        "expires_at": float(row[2]) if row[2] is not None else None,
+        "source": row[3],
+        "transfer_message_id": row[4],
+        "updated_at": float(row[5] or 0),
+    }
+
+
 def get_active_human_control(phone_number: str, *, storage=None) -> dict[str, Any] | None:
     key = normalize_phone_key(phone_number)
     now = time.time()

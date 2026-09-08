@@ -1,5 +1,4 @@
 import re
-import unicodedata
 import hashlib
 import httpx
 import requests
@@ -99,6 +98,7 @@ from app.services.monitoring.operational_audit import (
 )
 from app.services.conversation_control import (
     activate_human_control,
+    consume_trusted_human_control,
     ensure_conversation_control_storage,
     get_active_human_control,
     normalize_phone_key,
@@ -108,13 +108,17 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     inactivity_snapshot_is_still_stale,
+    is_bot_return_message,
     is_emergency_related,
+    is_human_takeover_message,
     is_known_automated_outbound,
+    is_non_authoritative_control_source,
+    should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
-    should_activate_human_control,
 )
 from app.services.inbound_processing import (
     claim_inbound_processing,
+    is_latest_inbound_processing_claim,
     mark_inbound_processing_delivered,
     release_inbound_processing_claim,
 )
@@ -273,71 +277,6 @@ def format_event_timestamp_for_log(timestamp: float | None) -> str:
     if timestamp is None:
         return "None"
     return datetime.fromtimestamp(timestamp, tz=ZoneInfo("UTC")).isoformat()
-
-
-def normalize_operator_message_text(text: str | None) -> str:
-    if not text:
-        return ""
-
-    normalized = unicodedata.normalize("NFKD", text)
-    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-    normalized = normalized.lower()
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    return normalized
-
-
-def is_human_takeover_message(text: str | None) -> bool:
-    normalized = normalize_operator_message_text(text)
-    return (
-        "buen dia" in normalized
-        and "atencion ciudadana" in normalized
-        and "le atiende" in normalized
-    )
-
-
-def is_bot_return_message(text: str | None) -> bool:
-    normalized = normalize_operator_message_text(text)
-    return (
-        "gracias por comunicarse" in normalized
-        and "atencion ciudadana" in normalized
-        and "reiniciar el chatbot" in normalized
-        and "sam" in normalized
-    )
-
-
-async def resolve_chat2desk_client_phone(client_id) -> str | None:
-    """Resolve the phone omitted by Chat2Desk dialog lifecycle webhooks."""
-    if not client_id:
-        return None
-
-    api_token = os.getenv("CHAT2DESK_API_TOKEN")
-    if not api_token:
-        logger.error("👤 [DIALOG TRANSFER] CHAT2DESK_API_TOKEN no está configurado")
-        return None
-
-    url = f"https://api.chat2desk.com.mx/v1/clients/{client_id}/"
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            response = await client.get(url, headers={"Authorization": api_token})
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("status") != "success":
-            logger.error(
-                "👤 [DIALOG TRANSFER] Chat2Desk no confirmó cliente %s: %s",
-                client_id,
-                _truncate_for_log(response.text),
-            )
-            return None
-
-        client_data = payload.get("data") or {}
-        return client_data.get("phone") or client_data.get("client_phone")
-    except Exception as error:
-        logger.error(
-            "👤 [DIALOG TRANSFER] No se pudo resolver teléfono para client_id=%s: %s",
-            client_id,
-            error,
-        )
-        return None
 
 
 def log_chat2desk_outbound_attempt(context, payload, from_number=None, message_id=None):
@@ -1518,6 +1457,16 @@ def get_active_takeover(phone_number: str, *, storage=None) -> dict | None:
     key = normalize_phone_key(phone_number)
     control = get_active_human_control(key, storage=storage)
     if control:
+        if is_non_authoritative_control_source(control.get("source")):
+            logger.warning(
+                "🧹 [INVALID CONTROL CLEANUP] Liberando takeover no autoritativo "
+                "para %s source=%s",
+                key,
+                control.get("source"),
+            )
+            release_human_control(key, storage=storage)
+            transferred_numbers.pop(key, None)
+            return None
         expires_at = control.get("expires_at")
         transferred_numbers[key] = float(expires_at) if expires_at is not None else None
         return control
@@ -3060,6 +3009,9 @@ async def transfer_to_group_guarded(
     )
 
     if not transfer_allowed:
+        context["transfer_attempted"] = True
+        context["transfer_succeeded"] = False
+        context["transfer_authorization"] = authorization
         logger.critical(
             "⛔ [TRANSFER BLOCKED] message_id=%s from_number=%s reason=%s reason_code=%s authorization=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s",
             message_id,
@@ -3083,11 +3035,17 @@ async def transfer_to_group_guarded(
         group_id=group_id,
         reason=reason,
     )
+    transfer_succeeded = bool(
+        isinstance(transfer_result, str)
+        and "transferida exitosamente" in transfer_result.lower()
+    )
+    context["transfer_attempted"] = True
+    context["transfer_succeeded"] = transfer_succeeded
+    context["transfer_authorization"] = authorization
 
     if (
         from_number and
-        isinstance(transfer_result, str) and
-        "transferida exitosamente" in transfer_result.lower()
+        transfer_succeeded
     ):
         activate_takeover(
             from_number,
@@ -5211,99 +5169,20 @@ async def whatsapp(request: Request):
         request_id = payload.get('request_id')
 
         if hook_type == 'dialog_transferred':
-            current_operator_id = payload.get('current_operator_id') or operator_id
-            scenario_id = payload.get('scenario_id')
-            from_number = from_number or await resolve_chat2desk_client_phone(client_id)
-
-            if not from_number:
-                logger.error(
-                    "👤 [DIALOG TRANSFER] No se pudo identificar el teléfono. "
-                    "dialog_id=%s client_id=%s operator_id=%s",
-                    payload.get('dialog_id'),
-                    client_id,
-                    current_operator_id,
-                )
-                return JSONResponse(
-                    content={"status": False, "error": "No se pudo resolver el cliente transferido"},
-                    status_code=503,
-                )
-
-            # Una asignación originada por un escenario automático no demuestra
-            # que una persona haya tomado la conversación.
-            if scenario_id is not None:
-                logger.info(
-                    "🤖 [DIALOG TRANSFER] Asignación automática ignorada para %s "
-                    "dialog_id=%s operator_id=%s scenario_id=%s",
-                    from_number,
-                    payload.get('dialog_id'),
-                    current_operator_id,
-                    scenario_id,
-                )
-                return JSONResponse(
-                    content={"status": True, "message": "Asignación de escenario automático ignorada"}
-                )
-
-            authoritative_takeover = should_activate_human_control(
-                message_type=None,
-                hook_type=hook_type,
-                operator_id=current_operator_id,
-                is_bot_echo=False,
-                recently_returned_to_bot=from_number in recently_returned_to_bot,
-                authoritative_assignment=True,
-            )
-            if not authoritative_takeover:
-                logger.info(
-                    "👤 [DIALOG TRANSFER] Evento sin takeover aplicable para %s "
-                    "dialog_id=%s operator_id=%s",
-                    from_number,
-                    payload.get('dialog_id'),
-                    current_operator_id,
-                )
-                return JSONResponse(
-                    content={"status": True, "message": "Transferencia sin takeover aplicable"}
-                )
-
-            transfer_event_id = (
-                payload.get('updated')
-                or payload.get('event_time')
-                or payload.get('request_id')
-                or datetime.now().timestamp()
-            )
-            activate_takeover(
-                from_number,
-                source=f"dialog_transferred:{current_operator_id}",
-                message_id=f"dialog:{payload.get('dialog_id')}:{transfer_event_id}",
-                storage=db,
-            )
-            logger.info(
-                "👤 [DIALOG TRANSFER] Takeover humano autoritativo para %s "
-                "dialog_id=%s operator_id=%s last_operator_id=%s",
-                from_number,
+            # Chat2Desk también emite este evento para asignaciones automáticas.
+            # No contiene una señal suficiente para distinguirlas de un takeover
+            # manual, así que nunca debe cambiar el control de SAM.
+            logger.warning(
+                "🚫 [NONAUTHORITATIVE DIALOG TRANSFER] Evento ignorado. "
+                "dialog_id=%s client_id=%s current_operator_id=%s last_operator_id=%s scenario_id=%s",
                 payload.get('dialog_id'),
-                current_operator_id,
+                client_id,
+                payload.get('current_operator_id') or operator_id,
                 payload.get('last_operator_id'),
+                payload.get('scenario_id'),
             )
-            try:
-                db.Insert(
-                    Message(
-                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        senderName="System",
-                        message=(
-                            "[SYSTEM] Chat2Desk confirmó asignación de la conversación "
-                            f"al operador {current_operator_id}; SAM queda detenido hasta devolución explícita"
-                        ),
-                        number=from_number,
-                        uid=f"dialog-transfer-{payload.get('dialog_id')}-{transfer_event_id}",
-                        direction="system",
-                        mtype="text",
-                        source="whatsapp",
-                    )
-                )
-            except Exception as error:
-                logger.error("Error registrando dialog_transferred para %s: %s", from_number, error)
-
             return JSONResponse(
-                content={"status": True, "message": "Takeover humano registrado por dialog_transferred"}
+                content={"status": True, "message": "dialog_transferred ignorado por no ser autoritativo"}
             )
 
         if transport == 'widget':
@@ -5462,9 +5341,21 @@ async def whatsapp(request: Request):
 
         # 🎯 SEGUNDO: Verificar return to AI
         if message_type == 'to_client' and is_bot_return_message(message_text):
+            released_control = consume_trusted_human_control(from_number, storage=db)
+            if not released_control:
+                logger.warning(
+                    "🚫 [UNTRUSTED RETURN TO SAM] Mensaje de retorno ignorado sin takeover "
+                    "local confiable o ya consumido. from_number=%s operator_id=%s message_id=%s",
+                    from_number,
+                    operator_id,
+                    message_id,
+                )
+                return JSONResponse(
+                    content={"status": True, "message": "Return-to-SAM ignorado sin takeover confiable"}
+                )
+
             logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Releasing control to AI immediately on {from_number}")
-            
-            release_takeover(from_number, storage=db)
+            transferred_numbers.pop(normalize_phone_key(from_number), None)
             logger.debug(f"Removed {from_number} from human takeover control")
 
             if from_number not in user_sessions:
@@ -7157,6 +7048,49 @@ async def whatsapp(request: Request):
             response_content,
             customer_phone=from_number,
         )
+        current_transfer_context = transfer_guard_context.get(str(message_id), {})
+        if should_replace_unconfirmed_transfer_response(
+            transfer_attempted=bool(current_transfer_context.get("transfer_attempted")),
+            transfer_succeeded=bool(current_transfer_context.get("transfer_succeeded")),
+            response=response_content,
+        ):
+            original_response = response_content
+            if classify_emergency_answer(body) is False:
+                response_content = (
+                    "Entendido, no es una emergencia. "
+                    "¿Qué situación deseas reportar o qué información necesitas?"
+                )
+            else:
+                response_content = (
+                    "No se realizó una transferencia. Continúo atendiéndote por este medio. "
+                    "¿En qué puedo ayudarte?"
+                )
+            logger.warning(
+                "🚫 [UNCONFIRMED TRANSFER RESPONSE] Se reemplazó una afirmación de "
+                "transferencia no ejecutada para %s uid=%s original=%s replacement=%s",
+                from_number,
+                uid,
+                original_response[:240],
+                response_content[:240],
+            )
+        if not is_latest_inbound_processing_claim(
+            uid,
+            from_number,
+            inbound_claim_token,
+            storage=db,
+        ):
+            logger.warning(
+                "🚫 [STALE GENERATED RESPONSE] Respuesta descartada porque llegó un inbound "
+                "más nuevo para %s uid=%s response=%s",
+                from_number,
+                uid,
+                response_content[:240],
+            )
+            transfer_guard_context.pop(str(message_id), None)
+            mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
+            return JSONResponse(
+                content={"status": True, "message": "Respuesta obsoleta descartada"}
+            )
         log_operational_decision_trace(
             from_number,
             "after_llm_generation",
@@ -7405,21 +7339,28 @@ async def whatsapp(request: Request):
         return JSONResponse(content={"error": f"Error al generar respuesta: {str(e)}"}, status_code=500)
     
     
-    # Enviar la respuesta a través de Chat2Desk
-    current_time = datetime.now().timestamp()
-
-    # Verificar si ya se envió una respuesta a este número recientemente 
-    if from_number in last_response_time:
-        time_since_last_response = current_time - last_response_time[from_number]
-        # Si han pasado menos de 5 segundos desde la última respuesta, no enviar otra
-        if time_since_last_response < 5:  # 5 segundos como tiempo mínimo entre respuestas
-            logger.info(f"Evitando respuesta duplicada para {from_number} (solo han pasado {time_since_last_response:.2f} segundos)")
-            return JSONResponse(content={"status": True, "message": "Evitada respuesta duplicada"})
-
-    # Actualizar el tiempo de la última respuesta
-    last_response_time[from_number] = current_time
-
+    # Enviar la respuesta a través de Chat2Desk. La deduplicación se hace por
+    # UID y la barrera de orden por número; un temporizador local descartaría
+    # mensajes distintos enviados rápidamente y no funciona entre réplicas.
     try:
+        if not is_latest_inbound_processing_claim(
+            uid,
+            from_number,
+            inbound_claim_token,
+            storage=db,
+        ):
+            logger.warning(
+                "🚫 [STALE FINAL RESPONSE] Envío cancelado porque llegó un inbound "
+                "más nuevo para %s uid=%s response=%s",
+                from_number,
+                uid,
+                response_content[:240],
+            )
+            mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
+            return JSONResponse(
+                content={"status": True, "message": "Envío obsoleto descartado"}
+            )
+
         active_takeover = get_active_takeover(from_number, storage=db)
         if active_takeover:
             logger.warning(

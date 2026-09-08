@@ -25,6 +25,13 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 
+def _claim_is_newer(candidate_uid, candidate_claimed_at, current_uid, current_claimed_at) -> bool:
+    try:
+        return int(str(candidate_uid)) > int(str(current_uid))
+    except (TypeError, ValueError):
+        return float(candidate_claimed_at or 0) > float(current_claimed_at or 0)
+
+
 def _connect(storage):
     if psycopg2 is None:
         raise RuntimeError("psycopg2 no está instalado")
@@ -75,7 +82,13 @@ def ensure_inbound_processing_storage(storage) -> bool:
                 conn.close()
 
 
-def _claim_in_memory(uid: str, phone_number: str, token: str, now: float, lease_seconds: float):
+def _claim_in_memory(
+    uid: str,
+    phone_number: str,
+    token: str,
+    now: float,
+    lease_seconds: float,
+):
     with _memory_lock:
         existing = _memory_claims.get(uid)
         if existing:
@@ -111,7 +124,13 @@ def claim_inbound_processing(
     lease_seconds = max(float(lease_seconds), 1.0)
 
     if storage is None or not ensure_inbound_processing_storage(storage):
-        return _claim_in_memory(key, str(phone_number or ""), token, now, lease_seconds)
+        return _claim_in_memory(
+            key,
+            str(phone_number or ""),
+            token,
+            now,
+            lease_seconds,
+        )
 
     conn = None
     try:
@@ -172,7 +191,81 @@ def claim_inbound_processing(
         return token
     except Exception as error:
         logger.error("No se pudo reclamar inbound uid=%s: %s", key, error)
-        return _claim_in_memory(key, str(phone_number or ""), token, now, lease_seconds)
+        return _claim_in_memory(
+            key,
+            str(phone_number or ""),
+            token,
+            now,
+            lease_seconds,
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def is_latest_inbound_processing_claim(
+    uid,
+    phone_number: str,
+    claim_token: str | None,
+    *,
+    storage=None,
+) -> bool:
+    """Check that no newer inbound for this phone started while this one ran."""
+    if uid in (None, "") or not claim_token:
+        return False
+
+    key = str(uid)
+    phone_key = str(phone_number or "")
+
+    if storage is None or not ensure_inbound_processing_storage(storage):
+        with _memory_lock:
+            current = _memory_claims.get(key)
+            if not current or current.get("claim_token") != claim_token:
+                return False
+            current_claimed_at = float(current.get("claimed_at") or 0)
+            return not any(
+                row.get("phone_number") == phone_key
+                and _claim_is_newer(
+                    candidate_uid,
+                    row.get("claimed_at"),
+                    key,
+                    current_claimed_at,
+                )
+                for candidate_uid, row in _memory_claims.items()
+            )
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT NOT EXISTS (
+                    SELECT 1
+                    FROM {CLAIM_TABLE} newer
+                    JOIN {CLAIM_TABLE} current
+                      ON current.inbound_uid = %s
+                     AND current.claim_token = %s
+                    WHERE newer.phone_number = %s
+                      AND CASE
+                          WHEN newer.inbound_uid ~ '^[0-9]+$'
+                           AND current.inbound_uid ~ '^[0-9]+$'
+                          THEN newer.inbound_uid::NUMERIC > current.inbound_uid::NUMERIC
+                          ELSE newer.claimed_at > current.claimed_at
+                      END
+                )
+                AND EXISTS (
+                    SELECT 1 FROM {CLAIM_TABLE}
+                    WHERE inbound_uid = %s AND claim_token = %s
+                )
+                """,
+                (key, claim_token, phone_key, key, claim_token),
+            )
+            row = cursor.fetchone()
+        return bool(row and row[0])
+    except Exception as error:
+        logger.error("No se pudo validar orden de inbound uid=%s: %s", key, error)
+        return False
     finally:
         if conn is not None:
             conn.close()

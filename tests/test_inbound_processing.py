@@ -3,6 +3,7 @@ import unittest
 import app.services.inbound_processing as inbound_processing
 from app.services.inbound_processing import (
     claim_inbound_processing,
+    is_latest_inbound_processing_claim,
     mark_inbound_processing_delivered,
     release_inbound_processing_claim,
 )
@@ -36,6 +37,59 @@ class InboundProcessingTests(unittest.TestCase):
 
         self.assertIsNone(
             claim_inbound_processing("970485113", "5215625189364")
+        )
+
+    def test_claim_remains_latest_without_newer_inbound(self):
+        first = claim_inbound_processing("970485113", "5215625189364")
+
+        self.assertTrue(
+            is_latest_inbound_processing_claim(
+                "970485113", "5215625189364", first
+            )
+        )
+
+    def test_newer_inbound_supersedes_older_response(self):
+        first = claim_inbound_processing("970485113", "5215625189364")
+        second = claim_inbound_processing("970485114", "5215625189364")
+
+        self.assertFalse(
+            is_latest_inbound_processing_claim(
+                "970485113", "5215625189364", first
+            )
+        )
+        self.assertTrue(
+            is_latest_inbound_processing_claim(
+                "970485114", "5215625189364", second
+            )
+        )
+
+    def test_other_phone_inbound_does_not_supersede_response(self):
+        first = claim_inbound_processing("970485113", "5215625189364")
+        claim_inbound_processing("970485114", "5218111111111")
+
+        self.assertTrue(
+            is_latest_inbound_processing_claim(
+                "970485113", "5215625189364", first
+            )
+        )
+
+    def test_late_delivery_of_older_uid_does_not_supersede_newer_message(self):
+        current = claim_inbound_processing("970485114", "5215625189364")
+        claim_inbound_processing("970485113", "5215625189364")
+
+        self.assertTrue(
+            is_latest_inbound_processing_claim(
+                "970485114", "5215625189364", current
+            )
+        )
+
+    def test_invalid_token_is_not_latest(self):
+        claim_inbound_processing("970485113", "5215625189364")
+
+        self.assertFalse(
+            is_latest_inbound_processing_claim(
+                "970485113", "5215625189364", "invalid-token"
+            )
         )
 
 

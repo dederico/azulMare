@@ -14,30 +14,77 @@ def normalize_policy_text(value: str | None) -> str:
     return " ".join(text.split())
 
 
-def should_activate_human_control(
-    *,
-    message_type: str | None,
-    hook_type: str | None,
-    operator_id,
-    is_bot_echo: bool,
-    recently_returned_to_bot: bool,
-    event_is_stale: bool = False,
-    authoritative_assignment: bool = False,
-) -> bool:
-    """Activate control only from Chat2Desk's authoritative assignment event."""
-    try:
-        has_operator = bool(operator_id) and int(operator_id) > 0
-    except (TypeError, ValueError):
-        has_operator = False
+def is_trusted_human_control(control: dict | None) -> bool:
+    """Return True only for takeover sources created by an explicit local action."""
+    if not control or control.get("mode") != "human":
+        return False
 
+    source = str(control.get("source") or "")
     return (
-        authoritative_assignment
-        and hook_type == "dialog_transferred"
-        and has_operator
-        and not is_bot_echo
-        and not recently_returned_to_bot
-        and not event_is_stale
+        source == EXPLICIT_HANDOFF
+        or source == "chat2desk_takeover_message"
+        or source.startswith("tool:")
     )
+
+
+def is_non_authoritative_control_source(source: str | None) -> bool:
+    """Identify takeover rows created by the withdrawn dialog assignment heuristic."""
+    return str(source or "").startswith("dialog_transferred:")
+
+
+def is_human_takeover_message(text: str | None) -> bool:
+    """Recognize the official operator greeting that confirms manual control."""
+    normalized = normalize_policy_text(text)
+    return (
+        "buen dia" in normalized
+        and "atencion ciudadana" in normalized
+        and "le atiende" in normalized
+    )
+
+
+def is_bot_return_message(text: str | None) -> bool:
+    """Recognize the official operator macro that explicitly returns control."""
+    normalized = normalize_policy_text(text)
+    return (
+        "gracias por comunicarse" in normalized
+        and "atencion ciudadana" in normalized
+        and "reiniciar el chatbot" in normalized
+        and "sam" in normalized
+    )
+
+
+def should_replace_unconfirmed_transfer_response(
+    *,
+    transfer_attempted: bool,
+    transfer_succeeded: bool,
+    response: str | None,
+) -> bool:
+    """Prevent SAM from claiming a transfer that the backend did not complete."""
+    if not transfer_attempted or transfer_succeeded:
+        return False
+
+    normalized = normalize_policy_text(response)
+    transfer_claims = (
+        "te transfiero",
+        "te transferire",
+        "voy a transferirte",
+        "te canalizare",
+        "voy a canalizarte",
+        "hablar con una persona",
+        "hablar con un humano",
+        "atencion humana",
+    )
+    return any(claim in normalized for claim in transfer_claims)
+
+
+def history_after_latest_context_reset(messages, *, uid_prefix: str = "conversation-reset-"):
+    """Return only messages belonging to the session after the latest reset marker."""
+    items = list(messages or [])
+    for index in range(len(items) - 1, -1, -1):
+        uid = str(getattr(items[index], "uid", "") or "")
+        if uid.startswith(uid_prefix):
+            return items[index + 1 :], uid
+    return items, None
 
 
 def is_known_automated_outbound(text: str | None) -> bool:

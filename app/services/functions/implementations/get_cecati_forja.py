@@ -3,6 +3,13 @@ INFORMACIÓN OFICIAL PARA ATENCIÓN SOBRE CECATI Y PROYECTO FORJA
 Fuente: Carta Compromiso Familiar · Proyecto FORJA
 Capacitación técnica certificada CMNL-CECATI · Ciclo agosto-diciembre 2026
 
+ESTATUS VIGENTE DE INSCRIPCIONES (ACTUALIZADO EL 7 DE SEPTIEMBRE DE 2026)
+- Las inscripciones al CECATI para el ciclo agosto-diciembre de 2026 concluyeron el 7 de septiembre de 2026.
+- Ya no se debe informar que las inscripciones siguen abiertas ni invitar a realizar una inscripción para este ciclo.
+- Si preguntan si todavía es posible inscribirse, responde que el periodo ya concluyó el 7 de septiembre de 2026.
+- No prometas inscripciones extemporáneas. Si la persona necesita revisar una situación particular, indícale que debe confirmarla directamente con su plantel.
+- No confundas las inscripciones generales de nuevo ingreso al Colegio con las inscripciones al programa CECATI/FORJA.
+
 RESUMEN EJECUTIVO
 - El Proyecto FORJA es una capacitación técnica certificada por CECATI.
 - Es un programa adicional, voluntario e independiente del bachillerato del Colegio.
@@ -27,6 +34,7 @@ COSTOS OFICIALES RESPALDADOS POR EL DOCUMENTO
 FECHAS Y PAGO
 - La cuota CECATI debe pagarse a más tardar a finales de agosto de 2026.
 - El documento no especifica una fecha exacta distinta a ese límite general.
+- Independientemente del límite de pago señalado en la carta, el periodo de inscripción del ciclo concluyó el 7 de septiembre de 2026.
 
 ASISTENCIA Y ACREDITACIÓN
 - La asistencia puntual es central para el programa.
@@ -67,6 +75,7 @@ DATOS QUE EL DOCUMENTO NO DEFINE
 - No especifica criterios de selección o inscripción fuera de lo señalado en la carta.
 
 GUÍA DE RESPUESTA
+- Si preguntan si las inscripciones al CECATI siguen abiertas: responde claramente que no; concluyeron el 7 de septiembre de 2026.
 - Si preguntan qué es FORJA: explica que es una capacitación técnica voluntaria certificada por CECATI, adicional al bachillerato y con 3 módulos de 60 horas.
 - Si preguntan cuánto cuesta: informa $1,386.00 de cuota CECATI, $100.00 de seguro y transporte variable por plantel.
 - Si preguntan qué pasa si faltan: informa que las inasistencias son la principal causa de no acreditación.
@@ -80,6 +89,6 @@ async def get_cecati_forja():
     """Obtener la carta compromiso familiar del Proyecto FORJA con CECATI.
 
     Returns:
-        string: Información oficial sobre FORJA, CECATI, costos, asistencia y compromisos familiares.
+        string: Información oficial y estatus vigente de inscripciones de FORJA/CECATI, costos, asistencia y compromisos familiares.
     """
     return TC

@@ -68,7 +68,7 @@ Línea roja:
 
 P9. ¿Hasta cuándo puedo pagar e inscribir?
 Respuesta oficial:
-La cuota CECATI puede pagarse hasta finales de agosto. La documentación se entrega en el plantel: acta de nacimiento reciente, CURP actualizada, comprobante de domicilio, fotografía y comprobante de pago. El plantel emite la constancia institucional y el listado oficial de estudiantes autorizados.
+Para el ciclo agosto-diciembre de 2026, las inscripciones al CECATI concluyeron el 7 de septiembre de 2026. Ya no debe informarse que el periodo sigue abierto ni prometerse una inscripción extemporánea. La carta señalaba el pago de la cuota a finales de agosto y la entrega de documentación en el plantel, pero el estatus vigente es que la inscripción ya cerró. Cualquier situación particular debe confirmarse directamente con el plantel.
 
 P10. ¿Los $600 de promotor deportivo, cultural y asistente contable le afectan si ya no los toma?
 Respuesta oficial:
@@ -102,7 +102,7 @@ SOBRE PADRES Y MADRES DE FAMILIA
 
 P16. ¿Los padres también podemos inscribirnos?
 Respuesta oficial:
-Sí. Padres y madres de familia pueden acceder a especialidades del CECATI con las mismas condiciones de convenio y la misma certificación oficial, entre semana o en cursos sabatinos, aun si el hijo no se inscribe.
+El convenio contempla que padres y madres de familia puedan acceder a especialidades del CECATI con las mismas condiciones y certificación oficial, aun si el hijo no se inscribe. Sin embargo, para el ciclo agosto-diciembre de 2026 el periodo de inscripción concluyó el 7 de septiembre de 2026. No se deben prometer inscripciones extemporáneas.
 
 LAS TRES LÍNEAS ROJAS
 1. Ventaja y prioridad, jamás garantía de empleo.

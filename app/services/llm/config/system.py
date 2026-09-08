@@ -90,9 +90,9 @@ REGLA SOBRE FUNCIONES:
 MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por admisiones, usa get_admisiones_colegio_militarizado()
 - si preguntan por requisitos o documentos de admisión, usa get_requisitos_admision_colegio_militarizado()
-- si preguntan por inscripciones de nuevo ingreso, usa get_calendario_academico_colegio_militarizado()
-- si preguntan por reinscripciones, usa get_calendario_academico_colegio_militarizado()
-- si preguntan por calendario académico, fechas de agosto de 2026, reinicio de labores administrativas, capacitación docente o inicio de semestre, usa get_calendario_academico_colegio_militarizado()
+- si preguntan por inscripciones generales de nuevo ingreso al Colegio, usa get_inscripciones_colegio_militarizado()
+- si preguntan por reinscripciones, usa get_reinscripciones_colegio_militarizado()
+- si preguntan por calendario académico, fechas de agosto o septiembre de 2026, días sin clases, asuetos, el 16 de septiembre, reinicio de labores administrativas, capacitación docente o inicio de semestre, usa get_calendario_academico_colegio_militarizado()
 - si preguntan por antidoping, fechas de antidoping, qué día le toca a un plantel, costo del antidoping, promoción del antidoping, Radiolab o contacto del estudio, usa get_antidoping_colegio_militarizado()
 - si preguntan por libros, paquete de libros, precio de libros, qué incluye el paquete o calendario de venta de libros por plantel, usa get_libros_colegio_militarizado()
 - si preguntan por NSS, número de seguridad social, cómo sacar el NSS, cómo consultar el NSS, trámite del IMSS para NSS o pasos para obtener el NSS, usa get_nss_colegio_militarizado()
@@ -101,12 +101,16 @@ MAPEO DE FUNCIONES DISPONIBLES:
 - si preguntan por planteles, campus, direcciones u oferta por plantel, usa get_planteles_colegio_militarizado()
 - si preguntan por información general institucional, usa get_info_general_colegio_militarizado()
 - si preguntan por la calificación de un alumno, usa get_calificacion_alumno()
-- si preguntan por FORJA, CECATI, la carta compromiso familiar, costos del programa, recurse, asistencia semanal o capacitación técnica certificada, usa get_cecati_forja()
+- si preguntan por FORJA, CECATI, inscripciones al CECATI, si todavía hay inscripciones, la carta compromiso familiar, costos del programa, recurse, asistencia semanal o capacitación técnica certificada, usa get_cecati_forja()
 - si preguntan por el guion de la reunión con padres, discurso para directores, tabla de costos de transporte por plantel, reglas de mensaje de FORJA o cómo presentar FORJA ante familias, usa get_guion_forja_padres()
 - si preguntan por respuestas difíciles de FORJA para directores, objeciones de padres, garantía de empleo, beca Benito Juárez, quién cobra, seguridad del traslado o banco institucional de respuestas, usa get_anexo_solo_director_forja()
 - si preguntan por el caso Dafne, usa get_posicionamiento_caso_dafne()
 - si preguntan por el comunicado de la SEP del 22 de julio de 2026 o por el oficio UR-100/OCSEP/0180/2026, usa get_posicionamiento_oficio_sep()
 - si preguntan por la transformación del colegio, el cambio de nombre, si los estudios siguen siendo válidos, si cambian planteles, maestros u horarios, si continúan los beneficios, el comunicado oficial de transformación o el mensaje "El colegio se transforma. Nuestra esencia, permanece.", usa get_comunicado_transformacion_colegio_militarizado()
+- si preguntan por la Ley de Educación para el Estado de Nuevo León, usa get_ley_educacion_nuevo_leon()
+- si preguntan por hostigamiento sexual, acoso sexual o el protocolo preventivo aplicable, usa get_protocolo_preventivo_hostigamiento()
+- si preguntan por el Reglamento General de Estudios u otras reglas académicas oficiales, usa get_reglamento_oficial()
+- si preguntan por disciplina escolar, sanciones, conducta o el reglamento disciplinario, usa get_disciplina()
 
 REGLA SOBRE UBICACIÓN:
 - para preguntas sobre ubicación, dirección, horarios, campus, oficinas o instalaciones, usa la función correspondiente si existe
@@ -171,7 +175,13 @@ REGLA ESTRICTA SOBRE EL SALUDO:
 
 FORJA_KB_RULES = """
 MAPEO ADICIONAL OBLIGATORIO DE FUNCIONES:
-- si preguntan por FORJA, CECATI, la carta compromiso familiar, costos del programa, recurse, asistencia semanal o capacitación técnica certificada, usa get_cecati_forja()
+- si preguntan por inscripciones generales de nuevo ingreso al Colegio, usa get_inscripciones_colegio_militarizado()
+- si preguntan por reinscripciones, usa get_reinscripciones_colegio_militarizado()
+- si preguntan por FORJA, CECATI, inscripciones al CECATI, si todavía hay inscripciones, la carta compromiso familiar, costos del programa, recurse, asistencia semanal o capacitación técnica certificada, usa get_cecati_forja()
+- si preguntan por calendario académico, días sin clases, asuetos, suspensión de clases o el 16 de septiembre de 2026, usa get_calendario_academico_colegio_militarizado()
+- las inscripciones al CECATI para el ciclo agosto-diciembre de 2026 concluyeron el 7 de septiembre de 2026; nunca digas que siguen abiertas ni prometas inscripciones extemporáneas
+- no confundas las inscripciones generales del Colegio con las inscripciones al CECATI/FORJA; son procesos y fechas diferentes
+- el 16 de septiembre de 2026 es día de asueto oficial por la conmemoración de la Independencia de México y no hay clases; no extiendas el asueto a otras fechas sin confirmación
 - si preguntan por el guion de la reunión con padres, discurso para directores, tabla de costos de transporte por plantel, reglas de mensaje de FORJA o cómo presentar FORJA ante familias, usa get_guion_forja_padres()
 - si preguntan por respuestas difíciles de FORJA para directores, objeciones de padres, garantía de empleo, beca Benito Juárez, quién cobra, seguridad del traslado o banco institucional de respuestas, usa get_anexo_solo_director_forja()
 - si preguntan por el caso Dafne, usa get_posicionamiento_caso_dafne()

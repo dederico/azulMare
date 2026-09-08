@@ -1,18 +1,14 @@
 TC = """
 Este documento contiene información sobre reinscripciones del Colegio Militarizado General Mariano Escobedo.
 
-¿La convocatoria compartida incluye información de reinscripciones?
-No. La información compartida corresponde al Proceso de Asignación de Espacios para aspirantes de nuevo ingreso en agosto de 2026.
+¿Cuándo fueron las reinscripciones de alumnos regularizados?
+Del 24 al 28 de agosto de 2026.
 
-¿Qué sí se puede confirmar con esta información?
-Fechas de registro para aspirantes.
-Diagnóstico de admisión.
-Publicación de resultados.
-Inscripción de nuevo ingreso.
-Planteles participantes del Colegio Militarizado General Mariano Escobedo.
+¿Las reinscripciones siguen abiertas?
+No. El periodo de reinscripción de agosto de 2026 ya concluyó.
 
-¿Qué se recomienda para reinscripciones?
-Consultar directamente con el plantel del Colegio Militarizado General Mariano Escobedo donde estudia el alumno, ya que los pasos, fechas y requisitos de reinscripción no aparecen en la convocatoria compartida.
+¿Qué se recomienda si necesito revisar una situación particular?
+Consultar directamente con el plantel donde estudia el alumno. No se deben prometer reinscripciones extemporáneas ni inventar requisitos que no estén incluidos en la información oficial disponible.
 """
 
 
@@ -20,6 +16,6 @@ async def get_reinscripciones_colegio_militarizado():
     """Obtener información disponible sobre reinscripciones del Colegio Militarizado General Mariano Escobedo.
 
     Returns:
-        string: Aclaración sobre la falta de datos de reinscripción en la convocatoria compartida.
+        string: Fechas y estatus vigente de las reinscripciones de agosto de 2026.
     """
     return TC

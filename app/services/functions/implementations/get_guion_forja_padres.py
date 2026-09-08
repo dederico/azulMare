@@ -58,6 +58,11 @@ COSTOS GENERALES DEL PROGRAMA
 - Estudios complementarios que ya no se pagan si entra a FORJA: $600.00.
 - Recurse de módulo no acreditado: $800.00.
 
+ESTATUS VIGENTE DE INSCRIPCIONES
+- Las inscripciones al CECATI para el ciclo agosto-diciembre de 2026 concluyeron el 7 de septiembre de 2026.
+- No se debe comunicar que el periodo sigue abierto ni ofrecer una inscripción extemporánea.
+- Cualquier situación particular posterior al cierre debe confirmarse directamente con el plantel, sin prometer que será aceptada.
+
 REGLAS SOBRE EL DINERO
 - La cuota de capacitación se paga directamente al CECATI.
 - El transporte se administra a través del Patronato del Colegio o del proveedor correspondiente.
@@ -71,7 +76,7 @@ REGLAS SOBRE LA BECA BENITO JUÁREZ
 
 INFORMACIÓN SOBRE PADRES Y MADRES DE FAMILIA
 - El documento indica que los beneficios del convenio también aplican para padres y madres de familia.
-- Pueden inscribirse a especialidades del CECATI con el mismo descuento y condiciones que sus hijos.
+- El convenio contempla que padres y madres puedan acceder a especialidades del CECATI con el mismo descuento y condiciones que sus hijos, pero las inscripciones del ciclo agosto-diciembre de 2026 ya concluyeron.
 - Esto aplica incluso si el hijo no se inscribe.
 
 DATOS QUE DEBEN CONFIRMARSE ANTES DE CADA REUNIÓN
@@ -121,7 +126,7 @@ RESPUESTAS OPERATIVAS RECOMENDADAS
 - Si preguntan si es obligatorio: no, es voluntario.
 - Si preguntan por qué solo tercero y quinto: porque el documento explica que primero se consolida el carácter y luego la especialidad.
 - Si preguntan si se pierde lo ya acreditado: no, cada módulo acreditado conserva su constancia.
-- Si preguntan si padres y madres pueden inscribirse: sí, el documento dice que también pueden acceder al convenio.
+- Si preguntan si padres y madres todavía pueden inscribirse en este ciclo: no; el periodo concluyó el 7 de septiembre de 2026. El documento contempla su acceso al convenio para periodos disponibles futuros.
 """
 
 

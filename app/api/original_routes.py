@@ -7,7 +7,6 @@ import html
 from datetime import datetime
 import traceback
 import base64
-import aiohttp
 import logging
 import urllib.parse
 import os
@@ -18,7 +17,6 @@ from fastapi.responses import JSONResponse
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pytz
-from io import BytesIO
 import requests
 import openai
 from openai import OpenAI
@@ -61,7 +59,10 @@ from app.services.llm.config.system import system_message
 from app.services.functions.function_manager import FunctionManager
 from app.services.functions.implementations.geocoding import latlong_to_address
 from app.services.functions.implementations.nearest_office import find_nearest_government_office
-from app.util.rate_limiter import image_processing_queue
+from app.services.image_analysis import (
+    analyze_image_url,
+    build_image_acknowledgement,
+)
 
 
 from twilio.rest import Client
@@ -2128,6 +2129,11 @@ def extract_quoted_message_content(text):
         'user_response': None,
         'original_text': text
     }
+
+    # Los mensajes de imagen y otros adjuntos pueden llegar sin texto. No son
+    # mensajes citados y no deben producir un TypeError en re.search().
+    if not isinstance(text, str) or not text:
+        return result
     
     try:
         # ÚNICO PATRÓN: « texto citado » \n respuesta_usuario
@@ -3507,54 +3513,7 @@ class TTLCache:
         return len(self.cache)
 
 async def analyze_image_with_rate_limit(client, photo_url):
-    """
-    Analyze an image with rate limiting to prevent API overload.
-    
-    Args:
-        client: OpenAI client instance
-        photo_url: URL of the image to analyze
-        
-    Returns:
-        str: Image description from the analysis
-    """
-    try:
-        logger.debug(f"Starting rate-limited image analysis for: {photo_url}")
-        
-        # Download the image with timeout
-        async with aiohttp.ClientSession() as session:
-            async with session.get(photo_url, timeout=10) as response:
-                response.raise_for_status()
-                image_content = BytesIO(await response.read())
-        
-        # Rate-limited OpenAI API call
-        async def _analyze_with_openai():
-            image_analysis = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Describe esta imagen en una frase breve (máximo 15 palabras)."},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64.b64encode(image_content.getvalue()).decode('utf-8')}",
-                                },
-                            },
-                        ],
-                    }
-                ],
-                max_tokens=100,
-            )
-            return image_analysis.choices[0].message.content
-            
-        # Use the queue to process with rate limiting
-        description = await image_processing_queue.add_task(_analyze_with_openai)
-        return description
-        
-    except Exception as e:
-        logger.error(f"Error analyzing image: {str(e)}")
-        return f"Error al analizar la imagen: {str(e)}"
+    return await analyze_image_url(client, photo_url)
     
 async def manage_message_history(db, number, max_messages=20):
     """
@@ -6303,10 +6262,11 @@ async def whatsapp(request: Request):
                     
                     num_images = len(report_sessions[from_number]["images"])
                     la_foto = report_sessions[from_number]["image_descriptions"][0]
-                    if num_images == 1:
-                        body = f"{sender_name} recibí tu imagen veo {la_foto}, y la he guardado para el reporte. Si deseas continuar con tu reporte, responde FIN. En caso de que tengas otra foto, por favor envíala."
-                    else:
-                        body = f"He recibido otra imagen (tienes {num_images} en total). Puedes seguir enviando imágenes o responde FIN cuando estés listo."
+                    body = build_image_acknowledgement(
+                        sender_name,
+                        la_foto,
+                        num_images,
+                    )
                     
                     logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
                     

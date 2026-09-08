@@ -107,9 +107,11 @@ from app.services.conversation_control import (
     release_human_control_if_matches,
 )
 from app.services.conversation_lifecycle import (
+    advance_conversation_epoch,
     build_session_key,
     claim_inactivity_close,
     claim_session_greeting,
+    conversation_epoch_is_current,
     ensure_conversation_lifecycle_storage,
     get_lifecycle_state,
     inactivity_claim_is_current,
@@ -155,6 +157,20 @@ from app.services.webhook_jobs import (
     ensure_webhook_job_storage,
     fail_webhook_job,
 )
+from app.services.report_state import (
+    delete_report_state,
+    ensure_report_state_storage,
+    load_report_state,
+    save_report_state,
+)
+from app.services.greeting_outbox import (
+    claim_greeting,
+    enqueue_greeting,
+    ensure_greeting_outbox_storage,
+    finish_greeting,
+    get_greeting_status,
+)
+from app.services.media_payload import get_video_from_payload
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 evaluated_reports = {}
@@ -2281,6 +2297,8 @@ async def complete_cleanup_after_report(phone_number, delay_seconds=5):
         # 4. Verificar completed_reports (mantener por un tiempo para evitar duplicados)
         if phone_number in completed_reports:
             logger.critical(f"🧹 [KEPT] completed_reports[{phone_number}] (mantener para evitar duplicados)")
+
+        await asyncio.to_thread(delete_report_state, LocalStorage(), phone_number)
         
         logger.critical(f"🧹 [COMPLETE CLEANUP] ✅ Limpieza completa terminada para {phone_number}")
         
@@ -3316,6 +3334,118 @@ def build_return_to_sam_greeting(sender_name: str) -> str:
     )
 
 
+def prepare_inbound_session_boundary(
+    db,
+    payload,
+    from_number,
+    uid,
+    lifecycle_session_key,
+):
+    """Resolve and apply a new-session boundary before handling any attachment."""
+    recent_messages = (
+        db.Search(
+            Message(number=from_number, source="whatsapp"),
+            order="desc",
+            limit=200,
+        )
+        or []
+    )
+    messages_db, context_reset_marker = history_after_latest_context_reset(
+        list(reversed(recent_messages))
+    )
+    if (
+        context_reset_marker
+        and applied_context_reset_markers.get(from_number) != context_reset_marker
+    ):
+        # A durable report snapshot is tied to the current epoch. Discovering
+        # an existing marker on a fresh replica must not erase a report that
+        # started after that marker.
+        user_sessions.pop(from_number, None)
+        applied_context_reset_markers[from_number] = context_reset_marker
+
+    has_prior_history = any(
+        msg.direction in {"inbound", "outbound"} and bool(msg.message)
+        for msg in messages_db
+    )
+    boundary_requested = should_send_initial_greeting(
+        is_new_request=bool(payload.get("is_new_request")),
+        history_available=True,
+        has_prior_conversation_history=has_prior_history,
+        resetting_after_human=return_greeting_covers_current_inbound(
+            context_reset_marker,
+            messages_db,
+        ),
+    )
+    greeting_required = claim_session_greeting(
+        from_number,
+        lifecycle_session_key,
+        boundary_requested=boundary_requested,
+        storage=db,
+    )
+    if greeting_required and bool(payload.get("is_new_request")) and has_prior_history:
+        context_reset_marker = persist_context_reset_marker(
+            db,
+            from_number,
+            "new-request",
+            uid,
+        )
+        clear_local_conversation_context(from_number, drop_session=False)
+        messages_db = []
+        logger.critical(
+            "🧹 [EARLY SESSION BOUNDARY] phone=%s marker=%s media=%s",
+            from_number,
+            context_reset_marker,
+            bool(payload.get("photo") or payload.get("video") or payload.get("audio")),
+        )
+    return greeting_required, messages_db, context_reset_marker
+
+
+async def send_claimed_session_greeting(
+    db,
+    from_number,
+    sender_name,
+    uid,
+    lifecycle_session_key,
+    client_id,
+    channel_id,
+    transport,
+) -> bool:
+    greeting_message = build_return_to_sam_greeting(sender_name)
+    greeting_uid = f"assistant-initial-greeting-{uid}"
+    if not has_persisted_whatsapp_message_uid(db, greeting_uid):
+        db.Insert(
+            Message(
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                senderName="Assistant",
+                message=greeting_message,
+                number=from_number,
+                uid=greeting_uid,
+                direction="outbound",
+                mtype="text",
+                source="whatsapp",
+            )
+        )
+        await manage_message_history(db, from_number)
+    current_epoch = int(
+        (get_lifecycle_state(from_number, storage=db) or {}).get("conversation_epoch", 0)
+    )
+    sent = await queue_and_deliver_greeting(
+        storage=db,
+        greeting_key=f"session:{from_number}:{lifecycle_session_key}:{current_epoch}",
+        phone_number=from_number,
+        client_id=client_id,
+        channel_id=channel_id,
+        transport=transport,
+        message=greeting_message,
+        conversation_epoch=current_epoch,
+    )
+    if sent:
+        mark_session_greeting_sent(from_number, lifecycle_session_key, storage=db)
+    else:
+        mark_reopen_greeting_pending(from_number, storage=db)
+    return sent
+
+
 def clear_local_conversation_context(phone_number: str, *, drop_session: bool = False) -> None:
     """Clear replica-local conversational state without weakening report deduplication."""
     with report_sessions_lock:
@@ -3338,6 +3468,7 @@ def persist_context_reset_marker(db, phone_number: str, reason: str, event_id) -
         str(event_id or datetime.now().timestamp()),
     )
     marker_uid = f"conversation-reset-{safe_reason}-{safe_event_id}"
+    new_epoch = advance_conversation_epoch(phone_number, storage=db)
     db.Insert(
         Message(
             time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -3351,6 +3482,12 @@ def persist_context_reset_marker(db, phone_number: str, reason: str, event_id) -
         )
     )
     applied_context_reset_markers[phone_number] = marker_uid
+    logger.critical(
+        "🧭 [CONVERSATION EPOCH] phone=%s epoch=%s reason=%s",
+        phone_number,
+        new_epoch,
+        safe_reason,
+    )
     return marker_uid
 
 
@@ -4981,6 +5118,182 @@ class QueuedWebhookRequest:
         return self._payload
 
 
+def _restore_durable_report_context(storage, payload):
+    phone_number = (payload.get("client") or {}).get("phone")
+    if not phone_number:
+        return None
+    persisted = load_report_state(storage, phone_number)
+    current_epoch = int(
+        (get_lifecycle_state(phone_number, storage=storage) or {}).get(
+            "conversation_epoch", 0
+        )
+    )
+    if persisted and int(persisted.get("conversation_epoch") or 0) != current_epoch:
+        logger.warning(
+            "🚫 [STALE REPORT STATE] phone=%s persisted_epoch=%s current_epoch=%s",
+            phone_number,
+            persisted.get("conversation_epoch"),
+            current_epoch,
+        )
+        delete_report_state(storage, phone_number)
+        persisted = None
+    with report_sessions_lock:
+        if persisted and persisted.get("report_session"):
+            report_sessions[phone_number] = persisted["report_session"]
+        else:
+            report_sessions.pop(phone_number, None)
+    if persisted and persisted.get("user_answers"):
+        user_answers[phone_number] = persisted["user_answers"]
+    else:
+        user_answers.pop(phone_number, None)
+    return phone_number
+
+
+def _persist_durable_report_context(storage, phone_number):
+    if not phone_number:
+        return
+    with report_sessions_lock:
+        session = deepcopy(report_sessions.get(phone_number))
+    answers = deepcopy(user_answers.get(phone_number, {}))
+    current_epoch = int(
+        (get_lifecycle_state(phone_number, storage=storage) or {}).get(
+            "conversation_epoch", 0
+        )
+    )
+    save_report_state(
+        storage,
+        phone_number,
+        session,
+        answers,
+        conversation_epoch=current_epoch,
+    )
+
+
+async def _deliver_greeting_job(job, storage) -> bool:
+    try:
+        if not conversation_epoch_is_current(
+            job["phone_number"], job["conversation_epoch"], storage=storage
+        ):
+            await asyncio.to_thread(
+                finish_greeting,
+                storage,
+                job["id"],
+                job["claim_token"],
+                success=True,
+                error="cancelled: stale conversation epoch",
+                attempts=job["attempts"],
+                cancelled=True,
+            )
+            logger.warning(
+                "🚫 [GREETING OUTBOX STALE] greeting_key=%s",
+                job["greeting_key"],
+            )
+            return False
+        if get_active_takeover(job["phone_number"], storage=storage):
+            raise RuntimeError("takeover humano activo")
+
+        api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
+            response = await http_client.post(
+                "https://api.chat2desk.com.mx/v1/messages",
+                json={
+                    "client_id": job["client_id"],
+                    "channel_id": job["channel_id"],
+                    "transport": job["transport"],
+                    "text": job["message"],
+                },
+                headers={"Authorization": api_token, "Content-Type": "application/json"},
+            )
+        response.raise_for_status()
+        if response.json().get("status") != "success":
+            raise RuntimeError(f"Chat2Desk no confirmó saludo: {response.text[:300]}")
+        persist_bot_outbound_marker(storage, job["phone_number"], response, "durable_greeting")
+        await asyncio.to_thread(
+            finish_greeting,
+            storage,
+            job["id"],
+            job["claim_token"],
+            success=True,
+            attempts=job["attempts"],
+        )
+        return True
+    except Exception as error:
+        await asyncio.to_thread(
+            finish_greeting,
+            storage,
+            job["id"],
+            job["claim_token"],
+            success=False,
+            error=str(error),
+            attempts=job["attempts"],
+        )
+        logger.error(
+            "Error entregando saludo durable key=%s attempt=%s: %s",
+            job["greeting_key"],
+            job["attempts"],
+            error,
+        )
+        return False
+
+
+async def queue_and_deliver_greeting(
+    *,
+    storage,
+    greeting_key,
+    phone_number,
+    client_id,
+    channel_id,
+    transport,
+    message,
+    conversation_epoch,
+) -> bool:
+    await asyncio.to_thread(
+        enqueue_greeting,
+        storage,
+        greeting_key=greeting_key,
+        phone_number=phone_number,
+        client_id=client_id,
+        channel_id=channel_id,
+        transport=transport,
+        message=message,
+        conversation_epoch=conversation_epoch,
+    )
+    job = await asyncio.to_thread(
+        claim_greeting,
+        storage,
+        greeting_key=greeting_key,
+    )
+    if job:
+        return await _deliver_greeting_job(job, storage)
+    # Another replica may have claimed it. Wait briefly so caller can preserve
+    # greeting-before-response ordering.
+    for _ in range(20):
+        status = await asyncio.to_thread(get_greeting_status, storage, greeting_key)
+        if status == "sent":
+            return True
+        if status in {"cancelled", "dead", "retry"}:
+            return False
+        await asyncio.sleep(0.1)
+    return False
+
+
+async def process_greeting_outbox():
+    logger.critical("👋 [GREETING OUTBOX] worker iniciado")
+    while True:
+        try:
+            storage = LocalStorage()
+            job = await asyncio.to_thread(claim_greeting, storage)
+            if not job:
+                await asyncio.sleep(0.5)
+                continue
+            await _deliver_greeting_job(job, storage)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Error inesperado en greeting outbox")
+            await asyncio.sleep(1)
+
+
 async def process_chat2desk_webhook_jobs():
     concurrency = max(1, int(os.getenv("CHAT2DESK_WEBHOOK_WORKERS", "2")))
 
@@ -4995,9 +5308,21 @@ async def process_chat2desk_webhook_jobs():
                     await asyncio.sleep(0.2)
                     continue
 
-                result = await _process_whatsapp_request(
-                    QueuedWebhookRequest(job["payload"], job["query_params"])
+                phone_number = await asyncio.to_thread(
+                    _restore_durable_report_context,
+                    storage,
+                    job["payload"],
                 )
+                try:
+                    result = await _process_whatsapp_request(
+                        QueuedWebhookRequest(job["payload"], job["query_params"])
+                    )
+                finally:
+                    await asyncio.to_thread(
+                        _persist_durable_report_context,
+                        storage,
+                        phone_number,
+                    )
                 status_code = int(getattr(result, "status_code", 200) or 200)
                 if status_code >= 500:
                     raise RuntimeError(f"procesador devolvió HTTP {status_code}")
@@ -5048,7 +5373,10 @@ async def lifespan(app: FastAPI):
     ensure_conversation_control_storage(LocalStorage())
     ensure_conversation_lifecycle_storage(LocalStorage())
     ensure_webhook_job_storage(LocalStorage())
+    ensure_report_state_storage(LocalStorage())
+    ensure_greeting_outbox_storage(LocalStorage())
     asyncio.create_task(process_chat2desk_webhook_jobs())
+    asyncio.create_task(process_greeting_outbox())
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
     if automatic_report_timeouts_enabled(os.getenv("ENABLE_AUTO_REPORT_TIMEOUTS")):
@@ -5301,12 +5629,8 @@ def get_images_from_payload(payload):
     
     if payload.get("photo") and from_number:
         photo_url = payload.get("photo")
-        # Verificar si debería ser una nueva sesión
-        if from_number not in user_sessions and from_number in report_sessions:
-            # Si hay user_sessions pero no report_sessions, limpiar report_sessions
-            logger.info(f"Detectada posible sesión huérfana para {from_number}, limpiando datos de reporte antiguos")
-            del report_sessions[from_number]
-        
+        # report_sessions can be restored from PostgreSQL on a different replica;
+        # absence from user_sessions is not evidence that it is orphaned.
         if photo_url and isinstance(photo_url, str) and (photo_url.startswith('http') or 'storage.chat2desk.com' in photo_url):
             fotos_urls.append(photo_url)
             logger.debug(f"Foto capturada del payload: {photo_url}")
@@ -5454,8 +5778,11 @@ async def _process_whatsapp_request(request):
         current_time = datetime.now().timestamp()
 
         operator_outbox_event_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time"))
+        webhook_received_timestamp = float(
+            payload.get("_sam_webhook_received_at") or current_time
+        )
         operator_outbox_age_seconds = (
-            current_time - operator_outbox_event_timestamp
+            webhook_received_timestamp - operator_outbox_event_timestamp
             if operator_outbox_event_timestamp is not None
             else None
         )
@@ -5695,12 +6022,20 @@ async def _process_whatsapp_request(request):
             except Exception as e:
                 logger.error("Error guardando saludo inmediato de retorno para %s: %s", from_number, str(e))
 
-            sent = await send_chat2desk_message(
-                from_number,
-                payload.get('client_id'),
-                payload.get('channel_id'),
-                greeting_message,
-                payload.get('transport', 'wa_direct'),
+            return_epoch = int(
+                (get_lifecycle_state(from_number, storage=db) or {}).get(
+                    "conversation_epoch", 0
+                )
+            )
+            sent = await queue_and_deliver_greeting(
+                storage=db,
+                greeting_key=f"return:{from_number}:{lifecycle_session_key}:{return_epoch}",
+                phone_number=from_number,
+                client_id=payload.get('client_id'),
+                channel_id=payload.get('channel_id'),
+                transport=payload.get('transport', 'wa_direct'),
+                message=greeting_message,
+                conversation_epoch=return_epoch,
             )
             
             asyncio.create_task(remove_from_recently_returned(from_number, BOT_GRACE_PERIOD))
@@ -5979,7 +6314,10 @@ async def _process_whatsapp_request(request):
 
         inbound_event_timestamp = parse_chat2desk_event_timestamp(payload.get("event_time"))
         if inbound_event_timestamp is not None:
-            event_age_seconds = current_time - inbound_event_timestamp
+            received_timestamp = float(
+                payload.get("_sam_webhook_received_at") or current_time
+            )
+            event_age_seconds = received_timestamp - inbound_event_timestamp
             if event_age_seconds > STALE_INBOUND_EVENT_MAX_AGE_SECONDS:
                 logger.warning(
                     "🚫 [STALE INBOUND] Ignorando inbound viejo para %s uid=%s event_time=%s age_seconds=%.1f max_age_seconds=%s body=%s",
@@ -6117,6 +6455,35 @@ async def _process_whatsapp_request(request):
             channel_id=channel_id,
             transport=transport,
         )
+
+        try:
+            (
+                initial_greeting_required,
+                preloaded_messages_db,
+                context_reset_marker,
+            ) = prepare_inbound_session_boundary(
+                db,
+                payload,
+                from_number,
+                uid,
+                lifecycle_session_key,
+            )
+            processing_conversation_epoch = int(
+                (get_lifecycle_state(from_number, storage=db) or {}).get(
+                    "conversation_epoch", 0
+                )
+            )
+        except Exception as boundary_error:
+            logger.exception(
+                "No se pudo preparar el límite de sesión para %s: %s",
+                from_number,
+                boundary_error,
+            )
+            release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+            return JSONResponse(
+                content={"status": False, "error": "No se pudo preparar la sesión"},
+                status_code=500,
+            )
 
         if processed_message_ids.contains(uid):
             # The durable claim above is authoritative. A previous local attempt
@@ -6467,10 +6834,82 @@ async def _process_whatsapp_request(request):
             body = TranscribeOGG(audio_url, config["language"])
             logger.debug(f"Audio transcrito: {body}")
 
+        elif get_video_from_payload(payload):
+            if initial_greeting_required:
+                greeting_sent = await send_claimed_session_greeting(
+                    db,
+                    from_number,
+                    sender_name,
+                    uid,
+                    lifecycle_session_key,
+                    client_id,
+                    channel_id,
+                    transport,
+                )
+                if not greeting_sent:
+                    release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+                    return JSONResponse(
+                        content={"status": False, "error": "No se pudo enviar saludo institucional"},
+                        status_code=500,
+                    )
+
+            video_message = (
+                "Recibí tu video, pero por el momento no puedo analizar archivos de video. "
+                "Por favor envíame una o más fotografías del problema para agregarlas al reporte."
+            )
+            db.Insert(
+                Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="Assistant",
+                    message=video_message,
+                    number=from_number,
+                    uid=f"assistant-video-{uid}",
+                    direction="outbound",
+                    mtype="text",
+                    source="whatsapp",
+                )
+            )
+            await manage_message_history(db, from_number)
+            sent = await send_chat2desk_message(
+                from_number,
+                client_id,
+                channel_id,
+                video_message,
+                transport,
+            )
+            if not sent:
+                release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+                return JSONResponse(
+                    content={"status": False, "error": "No se pudo responder al video"},
+                    status_code=500,
+                )
+            persist_successful_delivery_marker(db, from_number, uid, message_id)
+            mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
+            return JSONResponse(content={"status": True, "message": "Video recibido con orientación"})
+
         elif payload.get("photo"):
             # Procesamiento de imagen
             photo_url = payload.get("photo")
             if photo_url:
+                if initial_greeting_required:
+                    greeting_sent = await send_claimed_session_greeting(
+                        db,
+                        from_number,
+                        sender_name,
+                        uid,
+                        lifecycle_session_key,
+                        client_id,
+                        channel_id,
+                        transport,
+                    )
+                    if not greeting_sent:
+                        release_inbound_processing_claim(
+                            uid, inbound_claim_token, storage=db
+                        )
+                        return JSONResponse(
+                            content={"status": False, "error": "No se pudo enviar saludo institucional"},
+                            status_code=500,
+                        )
                 closure_message = get_recent_report_closure_message(from_number)
                 if closure_message:
                     logger.info(
@@ -6570,6 +7009,25 @@ async def _process_whatsapp_request(request):
                     )
                     
                     logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
+
+                    if not conversation_epoch_is_current(
+                        from_number,
+                        processing_conversation_epoch,
+                        storage=db,
+                    ):
+                        logger.warning(
+                            "🚫 [STALE MEDIA RESPONSE] Imagen procesada en epoch obsoleto "
+                            "para %s uid=%s epoch=%s",
+                            from_number,
+                            uid,
+                            processing_conversation_epoch,
+                        )
+                        mark_inbound_processing_delivered(
+                            uid, inbound_claim_token, storage=db
+                        )
+                        return JSONResponse(
+                            content={"status": True, "message": "Respuesta de medio obsoleta descartada"}
+                        )
                     
                     # Since this is an image-only message, we need to send our response right away
                     try:
@@ -6625,6 +7083,10 @@ async def _process_whatsapp_request(request):
 
                         if response.status_code == 200:
                             persist_bot_outbound_marker(db, from_number, response, "image_ack")
+                            persist_successful_delivery_marker(db, from_number, uid, message_id)
+                            mark_inbound_processing_delivered(
+                                uid, inbound_claim_token, storage=db
+                            )
                             logger.debug(f"Respuesta de imagen enviada exitosamente a Chat2Desk")
                             return JSONResponse(content={"status": True, "message": "Respuesta de imagen enviada por Chat2Desk"})
                         else:
@@ -6633,7 +7095,7 @@ async def _process_whatsapp_request(request):
                         logger.error(f"Error al enviar respuesta de imagen: {str(e)}")
                         return JSONResponse(content={"error": f"Error al enviar respuesta de imagen: {str(e)}"}, status_code=500)
                     
-                except requests.RequestException as e:
+                except httpx.HTTPError as e:
                     logger.error(f"Error al descargar la imagen: {str(e)}")
                     body = "Se recibió una imagen, pero no se pudo descargar. Por favor, intenta enviarla de nuevo."
                 except Exception as e:
@@ -6883,78 +7345,10 @@ async def _process_whatsapp_request(request):
     session.update_activity()
     conversation_history = session.history
 
-    # Recuperar sólo el historial posterior al último límite de sesión.
-    initial_greeting_required = False
+    # El límite y el claim del saludo ya se resolvieron antes de procesar medios.
     last_outbound_message = ""
     try:
-        logger.debug(f"Recuperando mensajes históricos para el número: {from_number}")
-
-        # Search devuelve primero los más recientes; se invierten para alimentar
-        # al modelo cronológicamente y mantener visible el marcador más reciente.
-        recent_messages = (
-            db.Search(
-                Message(number=from_number, source="whatsapp"),
-                order="desc",
-                limit=200,
-            )
-            or []
-        )
-        messages_db, context_reset_marker = history_after_latest_context_reset(
-            list(reversed(recent_messages))
-        )
-        if (
-            context_reset_marker
-            and applied_context_reset_markers.get(from_number) != context_reset_marker
-        ):
-            clear_local_conversation_context(from_number, drop_session=False)
-            applied_context_reset_markers[from_number] = context_reset_marker
-            logger.critical(
-                "🧹 [CONTEXT BOUNDARY APPLIED] phone=%s marker=%s",
-                from_number,
-                context_reset_marker,
-            )
-
-        has_prior_conversation_history = any(
-            msg.direction in {"inbound", "outbound"} and bool(msg.message)
-            for msg in messages_db
-        )
-        greeting_boundary_requested = should_send_initial_greeting(
-            is_new_request=bool(payload.get("is_new_request")),
-            history_available=True,
-            has_prior_conversation_history=has_prior_conversation_history,
-            resetting_after_human=return_greeting_covers_current_inbound(
-                context_reset_marker,
-                messages_db,
-            ),
-        )
-        initial_greeting_required = claim_session_greeting(
-            from_number,
-            lifecycle_session_key,
-            boundary_requested=greeting_boundary_requested,
-            storage=db,
-        )
-
-        # Chat2Desk puede conservar is_new_request=True en varios webhooks. Sólo
-        # la réplica que reclamó el saludo crea el límite de la nueva sesión.
-        if (
-            initial_greeting_required
-            and bool(payload.get("is_new_request"))
-            and has_prior_conversation_history
-        ):
-            context_reset_marker = persist_context_reset_marker(
-                db,
-                from_number,
-                "new-request",
-                uid,
-            )
-            clear_local_conversation_context(from_number, drop_session=False)
-            messages_db = []
-            has_prior_conversation_history = False
-            logger.critical(
-                "🧹 [NEW REQUEST CONTEXT RESET] phone=%s marker=%s",
-                from_number,
-                context_reset_marker,
-            )
+        messages_db = preloaded_messages_db
 
         last_outbound_message = next(
             (msg.message for msg in reversed(messages_db) if msg.direction == "outbound" and msg.message),
@@ -7033,33 +7427,18 @@ async def _process_whatsapp_request(request):
             uid,
         )
         try:
-            assistant_message = Message(
-                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                senderName="Assistant",
-                message=greeting_message,
-                number=from_number,
-                uid=f"assistant-initial-greeting-{uid}",
-                direction="outbound",
-                mtype="text",
-                source="whatsapp",
-            )
-            db.Insert(assistant_message)
-            await manage_message_history(db, from_number)
-            sent = await send_chat2desk_message(
+            sent = await send_claimed_session_greeting(
+                db,
                 from_number,
+                sender_name,
+                uid,
+                lifecycle_session_key,
                 client_id,
                 channel_id,
-                greeting_message,
                 transport,
             )
             if not sent:
                 raise RuntimeError("Chat2Desk no confirmó el saludo institucional")
-
-            mark_session_greeting_sent(
-                from_number,
-                lifecycle_session_key,
-                storage=db,
-            )
 
             if is_simple_greeting(body):
                 persist_successful_delivery_marker(db, from_number, uid, message_id)
@@ -7761,6 +8140,23 @@ async def _process_whatsapp_request(request):
     # UID y la barrera de orden por número; un temporizador local descartaría
     # mensajes distintos enviados rápidamente y no funciona entre réplicas.
     try:
+        if not conversation_epoch_is_current(
+            from_number,
+            processing_conversation_epoch,
+            storage=db,
+        ):
+            logger.warning(
+                "🚫 [STALE CONVERSATION EPOCH] Envío cancelado para %s uid=%s "
+                "captured_epoch=%s",
+                from_number,
+                uid,
+                processing_conversation_epoch,
+            )
+            mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
+            return JSONResponse(
+                content={"status": True, "message": "Respuesta anterior al reinicio descartada"}
+            )
+
         if not is_latest_inbound_processing_claim(
             uid,
             from_number,
@@ -8326,6 +8722,7 @@ async def reset_conversation(phone_number: str):
             "sent_evaluation_messages": False,
             "finalized_report_numbers": False,
             "conversation_lifecycle": False,
+            "durable_report_state": False,
         }
 
         with report_sessions_lock:
@@ -8360,6 +8757,10 @@ async def reset_conversation(phone_number: str):
         memory_cleanup["conversation_lifecycle"] = reset_conversation_lifecycle(
             phone_number,
             storage=db,
+        )
+        memory_cleanup["durable_report_state"] = delete_report_state(
+            db,
+            phone_number,
         )
 
         if phone_number in last_response_time:

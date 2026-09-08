@@ -21,7 +21,12 @@ AUDIT_RETENTION_DAYS = int(os.environ.get("OPERATIONAL_AUDIT_RETENTION_DAYS", "3
 
 LOG_PATTERNS = {
     "llm_failure": ["[LLM FAILURE]", "Error al generar la respuesta"],
-    "openai_timeout": ["ConnectTimeout", "APITimeoutError", "[OPENAI REQUEST FAILURE]"],
+    "openai_timeout": ["APITimeoutError", "[OPENAI REQUEST FAILURE]", "[OPENAI TIMEOUT]"],
+    "chat2desk_timeout": [
+        "[CHAT2DESK TIMEOUT]",
+        "Timeout enviando mensaje",
+    ],
+    "network_timeout_unattributed": ["ConnectTimeout", "ReadTimeout"],
     "outbound_error": ["Error en respuesta Chat2Desk", "Error al enviar mensaje"],
     "outbound_activity": ["📤 [CHAT2DESK:whatsapp_main] attempt", "📥 [CHAT2DESK:whatsapp_main] response"],
     "dedup": [
@@ -312,6 +317,13 @@ def _read_recent_log_signals() -> dict:
             result["counts"]["critical"] += 1
 
         for key, patterns in LOG_PATTERNS.items():
+            if key == "network_timeout_unattributed":
+                provider_patterns = (
+                    LOG_PATTERNS["openai_timeout"]
+                    + LOG_PATTERNS["chat2desk_timeout"]
+                )
+                if any(pattern in line for pattern in provider_patterns):
+                    continue
             if any(pattern in line for pattern in patterns):
                 result["counts"][key] += 1
                 if len(result["samples"][key]) < AUDIT_LOG_SAMPLE_LIMIT:
@@ -519,6 +531,16 @@ def _build_findings(metrics: dict, log_signals: dict, window_hours: int) -> list
     if log_signals["counts"].get("openai_timeout", 0) > 0:
         findings.append(
             f"ALERTA: se detectaron {log_signals['counts'].get('openai_timeout', 0)} eventos de timeout/conectividad hacia OpenAI."
+        )
+
+    if log_signals["counts"].get("chat2desk_timeout", 0) > 0:
+        findings.append(
+            f"ALERTA: se detectaron {log_signals['counts'].get('chat2desk_timeout', 0)} timeouts confirmados hacia Chat2Desk."
+        )
+
+    if log_signals["counts"].get("network_timeout_unattributed", 0) > 0:
+        findings.append(
+            f"Observacion: hubo {log_signals['counts'].get('network_timeout_unattributed', 0)} timeouts de red sin proveedor atribuible; no se contabilizan automáticamente como OpenAI."
         )
 
     if log_signals["counts"].get("llm_failure", 0) > 0:
@@ -757,7 +779,7 @@ def _render_report(
 
     lines.append("")
     lines.append("RECOMENDACIONES")
-    lines.append("- revisar cualquier patron repetido de ConnectTimeout, APITimeoutError o LLM FAILURE")
+    lines.append("- revisar por separado timeouts de OpenAI, Chat2Desk y red no atribuida")
     lines.append("- comparar inbound vs outbound; una brecha alta suele indicar caidas o bloqueos operativos")
     lines.append("- revisar numeros con actividad anormalmente alta para detectar loops, retries o conversaciones atoradas")
 

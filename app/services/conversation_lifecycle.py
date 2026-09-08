@@ -78,6 +78,7 @@ def ensure_conversation_lifecycle_storage(storage) -> bool:
                         inactivity_failure_count INTEGER NOT NULL DEFAULT 0,
                         inactivity_next_retry_at DOUBLE PRECISION,
                         inactivity_terminal BOOLEAN NOT NULL DEFAULT FALSE,
+                        conversation_epoch BIGINT NOT NULL DEFAULT 0,
                         updated_at DOUBLE PRECISION NOT NULL
                     )
                     """
@@ -90,7 +91,8 @@ def ensure_conversation_lifecycle_storage(storage) -> bool:
                         ADD COLUMN IF NOT EXISTS transport TEXT,
                         ADD COLUMN IF NOT EXISTS inactivity_failure_count INTEGER NOT NULL DEFAULT 0,
                         ADD COLUMN IF NOT EXISTS inactivity_next_retry_at DOUBLE PRECISION,
-                        ADD COLUMN IF NOT EXISTS inactivity_terminal BOOLEAN NOT NULL DEFAULT FALSE
+                        ADD COLUMN IF NOT EXISTS inactivity_terminal BOOLEAN NOT NULL DEFAULT FALSE,
+                        ADD COLUMN IF NOT EXISTS conversation_epoch BIGINT NOT NULL DEFAULT 0
                     """
                 )
             conn.commit()
@@ -120,6 +122,7 @@ def _blank_state(phone_number: str) -> dict[str, Any]:
         "inactivity_failure_count": 0,
         "inactivity_next_retry_at": None,
         "inactivity_terminal": False,
+        "conversation_epoch": 0,
         "updated_at": 0.0,
     }
 
@@ -142,7 +145,8 @@ def _row_to_state(row) -> dict[str, Any] | None:
         "inactivity_failure_count": int(row[11] or 0),
         "inactivity_next_retry_at": float(row[12]) if row[12] is not None else None,
         "inactivity_terminal": bool(row[13]),
-        "updated_at": float(row[14] or 0),
+        "conversation_epoch": int(row[14] or 0),
+        "updated_at": float(row[15] or 0),
     }
 
 
@@ -244,7 +248,8 @@ def record_inbound_activity(
                           greeted_session_key, inactivity_claim_uid,
                           inactivity_closed_for_uid, reopen_greeting_pending,
                           client_id, channel_id, transport, inactivity_failure_count,
-                          inactivity_next_retry_at, inactivity_terminal, updated_at
+                          inactivity_next_retry_at, inactivity_terminal,
+                          conversation_epoch, updated_at
                 """,
                 (
                     key, uid, timestamp, session_key,
@@ -262,7 +267,8 @@ def record_inbound_activity(
                            greeted_session_key, inactivity_claim_uid,
                            inactivity_closed_for_uid, reopen_greeting_pending,
                            client_id, channel_id, transport, inactivity_failure_count,
-                           inactivity_next_retry_at, inactivity_terminal, updated_at
+                           inactivity_next_retry_at, inactivity_terminal,
+                           conversation_epoch, updated_at
                     FROM {LIFECYCLE_TABLE}
                     WHERE phone_number = %s
                     """,
@@ -308,7 +314,8 @@ def get_lifecycle_state(phone_number: str, *, storage=None) -> dict[str, Any] | 
                        greeted_session_key, inactivity_claim_uid,
                        inactivity_closed_for_uid, reopen_greeting_pending,
                        client_id, channel_id, transport, inactivity_failure_count,
-                       inactivity_next_retry_at, inactivity_terminal, updated_at
+                       inactivity_next_retry_at, inactivity_terminal,
+                       conversation_epoch, updated_at
                 FROM {LIFECYCLE_TABLE}
                 WHERE phone_number = %s
                 """,
@@ -330,10 +337,15 @@ def get_lifecycle_state(phone_number: str, *, storage=None) -> dict[str, Any] | 
 
 
 def reset_conversation_lifecycle(phone_number: str, *, storage=None) -> bool:
-    """Remove all durable and local lifecycle state for an administrative reset."""
+    """Clear lifecycle fields while advancing the durable conversation epoch."""
     key = normalize_phone_key(phone_number)
     with _memory_lock:
-        memory_removed = _memory_state.pop(key, None) is not None
+        previous = _memory_state.get(key)
+        state = _blank_state(key)
+        state["conversation_epoch"] = int((previous or {}).get("conversation_epoch") or 0) + 1
+        state["updated_at"] = time.time()
+        _memory_state[key] = state
+        memory_removed = previous is not None
 
     if storage is None or not ensure_conversation_lifecycle_storage(storage):
         return memory_removed
@@ -343,8 +355,24 @@ def reset_conversation_lifecycle(phone_number: str, *, storage=None) -> bool:
         conn = _connect(storage)
         with conn.cursor() as cursor:
             cursor.execute(
-                f"DELETE FROM {LIFECYCLE_TABLE} WHERE phone_number = %s",
-                (key,),
+                f"""
+                INSERT INTO {LIFECYCLE_TABLE} (phone_number, conversation_epoch, updated_at)
+                VALUES (%s, 1, %s)
+                ON CONFLICT (phone_number) DO UPDATE SET
+                    last_inbound_uid = NULL,
+                    last_inbound_at = NULL,
+                    session_key = NULL,
+                    greeted_session_key = NULL,
+                    inactivity_claim_uid = NULL,
+                    inactivity_closed_for_uid = NULL,
+                    reopen_greeting_pending = FALSE,
+                    inactivity_failure_count = 0,
+                    inactivity_next_retry_at = NULL,
+                    inactivity_terminal = FALSE,
+                    conversation_epoch = {LIFECYCLE_TABLE}.conversation_epoch + 1,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (key, time.time()),
             )
             database_removed = cursor.rowcount > 0
         conn.commit()
@@ -355,6 +383,49 @@ def reset_conversation_lifecycle(phone_number: str, *, storage=None) -> bool:
     finally:
         if conn is not None:
             conn.close()
+
+
+def advance_conversation_epoch(phone_number: str, *, storage=None) -> int:
+    """Atomically invalidate work that started before a conversation boundary."""
+    key = normalize_phone_key(phone_number)
+    timestamp = time.time()
+    if storage is None or not ensure_conversation_lifecycle_storage(storage):
+        with _memory_lock:
+            state = _memory_state.setdefault(key, _blank_state(key))
+            state["conversation_epoch"] = int(state.get("conversation_epoch") or 0) + 1
+            state["updated_at"] = timestamp
+            return state["conversation_epoch"]
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO {LIFECYCLE_TABLE}
+                    (phone_number, conversation_epoch, updated_at)
+                VALUES (%s, 1, %s)
+                ON CONFLICT (phone_number) DO UPDATE SET
+                    conversation_epoch = {LIFECYCLE_TABLE}.conversation_epoch + 1,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING conversation_epoch
+                """,
+                (key, timestamp),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+        return int(row[0])
+    except Exception as error:
+        logger.error("No se pudo avanzar epoch para %s: %s", key, error)
+        return advance_conversation_epoch(key, storage=None)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def conversation_epoch_is_current(phone_number: str, epoch: int, *, storage=None) -> bool:
+    state = get_lifecycle_state(phone_number, storage=storage)
+    return bool(state and int(state.get("conversation_epoch") or 0) == int(epoch))
 
 
 def claim_session_greeting(

@@ -246,6 +246,14 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
                             if yoga_number in reports_in_progress:
                                 del reports_in_progress[yoga_number]
                                 logger.critical(f"🧹 [MANUAL] Eliminado reports_in_progress[{yoga_number}]")
+
+                        from app.services.report_state import delete_report_state
+                        from app.util.database import LocalStorage
+                        await asyncio.to_thread(
+                            delete_report_state,
+                            LocalStorage(),
+                            yoga_number,
+                        )
                         
                         logger.critical(f"🧹 [MANUAL CLEANUP] ✅ Limpieza manual terminada para {yoga_number}")
                         

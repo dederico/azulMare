@@ -48,6 +48,7 @@ def ensure_webhook_job_storage(storage) -> bool:
                     CREATE TABLE IF NOT EXISTS {WEBHOOK_JOBS_TABLE} (
                         id BIGSERIAL PRIMARY KEY,
                         event_key TEXT UNIQUE NOT NULL,
+                        conversation_key TEXT,
                         payload JSONB NOT NULL,
                         query_params JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                         status TEXT NOT NULL DEFAULT 'queued',
@@ -62,9 +63,18 @@ def ensure_webhook_job_storage(storage) -> bool:
                     """
                 )
                 cursor.execute(
+                    f"ALTER TABLE {WEBHOOK_JOBS_TABLE} ADD COLUMN IF NOT EXISTS conversation_key TEXT"
+                )
+                cursor.execute(
                     f"""
                     CREATE INDEX IF NOT EXISTS idx_{WEBHOOK_JOBS_TABLE}_ready
                     ON {WEBHOOK_JOBS_TABLE} (status, available_at, id)
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS idx_{WEBHOOK_JOBS_TABLE}_conversation
+                    ON {WEBHOOK_JOBS_TABLE} (conversation_key, id, status)
                     """
                 )
             conn.commit()
@@ -92,7 +102,15 @@ def enqueue_webhook_job(storage, payload: dict[str, Any], query_params=None) -> 
     if not ensure_webhook_job_storage(storage):
         raise RuntimeError("cola durable no disponible")
     event_key = build_webhook_event_key(payload)
+    conversation_key = str(
+        (payload.get("client") or {}).get("phone")
+        or payload.get("client_id")
+        or payload.get("dialog_id")
+        or "unknown"
+    )
     timestamp = time.time()
+    stored_payload = dict(payload)
+    stored_payload["_sam_webhook_received_at"] = timestamp
     conn = None
     try:
         conn = _connect(storage)
@@ -100,15 +118,16 @@ def enqueue_webhook_job(storage, payload: dict[str, Any], query_params=None) -> 
             cursor.execute(
                 f"""
                 INSERT INTO {WEBHOOK_JOBS_TABLE}
-                    (event_key, payload, query_params, status, attempts,
+                    (event_key, conversation_key, payload, query_params, status, attempts,
                      available_at, created_at, updated_at)
-                VALUES (%s, %s, %s, 'queued', 0, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, 'queued', 0, %s, %s, %s)
                 ON CONFLICT (event_key) DO NOTHING
                 RETURNING id
                 """,
                 (
                     event_key,
-                    Json(payload),
+                    conversation_key,
+                    Json(stored_payload),
                     Json(dict(query_params or {})),
                     timestamp,
                     timestamp,
@@ -135,13 +154,30 @@ def claim_webhook_job(storage, *, stale_after_seconds: float = 300) -> dict[str,
             cursor.execute(
                 f"""
                 WITH candidate AS (
-                    SELECT id
-                    FROM {WEBHOOK_JOBS_TABLE}
-                    WHERE (
-                        status IN ('queued', 'retry') AND available_at <= %s
+                    SELECT candidate_jobs.id
+                    FROM {WEBHOOK_JOBS_TABLE} AS candidate_jobs
+                    WHERE ((
+                        candidate_jobs.status IN ('queued', 'retry')
+                        AND candidate_jobs.available_at <= %s
+                        AND pg_try_advisory_xact_lock(
+                            hashtextextended(COALESCE(candidate_jobs.conversation_key, ''), 0)
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {WEBHOOK_JOBS_TABLE} AS older_jobs
+                            WHERE older_jobs.conversation_key = candidate_jobs.conversation_key
+                              AND older_jobs.id < candidate_jobs.id
+                              AND older_jobs.status NOT IN ('done', 'dead')
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {WEBHOOK_JOBS_TABLE} AS active_jobs
+                            WHERE active_jobs.status = 'processing'
+                              AND active_jobs.claimed_at > %s
+                              AND active_jobs.conversation_key = candidate_jobs.conversation_key
+                        )
                     ) OR (
-                        status = 'processing' AND claimed_at <= %s
-                    )
+                        candidate_jobs.status = 'processing'
+                        AND candidate_jobs.claimed_at <= %s
+                    ))
                     ORDER BY id ASC
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
@@ -157,7 +193,14 @@ def claim_webhook_job(storage, *, stale_after_seconds: float = 300) -> dict[str,
                 RETURNING jobs.id, jobs.event_key, jobs.payload,
                           jobs.query_params, jobs.attempts, jobs.claim_token
                 """,
-                (timestamp, timestamp - stale_after_seconds, timestamp, claim_token, timestamp),
+                (
+                    timestamp,
+                    timestamp - stale_after_seconds,
+                    timestamp - stale_after_seconds,
+                    timestamp,
+                    claim_token,
+                    timestamp,
+                ),
             )
             row = cursor.fetchone()
         conn.commit()

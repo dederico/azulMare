@@ -2,9 +2,11 @@ import unittest
 
 import app.services.conversation_lifecycle as lifecycle
 from app.services.conversation_lifecycle import (
+    advance_conversation_epoch,
     build_session_key,
     claim_inactivity_close,
     claim_session_greeting,
+    conversation_epoch_is_current,
     get_lifecycle_state,
     inactivity_claim_is_current,
     list_inactivity_candidates,
@@ -220,7 +222,17 @@ class ConversationLifecycleTests(unittest.TestCase):
         record_inbound_activity(self.phone, 101, session_key, now=100)
 
         self.assertTrue(reset_conversation_lifecycle(self.phone))
-        self.assertIsNone(get_lifecycle_state(self.phone))
+        state = get_lifecycle_state(self.phone)
+        self.assertIsNone(state["last_inbound_uid"])
+        self.assertEqual(state["conversation_epoch"], 1)
+
+    def test_epoch_invalidates_work_started_before_boundary(self):
+        record_inbound_activity(self.phone, 101, "request:1", now=100)
+        captured = get_lifecycle_state(self.phone)["conversation_epoch"]
+        self.assertTrue(conversation_epoch_is_current(self.phone, captured))
+
+        self.assertEqual(advance_conversation_epoch(self.phone), captured + 1)
+        self.assertFalse(conversation_epoch_is_current(self.phone, captured))
 
 
 if __name__ == "__main__":

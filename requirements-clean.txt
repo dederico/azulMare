@@ -1,5 +1,5 @@
 # Core dependencies with compatible versions
-openai>=1.66.5
+openai>=1.66.5,<3
 numpy<1.26.0,>=1.24.0
 typing_extensions>=4.11.0
 

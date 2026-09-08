@@ -16,7 +16,6 @@ OPENAI_LOCAL_RETRY_ATTEMPTS = 2
 OPENAI_LOCAL_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "high"
-CHAT_COMPLETIONS_TOOL_REASONING_EFFORT = "none"
 SUPPORTED_REASONING_EFFORTS = {
     "none",
     "low",
@@ -182,6 +181,41 @@ class OpenAIService(LLMService):
             raise last_error
 
         raise RuntimeError("Fallo inesperado creando chat completion")
+
+    async def _create_response_with_local_retry(self, **kwargs: Any):
+        """Create a Responses API request with the same connectivity retry policy."""
+        last_error: Exception | None = None
+
+        for attempt in range(1, OPENAI_LOCAL_RETRY_ATTEMPTS + 1):
+            try:
+                if attempt > 1:
+                    logger.warning(
+                        "🔁 [OPENAI RESPONSES RETRY] attempt=%s/%s model=%s",
+                        attempt,
+                        OPENAI_LOCAL_RETRY_ATTEMPTS,
+                        kwargs.get("model"),
+                    )
+                return await self.client.responses.create(**kwargs)
+            except Exception as error:
+                last_error = error
+                retryable = self._is_retryable_connectivity_error(error)
+                logger.warning(
+                    "⚠️ [OPENAI RESPONSES FAILURE] attempt=%s/%s model=%s "
+                    "retryable=%s error_type=%s error=%s",
+                    attempt,
+                    OPENAI_LOCAL_RETRY_ATTEMPTS,
+                    kwargs.get("model"),
+                    retryable,
+                    type(error).__name__,
+                    str(error),
+                )
+                if not retryable or attempt >= OPENAI_LOCAL_RETRY_ATTEMPTS:
+                    raise
+                await asyncio.sleep(OPENAI_LOCAL_RETRY_BACKOFF_SECONDS)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Fallo inesperado creando response")
     
     def add_to_conversation(self, role: str, content: str, **kwargs: Any) -> None:
         """Añadir mensaje al historial con optimización de contexto"""
@@ -249,62 +283,12 @@ class OpenAIService(LLMService):
         if self.config.get("use_context_summarization", False) and len(self.conversation_history) > self.config.get("summarize_threshold", 15):
             await self.summarize_conversation_history()
             
-        max_tool_rounds = int(self.config.get("max_tool_rounds", 8))
-        tool_round = 0
-
-        while True:
-            self.pending_tool_calls = {}
-            generator = await self.llm_generator()
-
-            full_message = ""
-            finish_reason = None
-
-            async for chunk in generator:
-                if not chunk.choices:
-                    continue
-
-                choice = chunk.choices[0]
-                delta = choice.delta
-
-                if delta.tool_calls:
-                    self.handle_tool_call(delta.tool_calls)
-
-                if delta.content:
-                    yield delta.content
-                    full_message += delta.content
-
-                if choice.finish_reason:
-                    finish_reason = choice.finish_reason
-
-            if self.pending_tool_calls:
-                tool_round += 1
-
-                if tool_round > max_tool_rounds:
-                    raise RuntimeError(
-                        "Se excedió el máximo de "
-                        f"{max_tool_rounds} rondas de tools."
-                    )
-
-                await self.handle_tool_call_finish(
-                    assistant_content=full_message
-                )
-                continue
-
-            if full_message:
-                self.add_to_conversation("assistant", full_message)
-                logger.critical(
-                    "🧠 [LLM TRACE] final_response finish_reason=%s tool_rounds=%s response=%s",
-                    finish_reason,
-                    tool_round,
-                    self._preview_text(full_message),
-                )
-            elif finish_reason not in (None, "stop"):
-                logger.warning(
-                    "El modelo terminó sin contenido. finish_reason=%s",
-                    finish_reason,
-                )
-
-            break
+        full_message = await self._generate_response_via_responses()
+        if full_message:
+            self.add_to_conversation("assistant", full_message)
+            yield full_message
+        else:
+            logger.warning("Responses API terminó sin contenido visible.")
 
     async def summarize_conversation_history(self):
         """Resumir el historial de conversación cuando se vuelve demasiado largo"""
@@ -326,15 +310,21 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
 """
         
         try:
-            # Crear una solicitud separada para resumir el contexto
-            summary_response = await self._create_chat_completion_with_local_retry(
+            # Resumir también mediante Responses para no mezclar contratos de API.
+            summary_response = await self._create_response_with_local_retry(
                 model=DEFAULT_OPENAI_MODEL,
-                #model=self.config.get("model") or "gpt-3.5-turbo-1106",
-                messages=[{"role": "user", "content": summary_prompt}],
-                reasoning_effort="low",
+                instructions=(
+                    "Resume conversaciones de forma fiel y concisa. Conserva datos "
+                    "confirmados, folios, estado del reporte y decisiones del ciudadano."
+                ),
+                input=summary_prompt,
+                reasoning={"effort": "low"},
+                store=False,
             )
-            
-            summary = summary_response.choices[0].message.content
+
+            summary = self._response_output_text(summary_response)
+            if not summary:
+                raise RuntimeError("Responses no devolvió un resumen visible")
             
             # Reiniciar el historial con el sistema original y el resumen
             self.conversation_history = []
@@ -356,27 +346,198 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
             self.add_to_conversation("system", "Nota: Parte del historial de conversación anterior ha sido eliminado para optimizar el rendimiento.")
 
     async def llm_generator(self):
+        """Legacy Chat Completions generator retained only for compatibility tests."""
         model = DEFAULT_OPENAI_MODEL
         tools_payload = self.function_manager.get_function_definition()
         self._log_tools_payload(model, tools_payload)
-
-        requested_reasoning_effort = self._reasoning_effort()
-        if requested_reasoning_effort != CHAT_COMPLETIONS_TOOL_REASONING_EFFORT:
-            logger.warning(
-                "GPT-5.6 Luna con function tools en /v1/chat/completions requiere "
-                "reasoning_effort=none; solicitado=%s efectivo=%s",
-                requested_reasoning_effort,
-                CHAT_COMPLETIONS_TOOL_REASONING_EFFORT,
-            )
 
         return await self._create_chat_completion_with_local_retry(
             model=model,
             messages=self.conversation_history,
             stream=True,
-            reasoning_effort=CHAT_COMPLETIONS_TOOL_REASONING_EFFORT,
+            reasoning_effort="none",
             tool_choice="auto",
             tools=tools_payload,
         )
+
+    @staticmethod
+    def _item_value(item: Any, key: str, default=None):
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
+
+    @staticmethod
+    def _serialize_response_item(item: Any) -> dict[str, Any]:
+        if isinstance(item, dict):
+            return dict(item)
+        if hasattr(item, "model_dump"):
+            return item.model_dump(exclude_none=True)
+        if hasattr(item, "dict"):
+            return item.dict(exclude_none=True)
+        raise TypeError(f"Item de Responses API no serializable: {type(item).__name__}")
+
+    def _responses_tools_payload(self) -> list[dict[str, Any]]:
+        """Convert Chat Completions function schemas to Responses function tools."""
+        result = []
+        for tool in self.function_manager.get_function_definition():
+            function = tool.get("function", {})
+            result.append(
+                {
+                    "type": "function",
+                    "name": function.get("name"),
+                    "description": function.get("description") or "",
+                    "parameters": function.get("parameters") or {
+                        "type": "object",
+                        "properties": {},
+                    },
+                    "strict": False,
+                }
+            )
+        return result
+
+    def _responses_instructions_and_input(self) -> tuple[str, list[dict[str, Any]]]:
+        instruction_parts = []
+        response_input = []
+        for message in self.conversation_history:
+            role = message.get("role")
+            content = self.ensure_valid_message_content(message.get("content", ""))
+            if role == "system":
+                if content:
+                    instruction_parts.append(content)
+                continue
+            if role in {"user", "assistant"}:
+                response_input.append({"role": role, "content": content})
+        return "\n\n".join(instruction_parts), response_input
+
+    def _response_function_calls(self, response: Any) -> list[Any]:
+        return [
+            item
+            for item in (self._item_value(response, "output", []) or [])
+            if self._item_value(item, "type") == "function_call"
+        ]
+
+    def _response_output_text(self, response: Any) -> str:
+        output_text = self._item_value(response, "output_text", "") or ""
+        if output_text:
+            return str(output_text)
+
+        fragments = []
+        for item in self._item_value(response, "output", []) or []:
+            if self._item_value(item, "type") != "message":
+                continue
+            for content in self._item_value(item, "content", []) or []:
+                if self._item_value(content, "type") == "output_text":
+                    text = self._item_value(content, "text", "")
+                    if text:
+                        fragments.append(str(text))
+        return "".join(fragments)
+
+    async def _execute_response_tool_calls(self, calls: list[Any]) -> list[dict[str, Any]]:
+        outputs = []
+        for call in calls:
+            call_id = self._item_value(call, "call_id")
+            function_name = self._item_value(call, "name")
+            raw_arguments = self._item_value(call, "arguments", "{}") or "{}"
+            logger.critical(
+                "🧠 [LLM TRACE] responses_tool_selected id=%s name=%s args=%s",
+                call_id,
+                function_name,
+                self._preview_text(raw_arguments),
+            )
+
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.decoder.JSONDecodeError as error:
+                tool_response = (
+                    f"Error: argumentos JSON inválidos para {function_name}: {error}"
+                )
+            else:
+                func = self.registered_functions_by_name.get(function_name)
+                if func is None:
+                    tool_response = f"Error: la función '{function_name}' no está registrada."
+                else:
+                    try:
+                        tool_response = self.ensure_valid_message_content(
+                            await func(**arguments)
+                        )
+                    except Exception as error:
+                        logger.error(
+                            "Error calling function %s with arguments %s: %s",
+                            function_name,
+                            arguments,
+                            error,
+                        )
+                        tool_response = f"Error ejecutando '{function_name}': {error}"
+
+            logger.critical(
+                "🧠 [LLM TRACE] responses_tool_result id=%s name=%s result=%s",
+                call_id,
+                function_name,
+                self._preview_text(tool_response),
+            )
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": tool_response,
+                }
+            )
+        return outputs
+
+    async def _generate_response_via_responses(self) -> str:
+        model = DEFAULT_OPENAI_MODEL
+        tools_payload = self._responses_tools_payload()
+        self._log_tools_payload(
+            model,
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name"),
+                        "description": tool.get("description"),
+                        "parameters": tool.get("parameters"),
+                    },
+                }
+                for tool in tools_payload
+            ],
+        )
+        instructions, response_input = self._responses_instructions_and_input()
+        max_tool_rounds = int(self.config.get("max_tool_rounds", 8))
+
+        for tool_round in range(max_tool_rounds + 1):
+            response = await self._create_response_with_local_retry(
+                model=model,
+                instructions=instructions,
+                input=response_input,
+                reasoning={"effort": self._reasoning_effort()},
+                tools=tools_payload,
+                tool_choice="auto",
+                parallel_tool_calls=False,
+                store=False,
+                include=["reasoning.encrypted_content"],
+            )
+            calls = self._response_function_calls(response)
+            if not calls:
+                full_message = self._response_output_text(response)
+                logger.critical(
+                    "🧠 [LLM TRACE] responses_final tool_rounds=%s response=%s",
+                    tool_round,
+                    self._preview_text(full_message),
+                )
+                return full_message
+
+            if tool_round >= max_tool_rounds:
+                raise RuntimeError(
+                    f"Se excedió el máximo de {max_tool_rounds} rondas de tools."
+                )
+
+            response_input.extend(
+                self._serialize_response_item(item)
+                for item in (self._item_value(response, "output", []) or [])
+            )
+            response_input.extend(await self._execute_response_tool_calls(calls))
+
+        raise RuntimeError("Responses API terminó sin producir una respuesta")
 
     def handle_tool_call(self, tool_call_chunks) -> None:
         for tool_call in tool_call_chunks:

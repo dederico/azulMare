@@ -22,7 +22,7 @@ class OpenAIServiceReasoningTests(unittest.IsolatedAsyncioTestCase):
             system="Prueba",
         )
 
-    async def test_luna_uses_high_reasoning_by_default(self):
+    async def test_luna_chat_completions_tools_use_supported_none_effort(self):
         service = self.build_service()
         service._create_chat_completion_with_local_retry = AsyncMock(
             return_value="generator"
@@ -33,10 +33,10 @@ class OpenAIServiceReasoningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "generator")
         kwargs = service._create_chat_completion_with_local_retry.await_args.kwargs
         self.assertEqual(kwargs["model"], "gpt-5.6-luna")
-        self.assertEqual(kwargs["reasoning_effort"], "high")
+        self.assertEqual(kwargs["reasoning_effort"], "none")
         self.assertNotIn("temperature", kwargs)
 
-    async def test_environment_can_lower_reasoning_without_code_change(self):
+    async def test_environment_cannot_enable_reasoning_with_chat_tools(self):
         with patch.dict(os.environ, {"OPENAI_REASONING_EFFORT": "medium"}):
             service = self.build_service({"reasoning_effort": "low"})
             service._create_chat_completion_with_local_retry = AsyncMock(
@@ -46,7 +46,7 @@ class OpenAIServiceReasoningTests(unittest.IsolatedAsyncioTestCase):
             await service.llm_generator()
 
         kwargs = service._create_chat_completion_with_local_retry.await_args.kwargs
-        self.assertEqual(kwargs["reasoning_effort"], "medium")
+        self.assertEqual(kwargs["reasoning_effort"], "none")
 
     def test_invalid_reasoning_value_falls_back_to_high(self):
         with patch.dict(os.environ, {"OPENAI_REASONING_EFFORT": "turbo"}):

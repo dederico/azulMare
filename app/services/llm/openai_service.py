@@ -16,6 +16,7 @@ OPENAI_LOCAL_RETRY_ATTEMPTS = 2
 OPENAI_LOCAL_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "high"
+CHAT_COMPLETIONS_TOOL_REASONING_EFFORT = "none"
 SUPPORTED_REASONING_EFFORTS = {
     "none",
     "low",
@@ -359,11 +360,20 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         tools_payload = self.function_manager.get_function_definition()
         self._log_tools_payload(model, tools_payload)
 
+        requested_reasoning_effort = self._reasoning_effort()
+        if requested_reasoning_effort != CHAT_COMPLETIONS_TOOL_REASONING_EFFORT:
+            logger.warning(
+                "GPT-5.6 Luna con function tools en /v1/chat/completions requiere "
+                "reasoning_effort=none; solicitado=%s efectivo=%s",
+                requested_reasoning_effort,
+                CHAT_COMPLETIONS_TOOL_REASONING_EFFORT,
+            )
+
         return await self._create_chat_completion_with_local_retry(
             model=model,
             messages=self.conversation_history,
             stream=True,
-            reasoning_effort=self._reasoning_effort(),
+            reasoning_effort=CHAT_COMPLETIONS_TOOL_REASONING_EFFORT,
             tool_choice="auto",
             tools=tools_payload,
         )

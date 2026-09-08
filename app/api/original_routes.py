@@ -98,7 +98,7 @@ from app.services.monitoring.operational_audit import (
 )
 from app.services.conversation_control import (
     activate_human_control,
-    consume_trusted_human_control,
+    consume_human_control,
     ensure_conversation_control_storage,
     get_active_human_control,
     normalize_phone_key,
@@ -5416,17 +5416,18 @@ async def whatsapp(request: Request):
             text=message_text,
             stale=stale_operator_outbox,
         ):
-            released_control = consume_trusted_human_control(from_number, storage=db)
+            released_control = consume_human_control(from_number, storage=db)
             if not released_control:
                 logger.warning(
-                    "🚫 [UNTRUSTED RETURN TO SAM] Mensaje de retorno ignorado sin takeover "
-                    "local confiable o ya consumido. from_number=%s operator_id=%s message_id=%s",
+                    "🚫 [DUPLICATE RETURN TO SAM] Mensaje de retorno ignorado porque el "
+                    "takeover ya fue liberado o no estaba activo. from_number=%s "
+                    "operator_id=%s message_id=%s",
                     from_number,
                     operator_id,
                     message_id,
                 )
                 return JSONResponse(
-                    content={"status": True, "message": "Return-to-SAM ignorado sin takeover confiable"}
+                    content={"status": True, "message": "Return-to-SAM ya consumido o sin takeover activo"}
                 )
 
             logger.info(f"!!! HUMAN AGENT GOODBYE DETECTED !!! Releasing control to AI immediately on {from_number}")

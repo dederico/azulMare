@@ -6,7 +6,7 @@ import app.services.conversation_control as conversation_control
 
 from app.services.conversation_control import (
     activate_human_control,
-    consume_trusted_human_control,
+    consume_human_control,
     get_active_human_control,
     normalize_phone_key,
     release_human_control,
@@ -99,33 +99,29 @@ class ConversationControlTests(unittest.TestCase):
             source="chat2desk_takeover_message",
         )
 
-        first = consume_trusted_human_control(self.phone)
-        second = consume_trusted_human_control(self.phone)
+        first = consume_human_control(self.phone)
+        second = consume_human_control(self.phone)
 
         self.assertIsNotNone(first)
         self.assertEqual(first["source"], "chat2desk_takeover_message")
         self.assertIsNone(second)
 
-    def test_explicit_and_tool_takeovers_can_be_consumed(self):
-        for source in ("explicit_user_request", "tool:verified_no_context"):
+    def test_all_human_takeover_sources_can_be_consumed_by_authoritative_return(self):
+        for source in (
+            "explicit_user_request",
+            "chat2desk_takeover_message",
+            "confirmed_operator_outbox:228531",
+            "tool:verified_no_context",
+            "dialog_transferred:228522",
+        ):
             activate_human_control(
                 self.phone,
                 expires_at=None,
                 source=source,
             )
-            consumed = consume_trusted_human_control(self.phone)
+            consumed = consume_human_control(self.phone)
             self.assertIsNotNone(consumed)
             self.assertEqual(consumed["source"], source)
-
-    def test_untrusted_takeover_cannot_trigger_return_greeting(self):
-        activate_human_control(
-            self.phone,
-            expires_at=None,
-            source="dialog_transferred:228522",
-        )
-
-        self.assertIsNone(consume_trusted_human_control(self.phone))
-        self.assertIsNotNone(get_active_human_control(self.phone))
 
 
 if __name__ == "__main__":

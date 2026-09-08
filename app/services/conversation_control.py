@@ -162,23 +162,20 @@ def release_human_control(phone_number: str, *, storage=None) -> None:
             conn.close()
 
 
-def _trusted_source(source: str | None) -> bool:
-    source = str(source or "")
-    return (
-        source == "explicit_user_request"
-        or source == "chat2desk_takeover_message"
-        or source.startswith("tool:")
-    )
+def consume_human_control(phone_number: str, *, storage=None) -> dict[str, Any] | None:
+    """Atomically release any active human takeover exactly once.
 
-
-def consume_trusted_human_control(phone_number: str, *, storage=None) -> dict[str, Any] | None:
-    """Atomically release and return a trusted takeover exactly once."""
+    The caller is responsible for authenticating the return signal.  In the
+    WhatsApp webhook that signal is the fresh, official Chat2Desk return macro;
+    once it is recognized, the takeover's original source must not prevent the
+    conversation from returning to SAM.
+    """
     key = normalize_phone_key(phone_number)
 
     if storage is None or not ensure_conversation_control_storage(storage):
         with _memory_lock:
             control = _memory_controls.get(key)
-            if not control or not _trusted_source(control.get("source")):
+            if not control or control.get("mode") != HUMAN_MODE:
                 return None
             return _memory_controls.pop(key).copy()
 
@@ -191,11 +188,6 @@ def consume_trusted_human_control(phone_number: str, *, storage=None) -> dict[st
                 DELETE FROM {CONTROL_TABLE}
                 WHERE phone_number = %s
                   AND mode = %s
-                  AND (
-                      source = 'explicit_user_request'
-                      OR source = 'chat2desk_takeover_message'
-                      OR source LIKE 'tool:%%'
-                  )
                 RETURNING phone_number, mode, expires_at, source,
                           transfer_message_id, updated_at
                 """,

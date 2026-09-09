@@ -2,11 +2,14 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.services.conversation_policy import (
+    WIDGET_EMPTY_RESPONSE_FALLBACK,
+    apply_widget_empty_response_fallback,
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
     event_precedes_context_boundary,
     extract_confirmed_folio,
+    greeting_display_name,
     inactivity_snapshot_is_still_stale,
     is_bot_return_message,
     is_human_takeover_message,
@@ -332,6 +335,21 @@ class InactivityPolicyTests(unittest.TestCase):
 
 
 class InitialGreetingPolicyTests(unittest.TestCase):
+    def test_widget_hides_synthetic_chat_name(self):
+        self.assertEqual(
+            greeting_display_name("[chat] 62ddf69ec67f6bf087b3", "widget"),
+            "",
+        )
+
+    def test_whatsapp_keeps_same_name_even_if_it_looks_synthetic(self):
+        self.assertEqual(
+            greeting_display_name("[chat] 62ddf69ec67f6bf087b3", "wa_direct"),
+            "[chat] 62ddf69ec67f6bf087b3",
+        )
+
+    def test_widget_keeps_real_display_name(self):
+        self.assertEqual(greeting_display_name("María", "widget"), "María")
+
     def test_return_boundary_owns_greeting_before_first_inbound_is_stored(self):
         self.assertTrue(
             return_greeting_covers_current_inbound(
@@ -398,6 +416,27 @@ class InitialGreetingPolicyTests(unittest.TestCase):
                 threshold_seconds=15 * 60,
                 human_control_active=True,
             )
+        )
+
+
+class WidgetResponsePolicyTests(unittest.TestCase):
+    def test_empty_widget_response_gets_safe_fallback(self):
+        self.assertEqual(
+            apply_widget_empty_response_fallback("", "widget"),
+            WIDGET_EMPTY_RESPONSE_FALLBACK,
+        )
+
+    def test_nonempty_widget_response_is_unchanged(self):
+        response = "La oficina se encuentra en La Leona."
+        self.assertEqual(
+            apply_widget_empty_response_fallback(response, "widget"),
+            response,
+        )
+
+    def test_empty_whatsapp_response_is_not_changed(self):
+        self.assertEqual(
+            apply_widget_empty_response_fallback("", "wa_direct"),
+            "",
         )
 
 

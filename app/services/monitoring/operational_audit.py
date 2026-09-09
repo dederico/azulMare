@@ -29,6 +29,7 @@ LOG_PATTERNS = {
     "network_timeout_unattributed": ["ConnectTimeout", "ReadTimeout"],
     "outbound_error": ["Error en respuesta Chat2Desk", "Error al enviar mensaje"],
     "outbound_activity": ["📤 [CHAT2DESK:whatsapp_main] attempt", "📥 [CHAT2DESK:whatsapp_main] response"],
+    "widget_empty_response": ["[WIDGET EMPTY RESPONSE]"],
     "dedup": [
         "[PERSISTED DUPLICATE]",
         "[DISTRIBUTED INBOUND DUPLICATE]",
@@ -551,6 +552,11 @@ def _build_findings(metrics: dict, log_signals: dict, window_hours: int) -> list
     if log_signals["counts"].get("outbound_error", 0) > 0:
         findings.append(
             f"ALERTA: se detectaron {log_signals['counts'].get('outbound_error', 0)} eventos ligados a envio/salida Chat2Desk."
+        )
+
+    if log_signals["counts"].get("widget_empty_response", 0) > 0:
+        findings.append(
+            f"ALERTA: se recuperaron {log_signals['counts'].get('widget_empty_response', 0)} respuestas vacías del widget mediante una respuesta segura."
         )
 
     if log_signals["counts"].get("transfer_api", 0) > 0:

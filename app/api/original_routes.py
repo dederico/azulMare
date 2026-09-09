@@ -125,10 +125,12 @@ from app.services.conversation_lifecycle import (
     reset_conversation_lifecycle,
 )
 from app.services.conversation_policy import (
+    apply_widget_empty_response_fallback,
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
     extract_confirmed_folio,
+    greeting_display_name,
     event_precedes_context_boundary,
     inactivity_snapshot_is_still_stale,
     is_bot_return_message,
@@ -3324,13 +3326,21 @@ def is_recent_persisted_bot_outbound_echo(db, phone_number: str | None, text: st
     return False
 
 
-def build_return_to_sam_greeting(sender_name: str) -> str:
-    clean_name = (sender_name or "").strip() or "ciudadano"
+def build_return_to_sam_greeting(
+    sender_name: str,
+    transport: str = "wa_direct",
+) -> str:
+    clean_name = greeting_display_name(sender_name, transport)
+    personalized_hello = (
+        f"Hola {clean_name}, ¿en qué podemos ayudarte? ¿Es una emergencia?"
+        if clean_name
+        else "Hola, ¿en qué podemos ayudarte? ¿Es una emergencia?"
+    )
     return (
         "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n"
         "¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. "
         "Recuerda para emergencias, reportes de seguridad o tránsito: marca al C4: 81 89 88 2000 🚓 🚑\n\n"
-        f"Hola {clean_name}, ¿en qué podemos ayudarte? ¿Es una emergencia?"
+        + personalized_hello
     )
 
 
@@ -3410,7 +3420,7 @@ async def send_claimed_session_greeting(
     channel_id,
     transport,
 ) -> bool:
-    greeting_message = build_return_to_sam_greeting(sender_name)
+    greeting_message = build_return_to_sam_greeting(sender_name, transport)
     greeting_uid = f"assistant-initial-greeting-{uid}"
     if not has_persisted_whatsapp_message_uid(db, greeting_uid):
         db.Insert(
@@ -5966,7 +5976,10 @@ async def _process_whatsapp_request(request):
             logger.info(f"Added {from_number} to recently_returned_to_bot with grace period of {BOT_GRACE_PERIOD} seconds")
 
             sender_name = payload.get('client', {}).get('name', 'Usuario')
-            greeting_message = build_return_to_sam_greeting(sender_name)
+            greeting_message = build_return_to_sam_greeting(
+                sender_name,
+                payload.get("transport", "wa_direct"),
+            )
             lifecycle_session_key = build_session_key(
                 request_id,
                 payload.get("dialog_id"),
@@ -7420,7 +7433,7 @@ async def _process_whatsapp_request(request):
     # contenido del primer mensaje. Si el ciudadano sólo saludó, el saludo
     # completa el turno; si ya hizo una solicitud, SAM la procesa enseguida.
     if initial_greeting_required:
-        greeting_message = build_return_to_sam_greeting(sender_name)
+        greeting_message = build_return_to_sam_greeting(sender_name, transport)
         logger.critical(
             "👋 [INITIAL SESSION GREETING] Enviando saludo institucional para %s uid=%s",
             from_number,
@@ -7846,6 +7859,45 @@ async def _process_whatsapp_request(request):
             customer_phone=from_number,
         )
         current_transfer_context = transfer_guard_context.get(str(message_id), {})
+        widget_empty_response = (
+            str(transport or "").strip().lower() == "widget"
+            and not response_content.strip()
+        )
+        if widget_empty_response and bool(
+            current_transfer_context.get("transfer_succeeded")
+        ):
+            logger.info(
+                "🛑 [WIDGET TRANSFER TERMINAL] Sin outbound adicional después de "
+                "transferencia exitosa para %s uid=%s",
+                from_number,
+                uid,
+            )
+            transfer_guard_context.pop(str(message_id), None)
+            persist_successful_delivery_marker(db, from_number, uid, message_id)
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Transferencia de widget completada sin outbound adicional",
+                }
+            )
+
+        if widget_empty_response:
+            logger.warning(
+                "⚠️ [WIDGET EMPTY RESPONSE] Responses terminó sin texto para %s "
+                "uid=%s; se aplicará respuesta segura",
+                from_number,
+                uid,
+            )
+            response_content = apply_widget_empty_response_fallback(
+                response_content,
+                transport,
+            )
+
         if should_replace_unconfirmed_transfer_response(
             transfer_attempted=bool(current_transfer_context.get("transfer_attempted")),
             transfer_succeeded=bool(current_transfer_context.get("transfer_succeeded")),

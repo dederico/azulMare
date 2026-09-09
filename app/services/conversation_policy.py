@@ -12,6 +12,10 @@ VERIFIED_PUBLIC_PHONE_DIGITS = frozenset(
         "8112121212",  # Atención Ciudadana
     }
 )
+WIDGET_EMPTY_RESPONSE_FALLBACK = (
+    "No pude obtener una respuesta en este momento. "
+    "¿Deseas que te comunique con un agente de Atención Ciudadana?"
+)
 
 
 def automatic_report_timeouts_enabled(value: str | None) -> bool:
@@ -39,6 +43,27 @@ def normalize_policy_text(value: str | None) -> str:
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r"[^a-zA-Z0-9\s]", " ", text.lower())
     return " ".join(text.split())
+
+
+def greeting_display_name(sender_name: str | None, transport: str | None) -> str:
+    """Hide Chat2Desk's synthetic client label only in widget conversations."""
+    clean_name = str(sender_name or "").strip()
+    if str(transport or "").strip().lower() == "widget" and re.match(
+        r"^\[chat\](?:\s|$)", clean_name, flags=re.IGNORECASE
+    ):
+        return ""
+    return clean_name or "ciudadano"
+
+
+def apply_widget_empty_response_fallback(
+    response: str | None,
+    transport: str | None,
+) -> str:
+    """Prevent empty user-facing messages only for the web widget transport."""
+    text = str(response or "")
+    if str(transport or "").strip().lower() == "widget" and not text.strip():
+        return WIDGET_EMPTY_RESPONSE_FALLBACK
+    return text
 
 
 def is_trusted_human_control(control: dict | None) -> bool:

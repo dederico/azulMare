@@ -42,6 +42,22 @@ class OperationalAuditSignalTests(unittest.TestCase):
         self.assertEqual(signals["counts"]["chat2desk_timeout"], 1)
         self.assertEqual(signals["counts"]["network_timeout_unattributed"], 0)
 
+    def test_widget_empty_response_recovery_is_visible(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write(
+                "2026-09-08 - WARNING - [WIDGET EMPTY RESPONSE] "
+                "Responses terminó sin texto\n"
+            )
+            handle.flush()
+            with patch.dict(
+                os.environ,
+                {"LOG_TO_FILE": "true", "LOG_FILE": handle.name},
+                clear=False,
+            ):
+                signals = _read_recent_log_signals()
+
+        self.assertEqual(signals["counts"]["widget_empty_response"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

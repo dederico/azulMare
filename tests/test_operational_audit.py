@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 database_stub = types.ModuleType("app.util.database")
@@ -57,6 +58,30 @@ class OperationalAuditSignalTests(unittest.TestCase):
                 signals = _read_recent_log_signals()
 
         self.assertEqual(signals["counts"]["widget_empty_response"], 1)
+
+    def test_rotated_log_files_remain_visible_to_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "sam.log"
+            Path(f"{log_path}.1").write_text(
+                "2026-09-08 - ERROR - [OPENAI REQUEST FAILURE] APITimeoutError\n",
+                encoding="utf-8",
+            )
+            log_path.write_text(
+                "2026-09-08 - INFO - servicio activo\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "LOG_TO_FILE": "true",
+                    "LOG_FILE": str(log_path),
+                    "LOG_FILE_BACKUP_COUNT": "1",
+                },
+                clear=False,
+            ):
+                signals = _read_recent_log_signals()
+
+        self.assertEqual(signals["counts"]["openai_timeout"], 1)
 
 
 if __name__ == "__main__":

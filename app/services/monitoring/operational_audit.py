@@ -292,14 +292,29 @@ def _read_recent_log_signals() -> dict:
     result["enabled"] = True
     result["path"] = str(log_path)
 
-    if not log_path.exists():
+    backup_count = max(0, _safe_int(os.environ.get("LOG_FILE_BACKUP_COUNT", "3")))
+    rotated_paths = [
+        Path(f"{log_path}.{index}")
+        for index in range(backup_count, 0, -1)
+        if Path(f"{log_path}.{index}").exists()
+    ]
+    readable_paths = rotated_paths + ([log_path] if log_path.exists() else [])
+
+    if not readable_paths:
         return result
 
     try:
-        with log_path.open("r", encoding="utf-8", errors="ignore") as handle:
-            lines = handle.readlines()[-4000:]
+        lines = []
+        for readable_path in readable_paths:
+            with readable_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                lines.extend(handle.readlines()[-4000:])
+        lines = lines[-4000:]
     except Exception as exc:
-        logger.error("[AUDIT] No se pudo leer log file %s: %s", log_path, exc)
+        logger.error(
+            "[AUDIT] No se pudieron leer log files desde %s: %s",
+            log_path,
+            exc,
+        )
         return result
 
     behavior = _analyze_behavioral_patterns(lines)

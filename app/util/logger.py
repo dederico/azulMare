@@ -2,6 +2,7 @@ import os
 import logging
 import colorlog
 from io import StringIO
+from logging.handlers import RotatingFileHandler
 from threading import local
 from dotenv import load_dotenv
 
@@ -19,9 +20,23 @@ logger = colorlog.getLogger()
 logger.addHandler(console_handler)
 logger.setLevel(os.getenv('CONSOLE_LOG_LEVEL', 'DEBUG'))
 
+file_handler = None
 if os.getenv('LOG_TO_FILE', '').lower() == 'true':
     log_file = os.getenv('LOG_FILE', 'log_file.log')
-    file_handler = logging.FileHandler(log_file)
+    log_file_max_bytes = max(
+        1,
+        int(os.getenv('LOG_FILE_MAX_BYTES', str(25 * 1024 * 1024))),
+    )
+    log_file_backup_count = max(
+        0,
+        int(os.getenv('LOG_FILE_BACKUP_COUNT', '3')),
+    )
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=log_file_max_bytes,
+        backupCount=log_file_backup_count,
+        encoding='utf-8',
+    )
     file_formatter = logging.Formatter(
         '%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -30,7 +45,7 @@ if os.getenv('LOG_TO_FILE', '').lower() == 'true':
     logger.addHandler(file_handler)
 
 file_log_level = os.getenv('LOG_FILE_LOG_LEVEL')
-if file_log_level:
+if file_handler is not None and file_log_level:
     file_handler.setLevel(file_log_level)
 
 def get_thread_log_handler(level):

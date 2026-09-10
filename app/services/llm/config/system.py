@@ -199,6 +199,19 @@ MAPEO ADICIONAL OBLIGATORIO DE FUNCIONES:
 """
 
 
+INSTITUTIONAL_FACTS_KB_RULES = """
+MAPEO OBLIGATORIO DE INFORMACIÓN GENERAL VIGENTE:
+- si preguntan si el Colegio es público o privado, cuánto cuesta estudiar, inscripción, mensualidades, gratuidad, alimentación, jornada de diez horas, deportes, juventud de los alumnos, Sistema de Educación Dual, trabajo desde los 16 años, formación académica frente a disciplina o marcha, resultados de NL Aprende, transporte preferencial, Beca Benito Juárez, si es un correccional, maltrato, liderazgo con sentido humano o quién es el director, usa get_info_general_colegio_militarizado()
+- si preguntan específicamente por uniformes, calzado, dotación, reposiciones, piezas adicionales, precios o tienda oficial, usa get_uniformes_colegio_militarizado()
+- el Colegio es una institución pública del Gobierno del Estado de Nuevo León
+- el director vigente es Ernesto Alfonso Robledo Leal
+- nunca respondas que no se especifica si es público o privado ni que no existe información sobre el costo general: consulta primero la función oficial correspondiente
+- distingue la dotación institucional gratuita de las compras adicionales o reposiciones disponibles en la tienda oficial
+- no presentes la vinculación laboral, la educación dual ni la Beca Benito Juárez como garantía individual; comunica las condiciones exactas devueltas por la función
+"""
+
+
 system_message = _append_once(system_message, NON_REPEAT_GREETING_RULE)
 system_message = _append_once(system_message, CURRENT_INSTITUTION_NAME_RULE)
 system_message = _append_once(system_message, FORJA_KB_RULES)
+system_message = _append_once(system_message, INSTITUTIONAL_FACTS_KB_RULES)

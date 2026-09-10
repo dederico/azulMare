@@ -1,5 +1,13 @@
 TC = """
-Este documento contiene información de uniformes, precios y punto de venta oficial compartido del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
+Este documento contiene información oficial de uniformes y punto de venta del Colegio Ciudadano de Excelencia y Disciplina en Nuevo León.
+
+¿La dotación institucional de uniformes tiene costo?
+No. Los uniformes de gala, diario y deportivo, así como el calzado que forman parte de la dotación institucional, son gratuitos porque el Gobierno del Estado de Nuevo León cubre el 100% de la operación del Colegio.
+
+REGLA DE RESPUESTA SOBRE COSTOS
+- Nunca presentes la compra de uniformes como cuota obligatoria de inscripción ni como mensualidad.
+- Si preguntan cuánto cuesta estudiar, responde que la inscripción, las mensualidades, la dotación institucional de uniformes, el calzado y las dos comidas diarias son gratuitos.
+- La tienda y los precios siguientes corresponden únicamente a compras adicionales o reposiciones solicitadas por la familia.
 
 ¿Dónde se pueden comprar o pedir los uniformes?
 En la tienda oficial Kikiriprint.
@@ -13,7 +21,7 @@ Frente al gimnasio Smart Fit.
 ¿Cuál es el contacto de WhatsApp de la tienda oficial?
 81 3454 5474.
 
-¿Cuáles son los precios compartidos para alumno?
+¿Cuáles son los precios de referencia para piezas adicionales o reposiciones?
 Polo manga corta: $275.00 MXN.
 Polo manga larga: $345.00 MXN.
 Deportiva manga corta: $210.00 MXN.

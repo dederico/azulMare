@@ -1,4 +1,7 @@
 # Módulo de almacenamiento temporal por usuario y pregunta
+from app.services.report_submission_policy import validate_and_normalize_report_submission
+
+
 user_answers = {}  # key: phone_number, value: dict con {question_number: answer}
 
 def save_user_answer(from_number, question_number, selection_text):
@@ -15,10 +18,10 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
 
    Args:
         yoga_number (string): El número de teléfono del cliente.
-        selection1 (string): ID numérico del asunto (ej: "984" para baches) o "0" para auto-clasificación.
+        selection1 (string): ID numérico oficial que corresponda EXACTAMENTE al problema descrito. Nunca uses un ID por defecto.
         selection2 (string): Nombre del cliente.
         selection3 (string): SIEMPRE debe ser una cadena vacía "".
-        selection4 (string): Razón del reporte.
+        selection4 (string): Explicación concreta y fiel del reporte usando únicamente datos proporcionados por el ciudadano. Nunca debe quedar vacía ni usar textos genéricos.
         selection5 (string): Calle.
         selection6 (string): Número (default: 000).
         selection7 (string): Colonia.
@@ -31,9 +34,9 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
     """
 
     import httpx
+    import asyncio
     import json
     from app.util.logger import logger
-    import re
     import urllib
 
     logger.critical(f"============= DENTRO DE SAVE CLIENT SELECTION2 =============")
@@ -52,6 +55,40 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
         return "Error: No se pudo obtener el número de teléfono"
 
     logger.info(f"Número del cliente: {yoga_number}")
+
+    normalized_submission, validation_error = validate_and_normalize_report_submission(
+        selection1=selection1,
+        selection2=selection2,
+        selection4=selection4,
+        selection5=selection5,
+        selection6=selection6,
+        selection7=selection7,
+    )
+    if validation_error:
+        logger.warning(
+            "🚫 [REPORT PAYLOAD BLOCK] No se enviará reporte para %s: %s",
+            yoga_number,
+            validation_error,
+        )
+        return f"VALIDATION_BLOCK: {validation_error}. No se creó ningún folio."
+
+    if str(selection1 or "").strip() != normalized_submission["selection1"]:
+        logger.warning(
+            "🧾 [REPORT FIELD RECONCILIATION] phone=%s model_asunto=%s "
+            "corrected_asunto=%s description=%s",
+            yoga_number,
+            selection1,
+            normalized_submission["selection1"],
+            normalized_submission["selection4"][:240],
+        )
+
+    selection1 = normalized_submission["selection1"]
+    selection2 = normalized_submission["selection2"]
+    selection3 = ""
+    selection4 = normalized_submission["selection4"]
+    selection5 = normalized_submission["selection5"]
+    selection6 = normalized_submission["selection6"]
+    selection7 = normalized_submission["selection7"]
     
     # Verificar si es una llamada inicial (todos los campos vacíos excepto selection3 que siempre es "")
     todos_vacios = all(not field or field.strip() == "" for field in [selection1, selection2, selection4, selection5, selection6, selection7])
@@ -107,34 +144,19 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
             if selection8 not in fotos:
                 fotos.append(selection8)
     
-    # Asegurarnos de que el asunto sea solo números
-    # Si es "0", se auto-clasificará en process_and_save_report
-    asunto_id = selection1 or "984"  # Usar 984 (baches) como valor predeterminado
+    asunto_id = selection1
 
-    # Extraer solo los dígitos si contiene texto
-    if not asunto_id.isdigit():
-        digits = re.findall(r'\d+', asunto_id)
-        if digits:
-            asunto_id = digits[0]  # Usar el primer número encontrado
-        else:
-            asunto_id = "984"  # Valor por defecto si no hay números
-
-    # Asegurar que tenemos valores válidos para todos los campos
-    nombre = selection2.strip() if selection2 and selection2.strip() else "Ciudadano"
-    descripcion = selection4.strip() if selection4 and selection4.strip() else "Sin descripción"
+    # Los valores ya fueron normalizados y validados antes de preparar el POST.
+    nombre = selection2
+    descripcion = selection4
 
     # Para la calle, validar que no sea None antes de intentar hacer strip()
-    calle = selection5.strip() if selection5 and selection5.strip() else ""
+    calle = selection5
 
-    # El valor predeterminado para selection6 (número) debe ser "100" si está vacío
-    numero = selection6.strip() if selection6 and selection6.strip() else "100"
-    # Si numero no es un número, intentar extraer dígitos
-    if not numero.isdigit():
-        nums = re.findall(r'\d+', numero)
-        numero = nums[0] if nums else "100"
+    numero = selection6
 
     # Para el barrio/colonia, validar que no sea None antes de intentar hacer strip()
-    colonia = selection7.strip() if selection7 and selection7.strip() else ""
+    colonia = selection7
 
     # Construir la ubicación combinada con verificación de que no queden patrones vacíos
     partes_localizacion = []
@@ -199,24 +221,73 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
             'Content-Type': 'application/json'
         }
         
-        # Enviar la solicitud
-        logger.debug(f"Enviando payload a {url}")
+        # CIAC puede tener fallas transitorias de conexión. Sólo reintentamos un
+        # ConnectTimeout (la conexión no llegó a establecerse). No reintentamos
+        # ReadTimeout ni respuestas 5xx porque CIAC pudo haber creado el folio y
+        # repetir el POST podría duplicarlo.
+        response = None
+        last_error = None
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0)) as http_client:
-            response = await http_client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
+            for attempt in range(1, 3):
+                try:
+                    logger.warning(
+                        "🧾 [CIAC SUBMISSION] phone=%s attempt=%s asunto=%s descripcion=%s",
+                        yoga_number,
+                        attempt,
+                        asunto_id,
+                        descripcion[:240],
+                    )
+                    response = await http_client.post(url, json=payload, headers=headers)
+                    response.raise_for_status()
+                    break
+                except httpx.ConnectTimeout as error:
+                    last_error = error
+                    logger.warning(
+                        "⚠️ [CIAC TIMEOUT] phone=%s attempt=%s type=%s",
+                        yoga_number,
+                        attempt,
+                        type(error).__name__,
+                    )
+                    if attempt < 2:
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise
+                except httpx.TimeoutException as error:
+                    logger.warning(
+                        "⚠️ [CIAC TIMEOUT] phone=%s attempt=%s type=%s no_retry=true",
+                        yoga_number,
+                        attempt,
+                        type(error).__name__,
+                    )
+                    raise
+
+        if response is None:
+            raise RuntimeError(f"CIAC no devolvió respuesta: {last_error or 'causa desconocida'}")
         
         logger.info(f"POST to {url} successful. Response: {response.status_code} {response.text}")
         
-        # Extraer folio: simplemente usamos el texto de la respuesta como el folio
-        folio_number = response.text.strip()
-        
-        # Si está vacío por alguna razón, usar un valor por defecto
-        if not folio_number:
-            folio_number = "Generado"
+        folio_number = response.text.strip().strip('"')
+        if not folio_number.isdigit():
+            logger.error(
+                "❌ [CIAC REPORT FAILURE] phone=%s status=%s invalid_response=%s",
+                yoga_number,
+                response.status_code,
+                response.text[:500],
+            )
+            return (
+                "CIAC_FAILURE: CIAC recibió la solicitud, pero no devolvió un folio "
+                "válido. Conserva los datos y permite intentar finalizar nuevamente."
+            )
+
+        logger.warning(
+            "✅ [CIAC REPORT SUCCESS] phone=%s folio=%s asunto=%s",
+            yoga_number,
+            folio_number,
+            asunto_id,
+        )
             
         # 🧹 NUEVA LÍNEA: PROGRAMAR LIMPIEZA COMPLETA DESPUÉS DE REPORTE EXITOSO
         try:
-            import asyncio
             from app.util.logger import logger
             
             async def cleanup_after_manual_report():
@@ -275,5 +346,14 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
         return f"Folio: {folio_number}"
     
     except Exception as e:
-        logger.error(f"Error al enviar el reporte: {e}", exc_info=True)
-        return f"Error al procesar la solicitud: {str(e)}"
+        logger.error(
+            "❌ [CIAC REPORT FAILURE] phone=%s type=%s error=%s",
+            yoga_number,
+            type(e).__name__,
+            e,
+            exc_info=True,
+        )
+        return (
+            "CIAC_FAILURE: No fue posible obtener confirmación de CIAC en este "
+            "momento. Conserva los datos y permite intentar finalizar nuevamente."
+        )

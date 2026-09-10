@@ -146,6 +146,19 @@ from app.services.conversation_policy import (
     should_send_initial_greeting,
     return_greeting_covers_current_inbound,
 )
+from app.services.report_submission_policy import (
+    extract_report_field_answer,
+    infer_high_confidence_report_category,
+    is_explicit_report_intent,
+    is_likely_report_description,
+    is_meaningful_report_description,
+    is_valid_reporter_name,
+    merge_citizen_report_description,
+    reconcile_with_citizen_evidence,
+    select_citizen_report_description,
+    validate_and_normalize_report_submission,
+    validation_error_to_user_message,
+)
 from app.services.inbound_processing import (
     claim_inbound_processing,
     is_latest_inbound_processing_claim,
@@ -1902,10 +1915,6 @@ def detect_and_store_user_data_with_real_streets_and_colonies(from_number: str, 
         "selection2": r"(?i)(?:nombre\s*[:=]\s*|me\s+llamo\s+|soy\s+)([a-záéíóúñ\s]+?)(?:\s|,|$)",
         "selection4": r"(?i)(?:tipo\s*[:=]\s*|problema\s*[:=]?\s*|reporte\s*[:=]?\s*)([^\n,]+)",
         "selection6": r"(?i)(?:n[uú]mero\s*[:=]\s*|#\s*)(\d{1,5})\b",
-        
-        # 🚀 NUEVOS PATRONES MÁS FLEXIBLES
-        "selection2_alt": r"(?i)^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)",  # Nombre al inicio
-        "selection6_alt": r"(?i)\b(\d{1,4})\b(?!\d)",  # Cualquier número de 1-4 dígitos
     }
 
     for selection_key, pattern in patterns.items():
@@ -2341,6 +2350,7 @@ def create_or_update_report_session(from_number):
                 "image_prompted": False,
                 "image_decision": None,
                 "declared_emergency": None,
+                "citizen_report_messages": [],
             }
             logger.critical(f"🎯 [NEW SESSION] Sesión de reporte creada para {from_number}")
         else:
@@ -2636,7 +2646,9 @@ def detect_report_intent(body, response_content):
     """
     Detecta si el usuario quiere hacer un reporte basándose en keywords.
     """
-    combined_text = f"{body.lower()} {response_content.lower()}"
+    # La intención pertenece al ciudadano. La respuesta de SAM puede contener
+    # la palabra "reporte" aun cuando el usuario sólo pidió información.
+    combined_text = (body or "").lower()
     
     report_keywords = [
         "reporte", "reportar", "levantar reporte", "quiero reportar",
@@ -2652,7 +2664,11 @@ def should_create_report_session(body, response_content):
     Determina si una conversación justifica crear una sesión de reporte.
     MUY RESTRICTIVO - solo para casos obvios de reportes.
     """
-    combined_text = f"{body.lower()} {response_content.lower()}"
+    citizen_text = (body or "").lower()
+    assistant_text = (response_content or "").lower()
+
+    if is_explicit_report_intent(citizen_text) or infer_high_confidence_report_category(citizen_text):
+        return True
     
     # 🎯 PALABRAS CLAVE SUPER ESPECÍFICAS PARA REPORTES
     report_indicators = [
@@ -2675,11 +2691,26 @@ def should_create_report_session(body, response_content):
     ]
     
     # Si hay indicadores de NO-reporte, definitivamente NO crear sesión
-    if any(indicator in combined_text for indicator in non_report_indicators):
+    if any(indicator in citizen_text for indicator in non_report_indicators):
         return False
-    
-    # Solo crear sesión si hay indicadores claros de reporte
-    return any(indicator in combined_text for indicator in report_indicators)
+
+    if any(indicator in citizen_text for indicator in report_indicators):
+        return True
+
+    # Para expresiones nuevas que no están en ningún catálogo, la decisión del
+    # modelo de entrar al flujo se usa sólo para abrir la sesión. Nunca se usa
+    # su texto como explicación ni como clasificación del reporte.
+    assistant_started_report_flow = any(
+        phrase in assistant_text
+        for phrase in (
+            "qué deseas reportar",
+            "que deseas reportar",
+            "para levantar el reporte",
+            "complementar tu reporte",
+            "motivo del reporte",
+        )
+    )
+    return assistant_started_report_flow
 
 def normalize_selection_key(question_key):
     """Normaliza llaves legacy ('1') y canónicas ('selection1')."""
@@ -2720,6 +2751,129 @@ def get_user_answer(from_number, question_number):
     logger.debug(f"💾 [GET] {from_number} - {normalized_key}: {answer}")
     return answer
 
+
+def capture_citizen_report_evidence(
+    from_number: str,
+    citizen_message: str,
+    previous_assistant_message: str | None = None,
+) -> None:
+    """Persist grounded report evidence without treating workflow answers as facts."""
+    inferred_code = infer_high_confidence_report_category(citizen_message)
+    has_active_report = from_number in report_sessions
+    if not has_active_report and not inferred_code and not is_explicit_report_intent(citizen_message):
+        return
+
+    create_or_update_report_session(from_number)
+    session = report_sessions[from_number]
+    messages = session.setdefault("citizen_report_messages", [])
+    normalized_message = " ".join(str(citizen_message or "").split()).strip()
+    if normalized_message and normalized_message not in messages:
+        messages.append(normalized_message)
+        del messages[:-20]
+
+    if inferred_code:
+        save_user_answer(from_number, "selection1", inferred_code)
+
+    if not is_likely_report_description(
+        citizen_message,
+        previous_assistant_message=previous_assistant_message,
+    ):
+        return
+
+    faithful_description = merge_citizen_report_description(
+        get_user_answer(from_number, "selection4"),
+        citizen_message,
+    )
+    save_user_answer(from_number, "selection4", faithful_description)
+    logger.critical(
+        "🧾 [CITIZEN REPORT EVIDENCE] phone=%s asunto=%s description=%s",
+        from_number,
+        inferred_code or get_user_answer(from_number, "selection1"),
+        faithful_description[:240],
+    )
+
+
+def capture_contextual_report_answer(
+    from_number: str,
+    citizen_message: str,
+    previous_assistant_message: str | None,
+) -> tuple[str, str] | None:
+    """Store a report field only when SAM's preceding question identifies it.
+
+    Citizen vocabulary is intentionally unrestricted. The question supplies
+    the structure, while the citizen's own answer remains the source of truth.
+    """
+    extracted = extract_report_field_answer(
+        previous_assistant_message,
+        citizen_message,
+    )
+    if not extracted:
+        return None
+
+    selection_key, value = extracted
+    create_or_update_report_session(from_number)
+    if selection_key == "selection4":
+        value = merge_citizen_report_description(
+            get_user_answer(from_number, selection_key),
+            value,
+        )
+        inferred_code = infer_high_confidence_report_category(value)
+        if inferred_code:
+            save_user_answer(from_number, "selection1", inferred_code)
+
+    save_user_answer(from_number, selection_key, value)
+    logger.critical(
+        "🧾 [REPORT CONTEXT CAPTURE] phone=%s field=%s value=%s",
+        from_number,
+        selection_key,
+        value[:240],
+    )
+    return selection_key, value
+
+
+def reconcile_report_fields_with_citizen_evidence(
+    yoga_number: str,
+    selection1: str,
+    selection4: str,
+) -> tuple[str, str]:
+    """Make captured citizen evidence authoritative over model-generated fields."""
+    citizen_description = get_user_answer(yoga_number, "selection4")
+    conversation_turns: list[tuple[str, str]] = []
+    session = user_sessions.get(yoga_number)
+    if session:
+        for message in session.history.messages[-40:]:
+            if isinstance(message, HumanMessage):
+                conversation_turns.append(("user", message.content))
+            elif isinstance(message, AIMessage):
+                conversation_turns.append(("assistant", message.content))
+
+    transcript_description = select_citizen_report_description(conversation_turns)
+    if transcript_description:
+        citizen_description = merge_citizen_report_description(
+            citizen_description,
+            transcript_description,
+        )
+
+    if not is_meaningful_report_description(citizen_description):
+        citizen_description = selection4
+
+    reconciled_category, reconciled_description, changed = reconcile_with_citizen_evidence(
+        selection1,
+        selection4,
+        citizen_description,
+    )
+    if changed:
+        logger.warning(
+            "🧾 [REPORT FIELD RECONCILIATION] phone=%s model_asunto=%s "
+            "citizen_asunto=%s model_description=%s citizen_description=%s",
+            yoga_number,
+            selection1,
+            reconciled_category,
+            str(selection4 or "")[:240],
+            reconciled_description[:240],
+        )
+    return reconciled_category, reconciled_description
+
 def build_report_state_snapshot(from_number: str) -> dict:
     session = report_sessions.get(from_number, {}) if from_number else {}
     answer_map = user_answers.get(from_number, {}) if from_number else {}
@@ -2736,6 +2890,7 @@ def build_report_state_snapshot(from_number: str) -> dict:
         "selection5": answer_map.get("selection5", ""),
         "selection6": answer_map.get("selection6", ""),
         "selection7": answer_map.get("selection7", ""),
+        "citizen_evidence_count": len(session.get("citizen_report_messages", []) or []),
     }
 
 def log_operational_decision_trace(from_number: str, stage: str, **details) -> None:
@@ -2773,16 +2928,28 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             "No se puede crear un folio durante el takeover."
         )
 
-    # Preparar datos para verificación
-    selection_data = {
-        'selection1': selection1 or "984",
-        'selection2': selection2 or "Ciudadano", 
-        'selection3': selection3 or "",
-        'selection4': selection4 or "Sin descripción",
-        'selection5': selection5 or "Sin especificar",
-        'selection6': selection6 or "0000",
-        'selection7': selection7 or "Sin especificar"
-    }
+    selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
+        yoga_number,
+        selection1,
+        selection4,
+    )
+    normalized_submission, validation_error = validate_and_normalize_report_submission(
+        selection1=selection1,
+        selection2=selection2,
+        selection4=selection4,
+        selection5=selection5,
+        selection6=selection6,
+        selection7=selection7,
+    )
+    if validation_error:
+        logger.warning(
+            "🚫 [REPORT PAYLOAD BLOCK] Reporte bloqueado para %s: %s",
+            yoga_number,
+            validation_error,
+        )
+        return f"VALIDATION_BLOCK: {validation_error}. No se creó ningún folio."
+
+    selection_data = normalized_submission
     
     # VERIFICAR SI SE PUEDE CREAR EL REPORTE
     can_create, reason, existing_folio = dedup_manager.can_create_report(
@@ -2819,13 +2986,13 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         # LLAMAR A LA FUNCIÓN ORIGINAL
         folio = await save_client_selection2(
             yoga_number=yoga_number,
-            selection1=selection1,
-            selection2=selection2,
-            selection3=selection3,
-            selection4=selection4,
-            selection5=selection5,
-            selection6=selection6,
-            selection7=selection7,
+            selection1=selection_data["selection1"],
+            selection2=selection_data["selection2"],
+            selection3="",
+            selection4=selection_data["selection4"],
+            selection5=selection_data["selection5"],
+            selection6=selection_data["selection6"],
+            selection7=selection_data["selection7"],
             selection8=selection8,
             images_list=images_list,
             descriptions_list=descriptions_list
@@ -2845,6 +3012,8 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             # MARCAR COMO FALLIDO
             dedup_manager.mark_report_creation_failure(yoga_number)
             logger.error(f"❌ [FAILED] Fallo al crear reporte para {yoga_number}: {folio}")
+            if isinstance(folio, str) and folio.startswith("CIAC_FAILURE:"):
+                return folio
             return (
                 "VALIDATION_BLOCK: No fue posible confirmar la creación del reporte. "
                 "No anuncies ningún folio y explica que el reporte no se generó."
@@ -2873,10 +3042,10 @@ async def save_client_selection2_guarded(
     """
     Guardar la información de las preguntas según las respuestas del cliente.
     yoga_number (string): El número de teléfono del cliente.
-    selection1 (string): ID numérico del asunto (ej: "984" para baches) o "0" para auto-clasificación.
+    selection1 (string): ID numérico oficial que corresponda EXACTAMENTE al problema descrito. Nunca uses un ID por defecto.
     selection2 (string): Nombre del cliente.
     selection3 (string): SIEMPRE debe ser una cadena vacía "".
-    selection4 (string): Razón del reporte.
+    selection4 (string): Explicación concreta y fiel usando únicamente lo dicho por el ciudadano. Nunca la dejes vacía ni uses una frase genérica.
     selection5 (string): Calle.
     selection6 (string): Número (default: 000).
     selection7 (string): Colonia.
@@ -2898,76 +3067,29 @@ async def save_client_selection2_guarded(
             "No debes crear ni modificar reportes mientras el takeover esté activo."
         )
 
+    selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
+        yoga_number,
+        selection1,
+        selection4,
+    )
+    normalized_submission, validation_error = validate_and_normalize_report_submission(
+        selection1=selection1,
+        selection2=selection2,
+        selection4=selection4,
+        selection5=selection5,
+        selection6=selection6,
+        selection7=selection7,
+    )
+    if validation_error:
+        logger.warning(
+            "🚫 [REPORT PAYLOAD BLOCK] save_client_selection2 bloqueado para %s: %s",
+            yoga_number,
+            validation_error,
+        )
+        return f"VALIDATION_BLOCK: {validation_error}. No se creó ningún folio."
+
     emergency_codes = {"891", "892", "893", "894", "895", "896", "964"}
-    normalized_type = str(selection1 or "").strip()
-    normalized_name = str(selection2 or "").strip().lower()
-    normalized_reason = str(selection4 or "").strip().lower()
-    normalized_street = str(selection5 or "").strip().lower()
-    normalized_number = str(selection6 or "").strip().lower()
-    normalized_colony = str(selection7 or "").strip().lower()
-
-    if not normalized_type or normalized_type in {"0"}:
-        logger.warning(
-            "🚫 [GUARD] save_client_selection2 bloqueado para %s por tipo inválido: %s",
-            yoga_number,
-            selection1,
-        )
-        return (
-            "VALIDATION_BLOCK: Antes de crear el reporte, debes identificar correctamente el tipo de reporte."
-        )
-
-    if not normalized_name or normalized_name in {"ciudadano", "sin especificar"}:
-        logger.warning(
-            "🚫 [GUARD] save_client_selection2 bloqueado para %s por nombre inválido: %s",
-            yoga_number,
-            selection2,
-        )
-        return (
-            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener un nombre válido del ciudadano."
-        )
-
-    if not normalized_reason or normalized_reason in {"sin especificar"}:
-        logger.warning(
-            "🚫 [GUARD] save_client_selection2 bloqueado para %s por motivo inválido: %s",
-            yoga_number,
-            selection4,
-        )
-        return (
-            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener el motivo o descripción del problema."
-        )
-
-    if not normalized_street or normalized_street in {"sin especificar"}:
-        logger.warning(
-            "🚫 [GUARD] save_client_selection2 bloqueado para %s por calle inválida: %s",
-            yoga_number,
-            selection5,
-        )
-        return (
-            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener una calle válida. "
-            "La calle es obligatoria."
-        )
-
-    if not normalized_number or normalized_number in {"sin especificar"}:
-        logger.warning(
-            "🚫 [GUARD] save_client_selection2 bloqueado para %s por número inválido: %s",
-            yoga_number,
-            selection6,
-        )
-        return (
-            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener el número. "
-            "Si el usuario no lo sabe o no existe numeración, usa '0000' solo en ese caso."
-        )
-
-    if not normalized_colony or normalized_colony in {"0000", "sin especificar"}:
-        logger.warning(
-            "🚫 [GUARD] save_client_selection2 bloqueado para %s por colonia inválida: %s",
-            yoga_number,
-            selection7,
-        )
-        return (
-            "VALIDATION_BLOCK: Antes de crear el reporte, debes obtener una colonia válida. "
-            "La colonia es obligatoria y no puede ser '0000'."
-        )
+    normalized_type = normalized_submission["selection1"]
 
     session = report_sessions.get(yoga_number, {})
     has_images = bool(images_list) or bool(session.get("images")) or bool(str(selection8 or "").strip())
@@ -2999,13 +3121,13 @@ async def save_client_selection2_guarded(
 
     return await save_client_selection2_protected(
         yoga_number=yoga_number,
-        selection1=selection1,
-        selection2=selection2,
-        selection3=selection3,
-        selection4=selection4,
-        selection5=selection5,
-        selection6=selection6,
-        selection7=selection7,
+        selection1=normalized_submission["selection1"],
+        selection2=normalized_submission["selection2"],
+        selection3="",
+        selection4=normalized_submission["selection4"],
+        selection5=normalized_submission["selection5"],
+        selection6=normalized_submission["selection6"],
+        selection7=normalized_submission["selection7"],
         selection8=selection8,
         images_list=images_list,
         descriptions_list=descriptions_list,
@@ -5036,12 +5158,12 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             report_state=build_report_state_snapshot(from_number),
         )
 
-        logger.critical(f"PASANDO {len(images)} IMÁGENES A save_client_selection2_protected")
+        logger.critical(f"PASANDO {len(images)} IMÁGENES A save_client_selection2_guarded")
         for i, img in enumerate(images):
             logger.critical(f"  Imagen {i+1}: {img[:50]}...")
 
         # Create the report
-        folio = await save_client_selection2_protected(
+        folio = await save_client_selection2_guarded(
             yoga_number=from_number,
             images_list=images,
             descriptions_list=descriptions,
@@ -5071,10 +5193,22 @@ async def process_and_save_report(from_number, location, images=None, descriptio
 
         if isinstance(folio, str) and folio.startswith("VALIDATION_BLOCK:"):
             logger.warning(f"Report validation blocked for {from_number}: {folio}")
+            validation_reason = folio.replace("VALIDATION_BLOCK:", "", 1).strip()
             return {
                 'status': 'validation_block',
-                'message': folio.replace("VALIDATION_BLOCK:", "", 1).strip() or folio,
+                'message': validation_error_to_user_message(validation_reason),
                 'raw_result': folio
+            }
+
+        if isinstance(folio, str) and folio.startswith("CIAC_FAILURE:"):
+            logger.error("CIAC did not confirm report creation for %s: %s", from_number, folio)
+            return {
+                'status': 'upstream_error',
+                'message': (
+                    "El sistema de reportes no confirmó la creación del folio en este "
+                    "momento. Conservé tus datos; responde FIN para intentarlo nuevamente."
+                ),
+                'raw_result': folio,
             }
 
         if isinstance(folio, str) and folio.startswith("Error:"):
@@ -6498,6 +6632,23 @@ async def _process_whatsapp_request(request):
                 status_code=500,
             )
 
+        # Capture the citizen's answer before any media/finalization branch can
+        # return. This is especially important for image flows: a later "FIN"
+        # must finalize the existing state, never become a name or description.
+        last_outbound_message = next(
+            (
+                msg.message
+                for msg in reversed(preloaded_messages_db)
+                if msg.direction == "outbound" and msg.message
+            ),
+            "",
+        )
+        capture_contextual_report_answer(
+            from_number,
+            body,
+            last_outbound_message,
+        )
+
         if processed_message_ids.contains(uid):
             # The durable claim above is authoritative. A previous local attempt
             # may have failed after touching this cache, so it must not suppress
@@ -7242,6 +7393,8 @@ async def _process_whatsapp_request(request):
                         body = result['message']
                     elif result['status'] == 'validation_block':
                         body = result['message']
+                    elif result['status'] == 'upstream_error':
+                        body = result['message']
                     elif result['status'] == 'error':
                         body = f"Lo siento, hubo un error al finalizar tu reporte: {result['message']}. Por favor, intenta nuevamente."
                     elif result['status'] == 'success':
@@ -7359,14 +7512,8 @@ async def _process_whatsapp_request(request):
     conversation_history = session.history
 
     # El límite y el claim del saludo ya se resolvieron antes de procesar medios.
-    last_outbound_message = ""
     try:
         messages_db = preloaded_messages_db
-
-        last_outbound_message = next(
-            (msg.message for msg in reversed(messages_db) if msg.direction == "outbound" and msg.message),
-            "",
-        )
 
         # Limpiar el historial antes de agregar mensajes para evitar duplicados
         conversation_history.messages.clear()
@@ -7815,6 +7962,11 @@ async def _process_whatsapp_request(request):
             "Historial estructurado preparado para el modelo: %s mensajes previos",
             len(structured_history),
         )
+        capture_citizen_report_evidence(
+            from_number,
+            body,
+            previous_assistant_message=last_outbound_message,
+        )
         log_operational_decision_trace(
             from_number,
             "before_llm_generation",
@@ -8010,83 +8162,15 @@ async def _process_whatsapp_request(request):
             create_or_update_report_session(from_number)
             
             # 1. DETECTAR NOMBRE DEL USUARIO
-            if sender_name and sender_name != "Usuario" and sender_name.strip():
+            if is_valid_reporter_name(sender_name):
                 save_user_answer(from_number, "selection2", sender_name)
                 logger.critical(f"💾 [AUTO-SAVE] Nombre guardado: {sender_name}")
             
-            # 2. DETECTAR TIPO DE PROBLEMA - DICCIONARIO COMPLETO
-            problem_keywords = {
-                # LUMINARIAS Y ALUMBRADO
-                "luminaria": "982", "luminarias": "982", "luz": "982", "luces": "982", 
-                "foco": "982", "focos": "982", "alumbrado": "981", "lámpara": "982",
-                "poste": "1060", "arbotante": "983",
-                
-                # BACHES Y PAVIMENTO  
-                "bache": "984", "baches": "984", "hueco": "984", "huecos": "984",
-                "pavimento": "980", "recarpeteo": "980", "asfalto": "980",
-                "hundimiento": "1037", "zanja": "1039", "rotura": "1039",
-                
-                # LIMPIEZA Y BASURA
-                "basura": "974", "sucio": "1068", "suciedad": "1068", "escombro": "986",
-                "residuos": "974", "desperdicios": "974", "barrido": "348",
-                "contenedor": "1069", "lote baldío": "976", "banqueta": "989",
-                
-                # DRENAJE Y AGUA
-                "drenaje": "727", "alcantarilla": "727", "coladera": "224", "tapa": "1065",
-                "agua": "1109", "fuga": "726", "inundación": "985", "desazolve": "985",
-                "pluvial": "224", "registro": "1061",
-                
-                # SEMÁFOROS Y TRÁNSITO
-                "semáforo": "523", "semáforos": "523", "luz roja": "1073", 
-                "sincronización": "1074", "tránsito": "962", "congestionamiento": "963",
-                "señalamiento": "900", "vial": "965",
-                
-                # ÁRBOLES Y ÁREAS VERDES
-                "árbol": "979", "árboles": "979", "poda": "979", "rama": "81",
-                "tala": "1098", "planta": "1079", "área verde": "1096",
-                "parque": "978", "jardín": "1096", "césped": "1096",
-                
-                # ANIMALES
-                "perro": "994", "perros": "994", "gato": "994", "gatos": "994",
-                "animal muerto": "16", "mascota": "995", "animal": "14",
-                "veterinaria": "995", "esterilización": "995",
-                
-                # CABLES Y TELECOMUNICACIONES
-                "cable": "19", "cables": "19", "cable caído": "19", "fibra": "1170",
-                "poste caído": "1060", "cables expuestos": "1064",
-                
-                # RUIDO Y CONTAMINACIÓN
-                "ruido": "1000", "música": "407", "volumen": "407", "fiesta": "953",
-                "contaminación": "999", "humo": "998", "polvo": "998", "olor": "750",
-                
-                # SEGURIDAD Y VIOLENCIA
-                "robo": "961", "violencia": "891", "maltrato": "892", "abuso": "892",
-                "policía": "955", "vigilancia": "955", "emergencia": "964",
-                
-                # SERVICIOS PÚBLICOS
-                "estacionamiento": "1076", "parquímetro": "624", "mercado": "947",
-                "transporte": "1090", "ruta": "1108", "parabús": "1035",
-                
-                # CONSTRUCCIÓN Y OBRAS
-                "construcción": "903", "obra": "932", "banqueta": "774", "cordón": "774",
-                "puente": "477", "barandal": "993", "bolardo": "987",
-                
-                # TRÁMITES Y SERVICIOS
-                "licencia": "956", "permiso": "952", "trámite": "912", "pasaporte": "949",
-                "registro civil": "1123", "acta": "1123", "INE": "1118", "IMSS": "1119"
-            }
-            
+            # 2. CLASIFICAR ÚNICAMENTE DESDE EL MENSAJE DEL CIUDADANO.
+            # Nunca se usa la respuesta generada por SAM como evidencia porque
+            # eso puede convertir una interpretación del modelo en datos del folio.
             body_lower = body.lower()
-            response_lower = response_content.lower() if response_content else ""
-            combined_text = f"{body_lower} {response_lower}"
-            
-            # Buscar palabras clave en el texto combinado
-            for keyword, code in problem_keywords.items():
-                if keyword in combined_text:
-                    save_user_answer(from_number, "selection1", code)
-                    save_user_answer(from_number, "selection4", f"Problema reportado: {keyword}")
-                    logger.critical(f"💾 [AUTO-SAVE] Tipo detectado: '{keyword}' → código {code}")
-                    break
+            combined_text = body_lower
             
             # 3. DETECTAR INFORMACIÓN DE UBICACIÓN
             import re
@@ -8961,9 +9045,18 @@ async def operational_audit_reports(limit: int = 20):
 
 
 @router.get("/admin/operational-audit/live")
-async def operational_audit_live(hours: int = 24):
+async def operational_audit_live(hours: int = 24, phone: str | None = None):
     try:
-        report = generate_operational_audit_snapshot(window_hours=hours)
+        phone_filter = (phone or "").strip() or None
+        if phone_filter and len(phone_filter) > 80:
+            return JSONResponse(
+                content={"status": "error", "message": "Filtro phone inválido"},
+                status_code=400,
+            )
+        report = generate_operational_audit_snapshot(
+            window_hours=hours,
+            phone_number=phone_filter,
+        )
         return {
             "status": "success",
             "data": report,

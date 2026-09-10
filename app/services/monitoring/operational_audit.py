@@ -1,7 +1,7 @@
 import os
 import asyncio
 import re
-from collections import Counter
+from collections import Counter, deque
 from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +30,10 @@ LOG_PATTERNS = {
     "outbound_error": ["Error en respuesta Chat2Desk", "Error al enviar mensaje"],
     "outbound_activity": ["📤 [CHAT2DESK:whatsapp_main] attempt", "📥 [CHAT2DESK:whatsapp_main] response"],
     "widget_empty_response": ["[WIDGET EMPTY RESPONSE]"],
+    "report_payload_validation": ["[REPORT PAYLOAD BLOCK]"],
+    "report_field_reconciliation": ["[REPORT FIELD RECONCILIATION]"],
+    "ciac_failure": ["[CIAC REPORT FAILURE]", "[CIAC TIMEOUT]"],
+    "ciac_success": ["[CIAC REPORT SUCCESS]"],
     "dedup": [
         "[PERSISTED DUPLICATE]",
         "[DISTRIBUTED INBOUND DUPLICATE]",
@@ -78,7 +82,11 @@ def _safe_int(value) -> int:
         return 0
 
 
-def _load_db_metrics(storage: LocalStorage, since: datetime) -> dict:
+def _load_db_metrics(
+    storage: LocalStorage,
+    since: datetime,
+    phone_number: str | None = None,
+) -> dict:
     metrics = {
         "message_totals": {},
         "top_numbers": [],
@@ -87,6 +95,7 @@ def _load_db_metrics(storage: LocalStorage, since: datetime) -> dict:
         "likely_unanswered_inbound": [],
         "silence_breakdown": {},
         "silence_breakdown_samples": {},
+        "phone_trace": [],
     }
 
     since_str = since.strftime("%Y-%m-%d %H:%M:%S")
@@ -207,6 +216,19 @@ def _load_db_metrics(storage: LocalStorage, since: datetime) -> dict:
             unanswered_row = cursor.fetchone() or {}
             metrics["likely_unanswered_inbound_total"] = _safe_int(unanswered_row.get("total"))
 
+            if phone_number:
+                cursor.execute(
+                    """
+                    SELECT id, time, uid, direction, "senderName", message
+                    FROM messages
+                    WHERE number = %s AND time >= %s
+                    ORDER BY id ASC
+                    LIMIT 200
+                    """,
+                    [phone_number, since_str],
+                )
+                metrics["phone_trace"] = list(cursor.fetchall())
+
     return metrics
 
 
@@ -276,13 +298,14 @@ def read_latest_operational_audit_report() -> dict | None:
     }
 
 
-def _read_recent_log_signals() -> dict:
+def _read_recent_log_signals(phone_number: str | None = None) -> dict:
     result = {
         "enabled": False,
         "path": None,
         "counts": Counter(),
         "samples": {key: [] for key in LOG_PATTERNS},
         "error_lines": [],
+        "phone_lines": [],
     }
 
     if os.environ.get("LOG_TO_FILE", "").lower() != "true":
@@ -304,11 +327,16 @@ def _read_recent_log_signals() -> dict:
         return result
 
     try:
-        lines = []
+        recent_lines = deque(maxlen=4000)
+        phone_lines = deque(maxlen=200)
         for readable_path in readable_paths:
             with readable_path.open("r", encoding="utf-8", errors="ignore") as handle:
-                lines.extend(handle.readlines()[-4000:])
-        lines = lines[-4000:]
+                for raw_line in handle:
+                    recent_lines.append(raw_line)
+                    if phone_number and phone_number in raw_line:
+                        phone_lines.append(raw_line.strip())
+        lines = list(recent_lines)
+        result["phone_lines"] = list(phone_lines)
     except Exception as exc:
         logger.error(
             "[AUDIT] No se pudieron leer log files desde %s: %s",
@@ -337,6 +365,7 @@ def _read_recent_log_signals() -> dict:
                 provider_patterns = (
                     LOG_PATTERNS["openai_timeout"]
                     + LOG_PATTERNS["chat2desk_timeout"]
+                    + LOG_PATTERNS["ciac_failure"]
                 )
                 if any(pattern in line for pattern in provider_patterns):
                     continue
@@ -574,6 +603,27 @@ def _build_findings(metrics: dict, log_signals: dict, window_hours: int) -> list
             f"ALERTA: se recuperaron {log_signals['counts'].get('widget_empty_response', 0)} respuestas vacías del widget mediante una respuesta segura."
         )
 
+    if log_signals["counts"].get("report_payload_validation", 0) > 0:
+        findings.append(
+            "ALERTA: se bloquearon "
+            f"{log_signals['counts'].get('report_payload_validation', 0)} intentos de crear "
+            "reportes con campos vacíos, genéricos o inconsistentes."
+        )
+
+    if log_signals["counts"].get("report_field_reconciliation", 0) > 0:
+        findings.append(
+            "Observacion: se corrigieron "
+            f"{log_signals['counts'].get('report_field_reconciliation', 0)} intentos "
+            "donde los campos propuestos por el modelo diferían del texto ciudadano."
+        )
+
+    if log_signals["counts"].get("ciac_failure", 0) > 0:
+        findings.append(
+            "ALERTA: se detectaron "
+            f"{log_signals['counts'].get('ciac_failure', 0)} fallas o timeouts "
+            "confirmados al intentar crear reportes en CIAC."
+        )
+
     if log_signals["counts"].get("transfer_api", 0) > 0:
         findings.append(
             f"ALERTA: se detectaron {log_signals['counts'].get('transfer_api', 0)} eventos de transferencia a operadores disparados por API/script."
@@ -649,6 +699,7 @@ def _render_report(
     generated_at: datetime,
     since: datetime,
     window_hours: int,
+    phone_number: str | None = None,
 ) -> str:
     _classify_silence_candidates(metrics, log_signals)
     findings = _build_findings(metrics, log_signals, window_hours)
@@ -657,6 +708,8 @@ def _render_report(
     lines.append(f"generated_at: {generated_at.isoformat()}")
     lines.append(f"window_start: {since.isoformat()}")
     lines.append(f"window_hours: {window_hours}")
+    if phone_number:
+        lines.append(f"phone_filter: {phone_number}")
     lines.append("")
     lines.append("RESUMEN")
     for finding in findings:
@@ -689,6 +742,25 @@ def _render_report(
         lines.append(f"- [{row.get('time')}] {row.get('number')}: {_truncate(row.get('message'))}")
     if not metrics.get("latest_outbound"):
         lines.append("- sin mensajes outbound recientes")
+
+    if phone_number:
+        lines.append("")
+        lines.append("PHONE MESSAGE TRACE")
+        for row in metrics.get("phone_trace", []):
+            lines.append(
+                f"- id={row.get('id')} [{row.get('time')}] {row.get('direction')} "
+                f"uid={row.get('uid')} sender={row.get('senderName')}: "
+                f"{_truncate(row.get('message'), 500)}"
+            )
+        if not metrics.get("phone_trace"):
+            lines.append("- sin mensajes para el teléfono en la ventana")
+
+        lines.append("")
+        lines.append("PHONE LOG TRACE")
+        for sample in log_signals.get("phone_lines", []):
+            lines.append(f"- {_truncate(sample, 700)}")
+        if not log_signals.get("phone_lines"):
+            lines.append("- sin líneas de log conservadas para el teléfono")
 
     lines.append("")
     lines.append("POSIBLES SILENCIOS")
@@ -830,14 +902,24 @@ def generate_operational_audit_report() -> Path:
     return report_path
 
 
-def generate_operational_audit_snapshot(window_hours: int | None = None) -> dict:
+def generate_operational_audit_snapshot(
+    window_hours: int | None = None,
+    phone_number: str | None = None,
+) -> dict:
     storage = LocalStorage()
     effective_hours = max(1, min(int(window_hours or AUDIT_INTERVAL_HOURS), 72))
     generated_at = datetime.now()
     since = generated_at - timedelta(hours=effective_hours)
-    metrics = _load_db_metrics(storage, since)
-    log_signals = _read_recent_log_signals()
-    report_body = _render_report(metrics, log_signals, generated_at, since, effective_hours)
+    metrics = _load_db_metrics(storage, since, phone_number=phone_number)
+    log_signals = _read_recent_log_signals(phone_number=phone_number)
+    report_body = _render_report(
+        metrics,
+        log_signals,
+        generated_at,
+        since,
+        effective_hours,
+        phone_number=phone_number,
+    )
 
     return {
         "name": "sam_operational_audit_live.txt",
@@ -845,6 +927,7 @@ def generate_operational_audit_snapshot(window_hours: int | None = None) -> dict
         "size_bytes": len(report_body.encode("utf-8")),
         "modified_at": generated_at.isoformat(),
         "window_hours": effective_hours,
+        "phone_number": phone_number,
         "content": report_body,
     }
 

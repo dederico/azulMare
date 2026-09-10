@@ -83,6 +83,58 @@ class OperationalAuditSignalTests(unittest.TestCase):
 
         self.assertEqual(signals["counts"]["openai_timeout"], 1)
 
+    def test_report_payload_validation_block_is_visible(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write(
+                "2026-09-09 - WARNING - [REPORT PAYLOAD BLOCK] "
+                "explicación vacía\n"
+            )
+            handle.flush()
+            with patch.dict(
+                os.environ,
+                {"LOG_TO_FILE": "true", "LOG_FILE": handle.name},
+                clear=False,
+            ):
+                signals = _read_recent_log_signals()
+
+        self.assertEqual(signals["counts"]["report_payload_validation"], 1)
+
+    def test_phone_filter_keeps_matching_lines_beyond_global_sample(self):
+        phone = "5218114855841"
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write(
+                f"2026-09-09 - WARNING - [REPORT PAYLOAD BLOCK] phone={phone} explicación vacía\n"
+            )
+            for index in range(4100):
+                handle.write(f"2026-09-09 - DEBUG - unrelated line {index}\n")
+            handle.flush()
+            with patch.dict(
+                os.environ,
+                {"LOG_TO_FILE": "true", "LOG_FILE": handle.name},
+                clear=False,
+            ):
+                signals = _read_recent_log_signals(phone_number=phone)
+
+        self.assertEqual(len(signals["phone_lines"]), 1)
+        self.assertIn(phone, signals["phone_lines"][0])
+
+    def test_ciac_timeout_is_attributed_to_ciac(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write(
+                "2026-09-09 - WARNING - [CIAC TIMEOUT] "
+                "phone=5218114855841 type=ConnectTimeout\n"
+            )
+            handle.flush()
+            with patch.dict(
+                os.environ,
+                {"LOG_TO_FILE": "true", "LOG_FILE": handle.name},
+                clear=False,
+            ):
+                signals = _read_recent_log_signals()
+
+        self.assertEqual(signals["counts"]["ciac_failure"], 1)
+        self.assertEqual(signals["counts"]["network_timeout_unattributed"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

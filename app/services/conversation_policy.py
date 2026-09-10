@@ -33,9 +33,32 @@ def extract_confirmed_folio(value) -> str | None:
     return match.group(1) if match else None
 
 
-def is_verified_public_phone(value) -> bool:
+def canonical_phone_digits(value) -> str:
     digits = "".join(character for character in str(value or "") if character.isdigit())
-    return digits in VERIFIED_PUBLIC_PHONE_DIGITS
+    if len(digits) == 13 and digits.startswith("521"):
+        return digits[-10:]
+    if len(digits) == 12 and digits.startswith("52"):
+        return digits[-10:]
+    return digits
+
+
+def trusted_phone_digits(reference_texts=None) -> set[str]:
+    """Extract official 10-digit phones returned by trusted knowledge tools."""
+    trusted = set()
+    for text in reference_texts or []:
+        for match in re.finditer(r"(?<!\d)(?:\+?\d[\d\s().-]{8,}\d)", str(text or "")):
+            digits = canonical_phone_digits(match.group(0))
+            if len(digits) == 10:
+                trusted.add(digits)
+    return trusted
+
+
+def is_verified_public_phone(value, trusted_reference_texts=None) -> bool:
+    digits = canonical_phone_digits(value)
+    return (
+        digits in VERIFIED_PUBLIC_PHONE_DIGITS
+        or digits in trusted_phone_digits(trusted_reference_texts)
+    )
 
 
 def normalize_policy_text(value: str | None) -> str:
@@ -43,6 +66,71 @@ def normalize_policy_text(value: str | None) -> str:
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r"[^a-zA-Z0-9\s]", " ", text.lower())
     return " ".join(text.split())
+
+
+def is_contextual_handoff_request(
+    current_message: str | None,
+    previous_assistant_message: str | None,
+) -> bool:
+    """Recognize a citizen accepting/retrying a just-mentioned human handoff.
+
+    Short replies such as "sí", "porfa" or "comunícame con uno" are only
+    authoritative when SAM's immediately preceding message mentioned human
+    attention or a transfer. This avoids treating an unrelated "sí" as a
+    handoff request.
+    """
+    current = normalize_policy_text(current_message)
+    previous = normalize_policy_text(previous_assistant_message)
+    if not current or not previous:
+        return False
+
+    previous_mentions_human = any(
+        marker in previous
+        for marker in (
+            "agente humano",
+            "agente ciudadano",
+            "atencion humana",
+            "una persona",
+            "un asesor",
+            "un ejecutivo",
+            "transferencia",
+            "transferirte",
+            "canalizarte",
+            "comunicarte con",
+        )
+    )
+    if not previous_mentions_human:
+        return False
+
+    affirmative_replies = {
+        "si",
+        "si sam",
+        "porfa",
+        "por favor",
+        "claro",
+        "adelante",
+        "ok",
+        "okay",
+        "hazlo",
+        "please",
+    }
+    if current in affirmative_replies:
+        return True
+
+    asks_to_connect = any(
+        marker in current
+        for marker in (
+            "me puedes comunicar",
+            "puedes comunicarme",
+            "comunicar con uno",
+            "comunicarme con uno",
+            "pasame con uno",
+            "pasa con uno",
+            "intenta de nuevo",
+            "vuelve a intentar",
+        )
+    )
+    return asks_to_connect
 
 
 def greeting_display_name(sender_name: str | None, transport: str | None) -> str:

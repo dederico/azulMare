@@ -134,6 +134,7 @@ from app.services.conversation_policy import (
     event_precedes_context_boundary,
     inactivity_snapshot_is_still_stale,
     is_bot_return_message,
+    is_contextual_handoff_request,
     is_emergency_related,
     is_human_takeover_message,
     is_known_automated_outbound,
@@ -2559,7 +2560,11 @@ def normalize_validation_block_message(message: str) -> str:
     return message
 
 
-def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = None) -> str:
+def sanitize_outbound_phone_numbers(
+    message: str,
+    customer_phone: str | None = None,
+    trusted_reference_texts=None,
+) -> str:
     if not message:
         return message
 
@@ -2584,11 +2589,14 @@ def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = N
             logger.warning("📵 [SANITIZE] Ocultando teléfono del cliente en respuesta: %s", raw)
             return "[teléfono oculto]"
 
-        if is_verified_public_phone(digits):
+        if is_verified_public_phone(digits, trusted_reference_texts):
             return raw
 
-        logger.warning("📵 [SANITIZE] Ocultando teléfono no verificado en respuesta: %s", raw)
-        return "[contacto disponible con Atención Ciudadana]"
+        logger.warning(
+            "📵 [SANITIZE] Sustituyendo teléfono no verificado por Atención Ciudadana: %s",
+            raw,
+        )
+        return "81 12 12 12 12 (Atención Ciudadana)"
 
     protected_message = url_pattern.sub(protect_url, message)
     sanitized_message = phone_pattern.sub(replace_phone, protected_message)
@@ -2599,7 +2607,11 @@ def sanitize_outbound_phone_numbers(message: str, customer_phone: str | None = N
     return sanitized_message
 
 
-def normalize_user_facing_response(message: str, customer_phone: str | None = None) -> str:
+def normalize_user_facing_response(
+    message: str,
+    customer_phone: str | None = None,
+    trusted_reference_texts=None,
+) -> str:
     normalized = normalize_validation_block_message(message or "")
 
     low = normalized.lower()
@@ -2611,7 +2623,11 @@ def normalize_user_facing_response(message: str, customer_phone: str | None = No
         normalized = "Estoy teniendo problemas técnicos para procesar tu solicitud. Por favor, intenta nuevamente."
 
     normalized = normalized.replace("call_sid =", "").strip()
-    normalized = sanitize_outbound_phone_numbers(normalized, customer_phone=customer_phone)
+    normalized = sanitize_outbound_phone_numbers(
+        normalized,
+        customer_phone=customer_phone,
+        trusted_reference_texts=trusted_reference_texts,
+    )
     return normalized
 
 
@@ -3157,7 +3173,14 @@ async def transfer_to_group_guarded(
     explicit_handoff = bool(context.get("explicit_handoff"))
     report_intent = bool(context.get("report_intent"))
     report_state = context.get("report_state") or {}
-    has_report_session = bool(report_state.get("has_report_session"))
+    report_session_present = bool(report_state.get("has_report_session"))
+    has_report_session = bool(
+        report_session_present
+        and (
+            str(report_state.get("selection1") or "").strip()
+            or is_meaningful_report_description(report_state.get("selection4"))
+        )
+    )
     from_number = context.get("from_number")
     storage = context.get("storage") or LocalStorage()
     body_preview = (context.get("body") or "")[:180]
@@ -3192,7 +3215,7 @@ async def transfer_to_group_guarded(
         authorization = "missing_request_context"
 
     logger.critical(
-        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s reason_code=%s authorization=%s allowed=%s explicit_handoff=%s report_intent=%s has_report_session=%s greeting_only=%s stale_explicit_handoff_reason=%s from_number=%s body=%s",
+        "🔀 [TRANSFER GUARD] message_id=%s requested_group_id=%s reason=%s reason_code=%s authorization=%s allowed=%s explicit_handoff=%s report_intent=%s has_report_session=%s report_session_present=%s greeting_only=%s stale_explicit_handoff_reason=%s from_number=%s body=%s",
         message_id,
         group_id,
         reason,
@@ -3202,6 +3225,7 @@ async def transfer_to_group_guarded(
         explicit_handoff,
         report_intent,
         has_report_session,
+        report_session_present,
         greeting_only,
         stale_explicit_handoff_reason,
         from_number,
@@ -7270,8 +7294,13 @@ async def _process_whatsapp_request(request):
                 logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
 
         elif body and from_number in report_sessions and not report_sessions[from_number].get("images"):
-            detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
-            logger.debug(f"[{from_number}] Revisión anticipada de datos estructurados: '{body[:50]}...'")
+            # Los campos ya se capturaron arriba usando la pregunta previa de
+            # SAM. No ejecutar inferencias globales: palabras como "carro" o
+            # "teléfono" se confundían con calles/colonias parecidas.
+            logger.debug(
+                "[%s] Sesión de reporte activa; captura estructurada por contexto aplicada",
+                from_number,
+            )
 
         # Now let's fix the report finalization check in the WhatsApp endpoint
         elif body and from_number in report_sessions and report_sessions[from_number]["images"]:
@@ -7318,9 +7347,6 @@ async def _process_whatsapp_request(request):
                             is_bot_message = True
                             logger.warning(f"Message appears to be a bot message echo: '{body[:50]}...'")
                             break
-                if not is_bot_message:
-                    detect_and_store_user_data_with_real_streets_and_colonies(from_number, body)
-                
                 if is_bot_message:
                     # Skip processing if this appears to be from the bot
                     return JSONResponse(content={"status": True, "message": "Bot message echo ignored"})
@@ -7632,11 +7658,17 @@ async def _process_whatsapp_request(request):
                 status_code=500,
             )
 
-    if is_explicit_human_handoff_request(body):
+    direct_handoff_request = is_explicit_human_handoff_request(body)
+    contextual_handoff_request = is_contextual_handoff_request(
+        body,
+        last_outbound_message,
+    )
+    if direct_handoff_request or contextual_handoff_request:
         logger.critical(
-            "🔀 [DIRECT TRANSFER MATCH] %s solicitó atención humana con mensaje: %s",
+            "🔀 [DIRECT TRANSFER MATCH] %s solicitó atención humana con mensaje: %s contextual=%s",
             from_number,
             body,
+            contextual_handoff_request,
         )
         response_content = "Claro, te transfiero con un agente humano, por favor espera un momento."
         transfer_result = None
@@ -7648,7 +7680,11 @@ async def _process_whatsapp_request(request):
             transfer_result = await transfer_to_group(
                 message_id=message_id,
                 group_id=None,
-                reason="Solicitud explícita del usuario para hablar con humano",
+                reason=(
+                    "Confirmación del usuario a una transferencia humana ofrecida"
+                    if contextual_handoff_request and not direct_handoff_request
+                    else "Solicitud explícita del usuario para hablar con humano"
+                ),
             )
 
             if not isinstance(transfer_result, str) or "transferida exitosamente" not in transfer_result.lower():
@@ -7978,7 +8014,10 @@ async def _process_whatsapp_request(request):
         transfer_guard_context[str(message_id)] = {
             "from_number": from_number,
             "body": body or "",
-            "explicit_handoff": is_explicit_human_handoff_request(body or ""),
+            "explicit_handoff": (
+                is_explicit_human_handoff_request(body or "")
+                or is_contextual_handoff_request(body, last_outbound_message)
+            ),
             "report_intent": detect_report_intent(body or "", ""),
             "report_state": build_report_state_snapshot(from_number),
             "storage": db,
@@ -8009,6 +8048,7 @@ async def _process_whatsapp_request(request):
         response_content = normalize_user_facing_response(
             response_content,
             customer_phone=from_number,
+            trusted_reference_texts=getattr(llm_service, "trusted_tool_outputs", []),
         )
         current_transfer_context = transfer_guard_context.get(str(message_id), {})
         widget_empty_response = (
@@ -8123,7 +8163,7 @@ async def _process_whatsapp_request(request):
         # ============================================================================
         # 🎯 AUTO-GUARDAR INFORMACIÓN DETECTADA EN LA CONVERSACIÓN
         # ============================================================================
-        if from_number and body and (should_create_report_session(body, response_content) or reply_context.get('is_reply', False)):
+        if False and from_number and body and (should_create_report_session(body, response_content) or reply_context.get('is_reply', False)):
             logger.critical(f"💾 [AUTO-SAVE] Iniciando detección automática para {from_number} (reply: {reply_context.get('is_reply', False)})")
 
             # Si es una respuesta, darle mayor prioridad a la detección automática
@@ -8231,7 +8271,7 @@ async def _process_whatsapp_request(request):
 
 
         # 4. USAR DATOS DEL CONTEXTO SI ESTÁN DISPONIBLES
-        if 'address' in locals() and address and address != "No he recibido ubicación":
+        if False and 'address' in locals() and address and address != "No he recibido ubicación":
             logger.critical(f"💾 [AUTO-SAVE] Procesando address del contexto: {address}")
             # Separar dirección en componentes
             if ',' in address:

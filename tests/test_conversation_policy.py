@@ -11,6 +11,7 @@ from app.services.conversation_policy import (
     extract_confirmed_folio,
     greeting_display_name,
     inactivity_snapshot_is_still_stale,
+    is_contextual_handoff_request,
     is_bot_return_message,
     is_human_takeover_message,
     is_known_automated_outbound,
@@ -53,6 +54,24 @@ class PublicPhoneValidationTests(unittest.TestCase):
 
     def test_unverified_number_is_rejected(self):
         self.assertFalse(is_verified_public_phone("81 89 88 11 00"))
+
+    def test_department_phone_returned_by_official_tool_is_allowed(self):
+        official_directory = "Dirección de Deportes: 81 8676 5365."
+        self.assertTrue(
+            is_verified_public_phone(
+                "81 86 76 53 65",
+                [official_directory],
+            )
+        )
+
+    def test_number_absent_from_official_tool_remains_blocked(self):
+        official_directory = "Dirección de Deportes: 81 8676 5365."
+        self.assertFalse(
+            is_verified_public_phone(
+                "81 11 11 11 11",
+                [official_directory],
+            )
+        )
 
 
 class EmergencyClassificationTests(unittest.TestCase):
@@ -511,6 +530,27 @@ class TransferAuthorizationTests(unittest.TestCase):
         )
         self.assertFalse(allowed)
         self.assertEqual(decision, "already_transferred")
+
+    def test_affirmative_reply_accepts_immediately_preceding_handoff_offer(self):
+        previous = "¿Deseas que te comunique con un agente humano para verificarlo?"
+        self.assertTrue(is_contextual_handoff_request("Sí Sam", previous))
+        self.assertTrue(is_contextual_handoff_request("Porfa", previous))
+
+    def test_pronoun_request_uses_immediately_preceding_agent_context(self):
+        self.assertTrue(
+            is_contextual_handoff_request(
+                "¿Me puedes comunicar con uno?",
+                "Para solicitar la cancelación necesitas atención de un agente ciudadano.",
+            )
+        )
+
+    def test_unrelated_affirmative_is_not_a_handoff(self):
+        self.assertFalse(
+            is_contextual_handoff_request(
+                "Sí",
+                "¿La luminaria está apagada por completo?",
+            )
+        )
 
 
 if __name__ == "__main__":

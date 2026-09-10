@@ -48,6 +48,10 @@ class OpenAIService(LLMService):
             for func in self.function_manager.registered_functions
         }
         self.pending_tool_calls: dict[int, dict[str, Any]] = {}
+        # Per-request evidence from official read-only knowledge functions.
+        # The outbound policy uses it to preserve departmental phone numbers
+        # that were actually returned by a tool instead of trusting the model.
+        self.trusted_tool_outputs: list[str] = []
         # if self.config.get("use_kb"):
         #     self.vectorbase = VectorBase(config.get("agent_name", None))
 
@@ -460,6 +464,8 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                         tool_response = self.ensure_valid_message_content(
                             await func(**arguments)
                         )
+                        if str(function_name or "").startswith("get_"):
+                            self.trusted_tool_outputs.append(tool_response)
                     except Exception as error:
                         logger.error(
                             "Error calling function %s with arguments %s: %s",

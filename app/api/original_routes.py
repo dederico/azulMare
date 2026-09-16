@@ -141,6 +141,7 @@ from app.services.conversation_policy import (
     is_emergency_related,
     is_human_takeover_message,
     is_known_automated_outbound,
+    is_likely_bot_echo,
     is_non_authoritative_control_source,
     is_verified_public_phone,
     history_after_latest_context_reset,
@@ -7420,6 +7421,11 @@ async def _process_whatsapp_request(request):
             
                 # Log the message to help with debugging
                 logger.debug(f"Processing potential report data for {from_number}: '{body[:50]}...'")
+
+                # Clasificar FIN antes del filtro de ecos. La confirmación
+                # aparece dentro del texto de SAM ("responde FIN"), por lo que
+                # una comparación ingenua por subcadena la descartaba.
+                is_finalization = is_finalization_message(body, from_number)
                 
                 # First, ensure this isn't a bot-generated message being echoed back
                 is_bot_message = False
@@ -7432,18 +7438,20 @@ async def _process_whatsapp_request(request):
                 # For other messages, check if they match recent bot messages
                 if not is_bot_message and from_number in user_sessions:
                     recent_messages = user_sessions[from_number].history.messages[-3:]  # Last 3 messages
-                    for msg in recent_messages:
-                        if isinstance(msg, AIMessage) and (msg.content in body or body in msg.content):
-                            is_bot_message = True
-                            logger.warning(f"Message appears to be a bot message echo: '{body[:50]}...'")
-                            break
+                    assistant_texts = [
+                        msg.content
+                        for msg in recent_messages
+                        if isinstance(msg, AIMessage)
+                    ]
+                    is_bot_message = is_likely_bot_echo(body, assistant_texts)
+                    if is_bot_message:
+                        logger.warning(f"Message appears to be a bot message echo: '{body[:50]}...'")
                 if is_bot_message:
                     # Skip processing if this appears to be from the bot
                     return JSONResponse(content={"status": True, "message": "Bot message echo ignored"})
                 
                 # Now check if this is providing location or requesting finalization
                 is_location = any(keyword in body.lower() for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"])
-                is_finalization = is_finalization_message(body, from_number)
 
                 
                 # Log the classification for debugging

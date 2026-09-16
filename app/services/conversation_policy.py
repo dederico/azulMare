@@ -73,6 +73,27 @@ def is_explicit_report_finalization_token(value: str | None) -> bool:
     return normalize_policy_text(value) == "fin"
 
 
+def is_likely_bot_echo(
+    citizen_text: str | None,
+    recent_assistant_texts=None,
+) -> bool:
+    """Match real echoed bot messages without swallowing short citizen replies."""
+    candidate = str(citizen_text or "").strip()
+    if not candidate or is_explicit_report_finalization_token(candidate):
+        return False
+
+    for assistant_text in recent_assistant_texts or []:
+        assistant = str(assistant_text or "").strip()
+        if not assistant:
+            continue
+        if candidate == assistant:
+            return True
+        if len(candidate) > 20 and len(assistant) > 20:
+            if candidate in assistant or assistant in candidate:
+                return True
+    return False
+
+
 def dialog_transfer_confirms_pending_control(
     control: dict | None,
     event_timestamp: float | None,

@@ -17,6 +17,7 @@ from app.services.conversation_policy import (
     is_bot_return_message,
     is_human_takeover_message,
     is_known_automated_outbound,
+    is_likely_bot_echo,
     is_non_authoritative_control_source,
     is_trusted_human_control,
     is_verified_public_phone,
@@ -56,6 +57,26 @@ class ReportFinalizationPolicyTests(unittest.TestCase):
     def test_fin_must_be_an_exact_token(self):
         self.assertFalse(is_explicit_report_finalization_token("al fin"))
         self.assertFalse(is_explicit_report_finalization_token("finalizar después"))
+
+    def test_fin_inside_bot_instruction_is_not_classified_as_echo(self):
+        self.assertFalse(
+            is_likely_bot_echo(
+                "FIN",
+                ["Si deseas continuar con tu reporte, responde FIN."],
+            )
+        )
+
+    def test_short_citizen_reply_is_not_classified_by_substring(self):
+        self.assertFalse(
+            is_likely_bot_echo(
+                "Sí",
+                ["Si deseas continuar con tu reporte, responde FIN."],
+            )
+        )
+
+    def test_real_long_bot_echo_is_detected(self):
+        message = "Tu reporte fue registrado correctamente con el folio 472626."
+        self.assertTrue(is_likely_bot_echo(message, [message]))
 
 
 class PublicPhoneValidationTests(unittest.TestCase):

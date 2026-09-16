@@ -121,6 +121,7 @@ from app.services.conversation_lifecycle import (
     mark_reopen_greeting_pending,
     mark_session_greeting_sent,
     record_inbound_activity,
+    quarantine_stale_inactivity_backlog,
     release_inactivity_claim,
     reset_conversation_lifecycle,
     suspend_inactivity_until_new_inbound,
@@ -4565,6 +4566,12 @@ user_sessions = {}  # key: from_number, value: WhatsAppSession
 
 # Tiempo de inactividad (en segundos) antes de desconectar la sesión (15 minutos)
 INACTIVITY_THRESHOLD = 15 * 60
+INACTIVITY_DELIVERY_GRACE_SECONDS = int(
+    os.getenv("INACTIVITY_DELIVERY_GRACE_SECONDS", str(10 * 60))
+)
+INACTIVITY_MAX_INBOUND_AGE_SECONDS = (
+    INACTIVITY_THRESHOLD + INACTIVITY_DELIVERY_GRACE_SECONDS
+)
 
 class WhatsAppSession:
     def __init__(self, history):
@@ -4590,6 +4597,7 @@ async def check_inactivity():
 
         inactivity_candidates = list_inactivity_candidates(
             threshold_seconds=INACTIVITY_THRESHOLD,
+            max_inbound_age_seconds=INACTIVITY_MAX_INBOUND_AGE_SECONDS,
             storage=db,
             limit=100,
         )
@@ -4598,6 +4606,7 @@ async def check_inactivity():
             claim_uid = claim_inactivity_close(
                 number,
                 threshold_seconds=INACTIVITY_THRESHOLD,
+                max_inbound_age_seconds=INACTIVITY_MAX_INBOUND_AGE_SECONDS,
                 storage=db,
             )
             if not claim_uid:
@@ -5635,6 +5644,16 @@ async def lifespan(app: FastAPI):
     logger.critical("🚀 [DEPLOYMENT] sha=%s", DEPLOYMENT_SHA)
     ensure_conversation_control_storage(LocalStorage())
     ensure_conversation_lifecycle_storage(LocalStorage())
+    quarantined_inactivity_rows = quarantine_stale_inactivity_backlog(
+        max_inbound_age_seconds=INACTIVITY_MAX_INBOUND_AGE_SECONDS,
+        storage=LocalStorage(),
+    )
+    if quarantined_inactivity_rows:
+        logger.warning(
+            "🧹 [INACTIVITY BACKLOG] %s conversaciones históricas quedaron "
+            "en cuarentena hasta recibir un inbound nuevo",
+            quarantined_inactivity_rows,
+        )
     ensure_webhook_job_storage(LocalStorage())
     ensure_report_state_storage(LocalStorage())
     ensure_greeting_outbox_storage(LocalStorage())

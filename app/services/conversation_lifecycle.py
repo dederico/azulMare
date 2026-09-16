@@ -615,6 +615,7 @@ def mark_reopen_greeting_pending(
 def list_inactivity_candidates(
     *,
     threshold_seconds: float,
+    max_inbound_age_seconds: float | None = None,
     storage=None,
     now: float | None = None,
     limit: int = 100,
@@ -622,6 +623,11 @@ def list_inactivity_candidates(
     """List durable conversations eligible for an inactivity close."""
     timestamp = float(now if now is not None else time.time())
     cutoff = timestamp - float(threshold_seconds)
+    oldest_allowed = (
+        timestamp - float(max_inbound_age_seconds)
+        if max_inbound_age_seconds is not None
+        else None
+    )
 
     if storage is None or not ensure_conversation_lifecycle_storage(storage):
         with _memory_lock:
@@ -631,6 +637,10 @@ def list_inactivity_candidates(
                 if state.get("last_inbound_uid") is not None
                 and state.get("last_inbound_at") is not None
                 and float(state["last_inbound_at"]) <= cutoff
+                and (
+                    oldest_allowed is None
+                    or float(state["last_inbound_at"]) >= oldest_allowed
+                )
                 and not state.get("inactivity_claim_uid")
                 and state.get("inactivity_closed_for_uid")
                 != state.get("last_inbound_uid")
@@ -648,6 +658,7 @@ def list_inactivity_candidates(
                 FROM {LIFECYCLE_TABLE}
                 WHERE last_inbound_uid IS NOT NULL
                   AND last_inbound_at <= %s
+                  AND (%s IS NULL OR last_inbound_at >= %s)
                   AND inactivity_claim_uid IS NULL
                   AND inactivity_closed_for_uid IS DISTINCT FROM last_inbound_uid
                   AND inactivity_terminal = FALSE
@@ -655,13 +666,20 @@ def list_inactivity_candidates(
                 ORDER BY last_inbound_at ASC
                 LIMIT %s
                 """,
-                (cutoff, timestamp, max(1, int(limit))),
+                (
+                    cutoff,
+                    oldest_allowed,
+                    oldest_allowed,
+                    timestamp,
+                    max(1, int(limit)),
+                ),
             )
             return [str(row[0]) for row in cursor.fetchall()]
     except Exception as error:
         logger.error("No se pudieron listar candidatos de inactividad: %s", error)
         return list_inactivity_candidates(
             threshold_seconds=threshold_seconds,
+            max_inbound_age_seconds=max_inbound_age_seconds,
             storage=None,
             now=timestamp,
             limit=limit,
@@ -675,6 +693,7 @@ def claim_inactivity_close(
     phone_number: str,
     *,
     threshold_seconds: float,
+    max_inbound_age_seconds: float | None = None,
     storage=None,
     now: float | None = None,
 ) -> str | None:
@@ -682,6 +701,11 @@ def claim_inactivity_close(
     key = normalize_phone_key(phone_number)
     timestamp = float(now if now is not None else time.time())
     cutoff = timestamp - float(threshold_seconds)
+    oldest_allowed = (
+        timestamp - float(max_inbound_age_seconds)
+        if max_inbound_age_seconds is not None
+        else None
+    )
 
     if storage is None or not ensure_conversation_lifecycle_storage(storage):
         with _memory_lock:
@@ -691,6 +715,10 @@ def claim_inactivity_close(
             uid = state.get("last_inbound_uid")
             if (
                 float(state["last_inbound_at"]) > cutoff
+                or (
+                    oldest_allowed is not None
+                    and float(state["last_inbound_at"]) < oldest_allowed
+                )
                 or state.get("inactivity_claim_uid")
                 or state.get("inactivity_closed_for_uid") == uid
                 or state.get("inactivity_terminal")
@@ -713,13 +741,21 @@ def claim_inactivity_close(
                 WHERE phone_number = %s
                   AND last_inbound_uid IS NOT NULL
                   AND last_inbound_at <= %s
+                  AND (%s IS NULL OR last_inbound_at >= %s)
                   AND inactivity_claim_uid IS NULL
                   AND inactivity_closed_for_uid IS DISTINCT FROM last_inbound_uid
                   AND inactivity_terminal = FALSE
                   AND (inactivity_next_retry_at IS NULL OR inactivity_next_retry_at <= %s)
                 RETURNING last_inbound_uid
                 """,
-                (timestamp, key, cutoff, timestamp),
+                (
+                    timestamp,
+                    key,
+                    cutoff,
+                    oldest_allowed,
+                    oldest_allowed,
+                    timestamp,
+                ),
             )
             row = cursor.fetchone()
         conn.commit()
@@ -729,6 +765,69 @@ def claim_inactivity_close(
         return claim_inactivity_close(
             key,
             threshold_seconds=threshold_seconds,
+            max_inbound_age_seconds=max_inbound_age_seconds,
+            storage=None,
+            now=timestamp,
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def quarantine_stale_inactivity_backlog(
+    *,
+    max_inbound_age_seconds: float,
+    storage=None,
+    now: float | None = None,
+) -> int:
+    """Suppress overdue inactivity notices until a genuinely new inbound arrives."""
+    timestamp = float(now if now is not None else time.time())
+    oldest_allowed = timestamp - float(max_inbound_age_seconds)
+
+    if storage is None or not ensure_conversation_lifecycle_storage(storage):
+        quarantined = 0
+        with _memory_lock:
+            for state in _memory_state.values():
+                last_inbound_at = state.get("last_inbound_at")
+                if (
+                    last_inbound_at is not None
+                    and float(last_inbound_at) < oldest_allowed
+                    and state.get("inactivity_closed_for_uid")
+                    != state.get("last_inbound_uid")
+                    and not state.get("inactivity_terminal")
+                ):
+                    state["inactivity_claim_uid"] = None
+                    state["inactivity_next_retry_at"] = None
+                    state["inactivity_terminal"] = True
+                    state["updated_at"] = timestamp
+                    quarantined += 1
+        return quarantined
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE {LIFECYCLE_TABLE}
+                SET inactivity_claim_uid = NULL,
+                    inactivity_next_retry_at = NULL,
+                    inactivity_terminal = TRUE,
+                    updated_at = %s
+                WHERE last_inbound_at IS NOT NULL
+                  AND last_inbound_at < %s
+                  AND inactivity_closed_for_uid IS DISTINCT FROM last_inbound_uid
+                  AND inactivity_terminal = FALSE
+                """,
+                (timestamp, oldest_allowed),
+            )
+            quarantined = int(cursor.rowcount or 0)
+        conn.commit()
+        return quarantined
+    except Exception as error:
+        logger.error("No se pudo poner en cuarentena el backlog de inactividad: %s", error)
+        return quarantine_stale_inactivity_backlog(
+            max_inbound_age_seconds=max_inbound_age_seconds,
             storage=None,
             now=timestamp,
         )

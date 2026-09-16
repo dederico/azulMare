@@ -15,6 +15,7 @@ from app.services.conversation_lifecycle import (
     mark_inactivity_failure,
     mark_reopen_greeting_pending,
     mark_session_greeting_sent,
+    quarantine_stale_inactivity_backlog,
     record_inbound_activity,
     release_inactivity_claim,
     reset_conversation_lifecycle,
@@ -118,6 +119,41 @@ class ConversationLifecycleTests(unittest.TestCase):
             list_inactivity_candidates(threshold_seconds=900, now=1001),
             [self.phone],
         )
+
+    def test_overdue_inactivity_notice_is_not_selected(self):
+        record_inbound_activity(self.phone, 100, "request:1", now=100)
+
+        self.assertEqual(
+            list_inactivity_candidates(
+                threshold_seconds=900,
+                max_inbound_age_seconds=1500,
+                now=2000,
+            ),
+            [],
+        )
+        self.assertIsNone(
+            claim_inactivity_close(
+                self.phone,
+                threshold_seconds=900,
+                max_inbound_age_seconds=1500,
+                now=2000,
+            )
+        )
+
+    def test_startup_quarantines_backlog_until_new_inbound(self):
+        record_inbound_activity(self.phone, 100, "request:1", now=100)
+
+        self.assertEqual(
+            quarantine_stale_inactivity_backlog(
+                max_inbound_age_seconds=1500,
+                now=2000,
+            ),
+            1,
+        )
+        self.assertTrue(get_lifecycle_state(self.phone)["inactivity_terminal"])
+
+        record_inbound_activity(self.phone, 101, "request:2", now=2100)
+        self.assertFalse(get_lifecycle_state(self.phone)["inactivity_terminal"])
 
     def test_activity_persists_delivery_identity(self):
         record_inbound_activity(

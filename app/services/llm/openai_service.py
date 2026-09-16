@@ -3,6 +3,7 @@ import openai
 import httpx
 import asyncio
 import os
+import time
 from app.util.logger import logger
 from typing import Any, AsyncGenerator
 from .llm_service import LLMService
@@ -10,10 +11,21 @@ from .llm_service import LLMService
 from app.services.functions.function_manager import FunctionManager
 
 
-OPENAI_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=25.0)
-OPENAI_MAX_RETRIES = 3
-OPENAI_LOCAL_RETRY_ATTEMPTS = 2
-OPENAI_LOCAL_RETRY_BACKOFF_SECONDS = 1.0
+OPENAI_HTTP_TIMEOUT = httpx.Timeout(
+    float(os.getenv("OPENAI_HTTP_READ_TIMEOUT_SECONDS", "35")),
+    connect=float(os.getenv("OPENAI_HTTP_CONNECT_TIMEOUT_SECONDS", "10")),
+)
+# Avoid stacking SDK retries under the explicit retry loop below. Otherwise one
+# apparent attempt can silently consume several minutes before control returns.
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_SDK_MAX_RETRIES", "0"))
+OPENAI_LOCAL_RETRY_ATTEMPTS = int(os.getenv("OPENAI_LOCAL_RETRY_ATTEMPTS", "2"))
+OPENAI_LOCAL_RETRY_BACKOFF_SECONDS = float(
+    os.getenv("OPENAI_LOCAL_RETRY_BACKOFF_SECONDS", "0.5")
+)
+# httpx timeouts are socket-idle limits, not a guaranteed wall-clock deadline.
+OPENAI_RESPONSE_WALL_TIMEOUT_SECONDS = float(
+    os.getenv("OPENAI_RESPONSE_WALL_TIMEOUT_SECONDS", "35")
+)
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "high"
 SUPPORTED_REASONING_EFFORTS = {
@@ -128,7 +140,9 @@ class OpenAIService(LLMService):
 
     def _is_retryable_connectivity_error(self, error: Exception) -> bool:
         return (
-            isinstance(error, httpx.TimeoutException)
+            isinstance(error, asyncio.TimeoutError)
+            or isinstance(error, TimeoutError)
+            or isinstance(error, httpx.TimeoutException)
             or isinstance(error, openai.APITimeoutError)
             or isinstance(error, openai.APIConnectionError)
             or "ConnectTimeout" in type(error).__name__
@@ -191,6 +205,7 @@ class OpenAIService(LLMService):
         last_error: Exception | None = None
 
         for attempt in range(1, OPENAI_LOCAL_RETRY_ATTEMPTS + 1):
+            started_at = time.monotonic()
             try:
                 if attempt > 1:
                     logger.warning(
@@ -199,7 +214,18 @@ class OpenAIService(LLMService):
                         OPENAI_LOCAL_RETRY_ATTEMPTS,
                         kwargs.get("model"),
                     )
-                return await self.client.responses.create(**kwargs)
+                response = await asyncio.wait_for(
+                    self.client.responses.create(**kwargs),
+                    timeout=OPENAI_RESPONSE_WALL_TIMEOUT_SECONDS,
+                )
+                logger.info(
+                    "⏱️ [OPENAI RESPONSES LATENCY] attempt=%s/%s model=%s duration_seconds=%.3f",
+                    attempt,
+                    OPENAI_LOCAL_RETRY_ATTEMPTS,
+                    kwargs.get("model"),
+                    time.monotonic() - started_at,
+                )
+                return response
             except Exception as error:
                 last_error = error
                 retryable = self._is_retryable_connectivity_error(error)
@@ -211,7 +237,7 @@ class OpenAIService(LLMService):
                     kwargs.get("model"),
                     retryable,
                     type(error).__name__,
-                    str(error),
+                    str(error) or "timeout sin detalle",
                 )
                 if not retryable or attempt >= OPENAI_LOCAL_RETRY_ATTEMPTS:
                     raise

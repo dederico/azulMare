@@ -1,4 +1,5 @@
 import os
+import asyncio
 import httpx
 from app.util.database import LocalStorage
 from app.models.Config import Config
@@ -13,6 +14,12 @@ from threading import Lock
 CHAT2DESK_API_TOKEN = os.environ.get("CHAT2DESK_API_TOKEN")
 CHAT2DESK_BASE_URL = "https://api.chat2desk.com.mx/v1"
 DEFAULT_OPERATOR_GROUP_ID = int(os.environ.get("CHAT2DESK_OPERATOR_GROUP_ID", "1817"))
+TRANSFER_CONFIG_TIMEOUT_SECONDS = float(
+    os.environ.get("CHAT2DESK_TRANSFER_CONFIG_TIMEOUT_SECONDS", "3")
+)
+TRANSFER_HTTP_TIMEOUT_SECONDS = float(
+    os.environ.get("CHAT2DESK_TRANSFER_HTTP_TIMEOUT_SECONDS", "15")
+)
 ROUND_ROBIN_LOCK = Lock()
 ROUND_ROBIN_INDEX = 0
 
@@ -132,7 +139,25 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
                 )
                 requested_group_id = None
 
-        group_id, configured_group_ids, selection_mode = resolve_operator_group_id(normalized_requested_group_id)
+        try:
+            group_id, configured_group_ids, selection_mode = await asyncio.wait_for(
+                asyncio.to_thread(
+                    resolve_operator_group_id,
+                    normalized_requested_group_id,
+                ),
+                timeout=TRANSFER_CONFIG_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            # A slow PostgreSQL lookup must never hold the citizen's handoff.
+            configured_group_ids = _parse_group_ids(
+                os.environ.get("CHAT2DESK_OPERATOR_GROUP_IDS")
+            ) or [DEFAULT_OPERATOR_GROUP_ID]
+            group_id = configured_group_ids[0]
+            selection_mode = "timeout_fallback"
+            logger.warning(
+                "Timeout resolviendo grupos; usando fallback=%s",
+                group_id,
+            )
 
         # Configurar encabezados
         api_token = os.environ.get("CHAT2DESK_API_TOKEN")
@@ -163,7 +188,7 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
             reason,
         )
 
-        timeout = httpx.Timeout(30.0, connect=10.0)
+        timeout = httpx.Timeout(TRANSFER_HTTP_TIMEOUT_SECONDS, connect=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             transfer_response = await client.get(transfer_url, params=transfer_params, headers=headers)
 
@@ -198,6 +223,13 @@ async def transfer_to_group(message_id, group_id=None, reason=None):
         logger.info(success_msg)
         return success_msg
     
+    except (httpx.TimeoutException, asyncio.TimeoutError) as e:
+        # A timeout is ambiguous: Chat2Desk may have accepted the transfer even
+        # though its response did not reach us. The caller must keep SAM muted
+        # while waiting for the authoritative transfer/operator webhook.
+        error_msg = "TRANSFER_PENDING: Chat2Desk no confirmó la transferencia antes del timeout."
+        logger.warning("%s message_id=%s error=%s", error_msg, message_id, e)
+        return error_msg
     except Exception as e:
         error_msg = f"Error al transferir conversación: {str(e)}"
         logger.error(error_msg)

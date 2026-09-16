@@ -123,16 +123,19 @@ from app.services.conversation_lifecycle import (
     record_inbound_activity,
     release_inactivity_claim,
     reset_conversation_lifecycle,
+    suspend_inactivity_until_new_inbound,
 )
 from app.services.conversation_policy import (
     apply_widget_empty_response_fallback,
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    dialog_transfer_confirms_pending_control,
     extract_confirmed_folio,
     greeting_display_name,
     event_precedes_context_boundary,
     inactivity_snapshot_is_still_stale,
+    is_explicit_report_finalization_token,
     is_bot_return_message,
     is_contextual_handoff_request,
     is_emergency_related,
@@ -185,6 +188,12 @@ from app.services.greeting_outbox import (
     ensure_greeting_outbox_storage,
     finish_greeting,
     get_greeting_status,
+)
+from app.services.report_completion import (
+    clear_report_completion,
+    ensure_report_completion_storage,
+    get_recent_report_completion,
+    record_report_completion,
 )
 from app.services.media_payload import get_video_from_payload
 
@@ -1484,6 +1493,9 @@ STALE_RETURN_EVENT_TOLERANCE_SECONDS = 1.0
 STALE_INBOUND_EVENT_MAX_AGE_SECONDS = 30 * 60
 STALE_OPERATOR_OUTBOX_MAX_AGE_SECONDS = int(os.getenv("STALE_OPERATOR_OUTBOX_MAX_AGE_SECONDS", str(30 * 60)))
 OPERATOR_OUTBOX_MARKER_GRACE_SECONDS = float(os.getenv("OPERATOR_OUTBOX_MARKER_GRACE_SECONDS", "2"))
+PENDING_HUMAN_TRANSFER_TTL_SECONDS = float(
+    os.getenv("PENDING_HUMAN_TRANSFER_TTL_SECONDS", "120")
+)
 BOT_GRACE_PERIOD = 10
 user_answers = {}
 closed_by_inactivity = {}  # key: phone_number, value: expiration_timestamp
@@ -1517,6 +1529,24 @@ def release_takeover(phone_number: str, *, storage=None) -> None:
     key = normalize_phone_key(phone_number)
     transferred_numbers.pop(key, None)
     release_human_control(key, storage=storage)
+
+
+def release_takeover_if_matches(
+    phone_number: str,
+    transfer_message_id,
+    *,
+    storage=None,
+) -> bool:
+    """Release only the provisional takeover created by this transfer attempt."""
+    key = normalize_phone_key(phone_number)
+    removed = release_human_control_if_matches(
+        key,
+        transfer_message_id,
+        storage=storage,
+    )
+    if removed:
+        transferred_numbers.pop(key, None)
+    return removed
 
 
 def get_active_takeover(phone_number: str, *, storage=None) -> dict | None:
@@ -2933,7 +2963,8 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
     Versión protegida contra duplicados de save_client_selection2
     """
     
-    active_takeover = get_active_takeover(yoga_number, storage=LocalStorage())
+    db = LocalStorage()
+    active_takeover = get_active_takeover(yoga_number, storage=db)
     if active_takeover:
         logger.critical(
             "🚫 [REPORT PROTECTED BLOCK] Reporte bloqueado para %s por takeover humano activo",
@@ -3017,6 +3048,7 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         confirmed_folio = extract_confirmed_folio(folio)
         if confirmed_folio:
             canonical_folio = f"Folio: {confirmed_folio}"
+            record_report_completion(db, yoga_number, confirmed_folio)
             # MARCAR COMO EXITOSO
             dedup_manager.mark_report_creation_success(
                 yoga_number, canonical_folio, selection_data, images_list
@@ -3254,6 +3286,16 @@ async def transfer_to_group_guarded(
             "o si verificaste que no existe contexto suficiente para resolver la consulta."
         )
 
+    activate_takeover(
+        from_number,
+        expires_at=(
+            datetime.now().timestamp() + PENDING_HUMAN_TRANSFER_TTL_SECONDS
+        ),
+        source=f"pending_transfer:tool:{authorization}",
+        message_id=message_id,
+        storage=storage,
+    )
+
     transfer_result = await transfer_to_group(
         message_id=message_id,
         group_id=group_id,
@@ -3265,6 +3307,10 @@ async def transfer_to_group_guarded(
     )
     context["transfer_attempted"] = True
     context["transfer_succeeded"] = transfer_succeeded
+    context["transfer_pending"] = bool(
+        isinstance(transfer_result, str)
+        and transfer_result.startswith("TRANSFER_PENDING:")
+    )
     context["transfer_authorization"] = authorization
 
     if (
@@ -3290,6 +3336,22 @@ async def transfer_to_group_guarded(
             message_id=message_id,
             reason=reason,
             expires_at=None,
+        )
+    elif context["transfer_pending"]:
+        # Treat an ambiguous timeout as terminal for this SAM turn. Chat2Desk's
+        # later transfer/operator webhook will make the takeover permanent.
+        context["transfer_succeeded"] = True
+        logger.warning(
+            "⏳ [TOOL TRANSFER PENDING] from_number=%s message_id=%s reason=%s",
+            from_number,
+            message_id,
+            reason,
+        )
+    elif from_number:
+        release_takeover_if_matches(
+            from_number,
+            message_id,
+            storage=storage,
         )
 
     return transfer_result
@@ -3751,6 +3813,13 @@ def has_recent_report(phone_number, max_age_minutes=15):
 
 
 def get_recent_report_closure_message(phone_number: str) -> str | None:
+    durable_report = get_recent_report_completion(LocalStorage(), phone_number)
+    if durable_report and durable_report.get("folio"):
+        return (
+            f"Tu reporte ya fue registrado con el folio **{durable_report['folio']}**. "
+            "Gracias por reportarlo."
+        )
+
     recent_report = has_recent_report(phone_number)
     if recent_report and recent_report.get("folio"):
         return (
@@ -4525,15 +4594,6 @@ async def check_inactivity():
         )
         for number in inactivity_candidates:
             session = user_sessions.get(number)
-            if get_active_takeover(number, storage=db):
-                logger.debug("Inactividad omitida para %s: takeover humano activo", number)
-                continue
-
-            lifecycle_state = get_lifecycle_state(number, storage=db)
-            if not lifecycle_state:
-                # Legacy in-memory sessions become durable on their next inbound.
-                continue
-
             claim_uid = claim_inactivity_close(
                 number,
                 threshold_seconds=INACTIVITY_THRESHOLD,
@@ -4543,13 +4603,35 @@ async def check_inactivity():
                 continue
 
             try:
+                lifecycle_state = get_lifecycle_state(number, storage=db)
+                if not lifecycle_state:
+                    # Legacy in-memory sessions become durable on their next inbound.
+                    release_inactivity_claim(number, claim_uid, storage=db)
+                    continue
+
+                if get_active_takeover(number, storage=db):
+                    suspend_inactivity_until_new_inbound(
+                        number,
+                        claim_uid,
+                        storage=db,
+                    )
+                    logger.debug(
+                        "Inactividad suspendida para %s: takeover humano activo",
+                        number,
+                    )
+                    continue
+
                 if session and session.evaluation_state and session.evaluation_folio:
                     if session.evaluation_folio not in evaluated_reports:
                         logger.critical(
                             "⏰ [INACTIVITY] Evaluación pendiente para reporte %s; sesión conservada",
                             session.evaluation_folio,
                         )
-                        release_inactivity_claim(number, claim_uid, storage=db)
+                        suspend_inactivity_until_new_inbound(
+                            number,
+                            claim_uid,
+                            storage=db,
+                        )
                         continue
                     session.evaluation_state = None
                     session.evaluation_folio = None
@@ -4596,7 +4678,14 @@ async def check_inactivity():
                             "🛑 [INACTIVITY CANCELLED] Actividad nueva o takeover para %s",
                             number,
                         )
-                        release_inactivity_claim(number, claim_uid, storage=db)
+                        if get_active_takeover(number, storage=db):
+                            suspend_inactivity_until_new_inbound(
+                                number,
+                                claim_uid,
+                                storage=db,
+                            )
+                        else:
+                            release_inactivity_claim(number, claim_uid, storage=db)
                         continue
 
                     send_response = await client.post(
@@ -4764,6 +4853,11 @@ def is_finalization_message(text, from_number=None):
     """
     if not text or not isinstance(text, str):
         return False
+
+    # El propio flujo de imágenes pide responder exactamente "FIN". Debe
+    # reconocerse antes de las heurísticas amplias y sin depender de la réplica.
+    if is_explicit_report_finalization_token(text):
+        return True
     
     # Convert to lowercase for case-insensitive matching
     text_lower = text.lower()
@@ -5543,6 +5637,7 @@ async def lifespan(app: FastAPI):
     ensure_webhook_job_storage(LocalStorage())
     ensure_report_state_storage(LocalStorage())
     ensure_greeting_outbox_storage(LocalStorage())
+    ensure_report_completion_storage(LocalStorage())
     asyncio.create_task(process_chat2desk_webhook_jobs())
     asyncio.create_task(process_greeting_outbox())
     # Startup: se lanzan las tareas de verificación
@@ -5851,9 +5946,48 @@ async def _process_whatsapp_request(request):
         request_id = payload.get('request_id')
 
         if hook_type == 'dialog_transferred':
-            # Chat2Desk también emite este evento para asignaciones automáticas.
-            # No contiene una señal suficiente para distinguirlas de un takeover
-            # manual, así que nunca debe cambiar el control de SAM.
+            # Este evento no es autoritativo por sí solo, porque Chat2Desk lo
+            # emite también para asignaciones automáticas. Sí puede confirmar
+            # una transferencia que SAM acaba de iniciar y dejó en estado
+            # pendiente por un timeout ambiguo de la API.
+            pending_control = (
+                get_active_takeover(from_number, storage=db)
+                if from_number
+                else None
+            )
+            dialog_event_timestamp = parse_chat2desk_event_timestamp(
+                payload.get("event_time")
+            )
+            if dialog_transfer_confirms_pending_control(
+                pending_control,
+                dialog_event_timestamp,
+            ):
+                effective_operator_id = (
+                    payload.get('current_operator_id') or operator_id or "unknown"
+                )
+                activate_takeover(
+                    from_number,
+                    source=(
+                        "confirmed_dialog_transferred_after_pending:"
+                        f"{effective_operator_id}"
+                    ),
+                    message_id=message_id or payload.get('dialog_id'),
+                    storage=db,
+                )
+                logger.critical(
+                    "🔐 [PENDING TRANSFER CONFIRMED BY DIALOG] "
+                    "from_number=%s dialog_id=%s operator_id=%s",
+                    from_number,
+                    payload.get('dialog_id'),
+                    effective_operator_id,
+                )
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Transferencia pendiente confirmada por Chat2Desk",
+                    }
+                )
+
             logger.warning(
                 "🚫 [NONAUTHORITATIVE DIALOG TRANSFER] Evento ignorado. "
                 "dialog_id=%s client_id=%s current_operator_id=%s last_operator_id=%s scenario_id=%s",
@@ -7104,60 +7238,19 @@ async def _process_whatsapp_request(request):
                         "📷 [POST-FOLIO IGNORE] Ignorando imagen tardía para %s porque ya existe reporte reciente",
                         from_number,
                     )
-                    body = closure_message
-                    try:
-                        if from_number in user_sessions:
-                            user_sessions[from_number].history.add_ai_message(body)
-
-                        assistant_message = Message(
-                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            senderName="Assistant",
-                            message=body,
-                            number=from_number,
-                            uid=uid,
-                            direction="outbound",
-                            mtype="text",
-                            source="whatsapp"
-                        )
-                        db.Insert(assistant_message)
-                        await manage_message_history(db, from_number)
-
-                        api_token = os.getenv("CHAT2DESK_API_TOKEN")
-                        chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-                        headers = {
-                            "Authorization": api_token,
-                            "Content-Type": "application/json"
+                    # No volver a anunciar el folio. El webhook tardío queda
+                    # consumido de forma idempotente y sin salida al ciudadano.
+                    mark_inbound_processing_delivered(
+                        uid,
+                        inbound_claim_token,
+                        storage=db,
+                    )
+                    return JSONResponse(
+                        content={
+                            "status": True,
+                            "message": "Imagen tardía post-folio ignorada silenciosamente",
                         }
-                        data = {
-                            "client_id": client_id,
-                            "channel_id": channel_id,
-                            "transport": transport,
-                            "text": body
-                        }
-                        log_chat2desk_outbound_attempt(
-                            "post_folio_image_ignore",
-                            data,
-                            from_number=from_number,
-                            message_id=message_id,
-                        )
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
-                            response = await http_client.post(chat2desk_url, json=data, headers=headers)
-                        log_chat2desk_outbound_response(
-                            "post_folio_image_ignore",
-                            response,
-                            from_number=from_number,
-                            message_id=message_id,
-                        )
-                        persist_bot_outbound_marker(
-                            db,
-                            from_number,
-                            response,
-                            "post_folio_image_ignore",
-                        )
-                        return JSONResponse(content={"status": True, "message": "Imagen tardía ignorada tras folio"})
-                    except Exception as e:
-                        logger.error(f"Error al responder imagen tardía post-folio: {str(e)}")
-                        return JSONResponse(content={"error": f"Error al responder imagen tardía post-folio: {str(e)}"}, status_code=500)
+                    )
 
                 previous = get_user_answer(from_number, "selection8") or ""
                 updated_list = [url.strip() for url in previous.split(",") if url.strip()]
@@ -7312,18 +7405,15 @@ async def _process_whatsapp_request(request):
                     (body or "")[:60],
                     from_number,
                 )
-                body = closure_message
-                sent = await send_chat2desk_message(
-                    from_number,
-                    client_id,
-                    channel_id,
-                    body,
-                    transport,
+                mark_inbound_processing_delivered(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
                 )
                 return JSONResponse(
                     content={
-                        "status": bool(sent),
-                        "message": "Mensaje tardío respondido con folio existente" if sent else "Mensaje post-folio bloqueado",
+                        "status": True,
+                        "message": "Mensaje tardío post-folio ignorado silenciosamente",
                     }
                 )
             else:
@@ -7673,6 +7763,20 @@ async def _process_whatsapp_request(request):
         response_content = "Claro, te transfiero con un agente humano, por favor espera un momento."
         transfer_result = None
 
+        # Close the race window before calling Chat2Desk. While the API request
+        # is in flight SAM must not process newer citizen messages or emit a
+        # delayed model response. A confirmed operator/transfer webhook will
+        # replace this short-lived provisional control with permanent takeover.
+        activate_takeover(
+            from_number,
+            expires_at=(
+                datetime.now().timestamp() + PENDING_HUMAN_TRANSFER_TTL_SECONDS
+            ),
+            source="pending_transfer:explicit_user_request",
+            message_id=message_id,
+            storage=db,
+        )
+
         try:
             if not message_id:
                 raise ValueError("No se encontró message_id en el payload para transferir")
@@ -7686,6 +7790,42 @@ async def _process_whatsapp_request(request):
                     else "Solicitud explícita del usuario para hablar con humano"
                 ),
             )
+
+            if (
+                isinstance(transfer_result, str)
+                and transfer_result.startswith("TRANSFER_PENDING:")
+            ):
+                logger.warning(
+                    "⏳ [DIRECT TRANSFER PENDING] %s message_id=%s result=%s",
+                    from_number,
+                    message_id,
+                    transfer_result,
+                )
+                transfer_note = Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="System",
+                    message=(
+                        "[SYSTEM] Transferencia humana pendiente de confirmación; "
+                        "SAM permanecerá silenciado temporalmente"
+                    ),
+                    number=from_number,
+                    uid=f"pending-transfer-{message_id}",
+                    direction="system",
+                    mtype="text",
+                    source="whatsapp",
+                )
+                db.Insert(transfer_note)
+                mark_inbound_processing_delivered(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Transferencia pendiente; SAM silenciado hasta confirmación",
+                    }
+                )
 
             if not isinstance(transfer_result, str) or "transferida exitosamente" not in transfer_result.lower():
                 raise RuntimeError(transfer_result or "La transferencia no confirmó éxito")
@@ -7729,7 +7869,11 @@ async def _process_whatsapp_request(request):
 
         except Exception as transfer_error:
             logger.error(f"❌ [DIRECT TRANSFER] Error ejecutando transferencia: {str(transfer_error)}")
-            release_takeover(from_number, storage=db)
+            release_takeover_if_matches(
+                from_number,
+                message_id,
+                storage=db,
+            )
             response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
 
         assistant_message = Message(
@@ -8899,6 +9043,7 @@ async def reset_conversation(phone_number: str):
             "finalized_report_numbers": False,
             "conversation_lifecycle": False,
             "durable_report_state": False,
+            "durable_report_completion": False,
         }
 
         with report_sessions_lock:
@@ -8935,6 +9080,10 @@ async def reset_conversation(phone_number: str):
             storage=db,
         )
         memory_cleanup["durable_report_state"] = delete_report_state(
+            db,
+            phone_number,
+        )
+        memory_cleanup["durable_report_completion"] = clear_report_completion(
             db,
             phone_number,
         )

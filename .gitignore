@@ -19,3 +19,4 @@ serve
 # Ignorar cachés y backups de editores
 *.swp
 *.swo
+feedback/

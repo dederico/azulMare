@@ -545,6 +545,9 @@ def mark_reopen_greeting_pending(
                 state["last_inbound_uid"] = None
                 state["last_inbound_at"] = None
                 state["inactivity_claim_uid"] = None
+                state["inactivity_failure_count"] = 0
+                state["inactivity_next_retry_at"] = None
+                state["inactivity_terminal"] = False
             state["updated_at"] = timestamp
         return
 
@@ -571,9 +574,30 @@ def mark_reopen_greeting_pending(
                         WHEN %s THEN NULL
                         ELSE {LIFECYCLE_TABLE}.inactivity_claim_uid
                     END,
+                    inactivity_failure_count = CASE
+                        WHEN %s THEN 0
+                        ELSE {LIFECYCLE_TABLE}.inactivity_failure_count
+                    END,
+                    inactivity_next_retry_at = CASE
+                        WHEN %s THEN NULL
+                        ELSE {LIFECYCLE_TABLE}.inactivity_next_retry_at
+                    END,
+                    inactivity_terminal = CASE
+                        WHEN %s THEN FALSE
+                        ELSE {LIFECYCLE_TABLE}.inactivity_terminal
+                    END,
                     updated_at = EXCLUDED.updated_at
                 """,
-                (key, timestamp, reset_activity, reset_activity, reset_activity),
+                (
+                    key,
+                    timestamp,
+                    reset_activity,
+                    reset_activity,
+                    reset_activity,
+                    reset_activity,
+                    reset_activity,
+                    reset_activity,
+                ),
             )
         conn.commit()
     except Exception as error:
@@ -798,6 +822,75 @@ def release_inactivity_claim(phone_number: str, claim_uid: str, *, storage=None)
         conn.commit()
     except Exception as error:
         logger.error("No se pudo liberar claim de inactividad para %s: %s", key, error)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def suspend_inactivity_until_new_inbound(
+    phone_number: str,
+    claim_uid: str,
+    *,
+    storage=None,
+    now: float | None = None,
+) -> bool:
+    """Quarantine a protected stale inbound until a newer inbound arrives.
+
+    Human takeovers and pending evaluations must not be reconsidered every
+    minute by every application replica. ``record_inbound_activity`` clears
+    ``inactivity_terminal`` as soon as a newer inbound UID is accepted.
+    """
+    key = normalize_phone_key(phone_number)
+    timestamp = float(now if now is not None else time.time())
+
+    if storage is None or not ensure_conversation_lifecycle_storage(storage):
+        with _memory_lock:
+            state = _memory_state.get(key)
+            if (
+                not state
+                or str(state.get("last_inbound_uid")) != str(claim_uid)
+                or str(state.get("inactivity_claim_uid")) != str(claim_uid)
+            ):
+                return False
+            state["inactivity_claim_uid"] = None
+            state["inactivity_next_retry_at"] = None
+            state["inactivity_terminal"] = True
+            state["updated_at"] = timestamp
+            return True
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE {LIFECYCLE_TABLE}
+                SET inactivity_claim_uid = NULL,
+                    inactivity_next_retry_at = NULL,
+                    inactivity_terminal = TRUE,
+                    updated_at = %s
+                WHERE phone_number = %s
+                  AND last_inbound_uid = %s
+                  AND inactivity_claim_uid = %s
+                RETURNING phone_number
+                """,
+                (timestamp, key, str(claim_uid), str(claim_uid)),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+        return bool(row)
+    except Exception as error:
+        logger.error(
+            "No se pudo suspender inactividad protegida para %s: %s",
+            key,
+            error,
+        )
+        return suspend_inactivity_until_new_inbound(
+            key,
+            claim_uid,
+            storage=None,
+            now=timestamp,
+        )
     finally:
         if conn is not None:
             conn.close()

@@ -7,10 +7,12 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
     extract_confirmed_folio,
     greeting_display_name,
     inactivity_snapshot_is_still_stale,
+    is_explicit_report_finalization_token,
     is_contextual_handoff_request,
     is_bot_return_message,
     is_human_takeover_message,
@@ -44,6 +46,16 @@ class FolioValidationTests(unittest.TestCase):
         self.assertIsNone(extract_confirmed_folio("Folio: Error 500"))
         self.assertIsNone(extract_confirmed_folio("Error al procesar la solicitud"))
         self.assertIsNone(extract_confirmed_folio("No pude crear el reporte"))
+
+
+class ReportFinalizationPolicyTests(unittest.TestCase):
+    def test_fin_token_matches_the_instruction_shown_to_citizen(self):
+        self.assertTrue(is_explicit_report_finalization_token("FIN"))
+        self.assertTrue(is_explicit_report_finalization_token("  fin  "))
+
+    def test_fin_must_be_an_exact_token(self):
+        self.assertFalse(is_explicit_report_finalization_token("al fin"))
+        self.assertFalse(is_explicit_report_finalization_token("finalizar después"))
 
 
 class PublicPhoneValidationTests(unittest.TestCase):
@@ -86,6 +98,34 @@ class EmergencyClassificationTests(unittest.TestCase):
 
 
 class HumanControlPolicyTests(unittest.TestCase):
+    def test_fresh_dialog_event_confirms_locally_pending_transfer(self):
+        self.assertTrue(
+            dialog_transfer_confirms_pending_control(
+                {
+                    "source": "pending_transfer:explicit_user_request",
+                    "updated_at": 100.0,
+                },
+                100.1,
+            )
+        )
+
+    def test_dialog_event_cannot_create_takeover_without_local_pending_state(self):
+        self.assertFalse(
+            dialog_transfer_confirms_pending_control(
+                {"source": "explicit_user_request", "updated_at": 100.0},
+                101.0,
+            )
+        )
+        self.assertFalse(
+            dialog_transfer_confirms_pending_control(
+                {
+                    "source": "pending_transfer:explicit_user_request",
+                    "updated_at": 100.0,
+                },
+                90.0,
+            )
+        )
+
     def test_explicit_user_transfer_is_trusted(self):
         self.assertTrue(
             is_trusted_human_control(
@@ -138,6 +178,16 @@ class HumanControlPolicyTests(unittest.TestCase):
                 {
                     "mode": "human",
                     "source": "confirmed_operator_outbox:228543",
+                }
+            )
+        )
+
+    def test_dialog_confirmation_linked_to_local_pending_transfer_is_trusted(self):
+        self.assertTrue(
+            is_trusted_human_control(
+                {
+                    "mode": "human",
+                    "source": "confirmed_dialog_transferred_after_pending:228543",
                 }
             )
         )

@@ -1,4 +1,5 @@
 import os
+import asyncio
 import sys
 import types
 import unittest
@@ -50,6 +51,37 @@ class OpenAIServiceReasoningTests(unittest.IsolatedAsyncioTestCase):
 
         kwargs = service._create_response_with_local_retry.await_args.kwargs
         self.assertEqual(kwargs["reasoning"], {"effort": "medium"})
+
+    async def test_responses_wall_timeout_retries_without_sdk_retry_stack(self):
+        service = self.build_service()
+        attempts = 0
+
+        async def first_attempt_stalls(**kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.sleep(0.05)
+            return SimpleNamespace(output=[], output_text="Listo")
+
+        service.client.responses.create = AsyncMock(side_effect=first_attempt_stalls)
+        with (
+            patch(
+                "app.services.llm.openai_service.OPENAI_RESPONSE_WALL_TIMEOUT_SECONDS",
+                0.01,
+            ),
+            patch(
+                "app.services.llm.openai_service.OPENAI_LOCAL_RETRY_BACKOFF_SECONDS",
+                0,
+            ),
+        ):
+            response = await service._create_response_with_local_retry(
+                model="gpt-5.6-luna",
+                input="Hola",
+            )
+
+        self.assertEqual(response.output_text, "Listo")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(service.client.max_retries, 0)
 
     async def test_responses_executes_function_and_submits_output(self):
         async def lookup(topic: str):

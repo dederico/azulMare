@@ -18,6 +18,7 @@ from app.services.conversation_lifecycle import (
     record_inbound_activity,
     release_inactivity_claim,
     reset_conversation_lifecycle,
+    suspend_inactivity_until_new_inbound,
 )
 
 
@@ -163,6 +164,33 @@ class ConversationLifecycleTests(unittest.TestCase):
 
         record_inbound_activity(self.phone, 101, "request:1", now=10000)
         self.assertFalse(get_lifecycle_state(self.phone)["inactivity_terminal"])
+
+    def test_protected_inactivity_is_suspended_until_new_inbound(self):
+        record_inbound_activity(self.phone, 100, "request:1", now=100)
+        claim_uid = claim_inactivity_close(
+            self.phone,
+            threshold_seconds=900,
+            now=1001,
+        )
+
+        self.assertTrue(
+            suspend_inactivity_until_new_inbound(
+                self.phone,
+                claim_uid,
+                now=1001,
+            )
+        )
+        self.assertEqual(
+            list_inactivity_candidates(threshold_seconds=900, now=9999),
+            [],
+        )
+
+        record_inbound_activity(self.phone, 101, "request:1", now=10000)
+        self.assertFalse(get_lifecycle_state(self.phone)["inactivity_terminal"])
+        self.assertEqual(
+            list_inactivity_candidates(threshold_seconds=900, now=10901),
+            [self.phone],
+        )
 
     def test_new_inbound_cancels_pending_inactivity_claim(self):
         session_key = build_session_key(1, 10)

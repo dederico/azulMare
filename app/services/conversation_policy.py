@@ -68,6 +68,31 @@ def normalize_policy_text(value: str | None) -> str:
     return " ".join(text.split())
 
 
+def is_explicit_report_finalization_token(value: str | None) -> bool:
+    """Recognize the exact token citizens are instructed to send after photos."""
+    return normalize_policy_text(value) == "fin"
+
+
+def dialog_transfer_confirms_pending_control(
+    control: dict | None,
+    event_timestamp: float | None,
+    *,
+    tolerance_seconds: float = 2.0,
+) -> bool:
+    """Trust dialog_transferred only as confirmation of our own pending handoff."""
+    if not control or event_timestamp is None:
+        return False
+    source = str(control.get("source") or "")
+    if not source.startswith("pending_transfer:"):
+        return False
+    try:
+        pending_since = float(control.get("updated_at") or 0)
+        event_time = float(event_timestamp)
+    except (TypeError, ValueError):
+        return False
+    return pending_since > 0 and event_time + tolerance_seconds >= pending_since
+
+
 def is_contextual_handoff_request(
     current_message: str | None,
     previous_assistant_message: str | None,
@@ -164,6 +189,7 @@ def is_trusted_human_control(control: dict | None) -> bool:
         source == EXPLICIT_HANDOFF
         or source == "chat2desk_takeover_message"
         or source.startswith("confirmed_operator_outbox:")
+        or source.startswith("confirmed_dialog_transferred_after_pending:")
         or source.startswith("tool:")
     )
 

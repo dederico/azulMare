@@ -151,16 +151,36 @@ def is_contextual_handoff_request(
     affirmative_replies = {
         "si",
         "si sam",
+        "si por favor",
+        "si porfa",
+        "si gracias",
+        "si adelante",
         "porfa",
         "por favor",
         "claro",
+        "claro que si",
         "adelante",
+        "de acuerdo",
         "ok",
         "okay",
         "hazlo",
         "please",
     }
     if current in affirmative_replies:
+        return True
+
+    # Accept natural, short confirmations only in the context of SAM's
+    # immediately preceding handoff offer. The contextual requirement above
+    # keeps phrases such as "sí, por favor" from authorizing a transfer after
+    # an unrelated question.
+    current_words = current.split()
+    if len(current_words) <= 6 and (
+        current.startswith("si ")
+        or current.startswith("claro ")
+        or current.startswith("de acuerdo ")
+        or current.startswith("me gustaria")
+        or current.startswith("quisiera")
+    ):
         return True
 
     asks_to_connect = any(

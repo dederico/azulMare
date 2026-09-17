@@ -606,6 +606,9 @@ class TransferAuthorizationTests(unittest.TestCase):
         previous = "¿Deseas que te comunique con un agente humano para verificarlo?"
         self.assertTrue(is_contextual_handoff_request("Sí Sam", previous))
         self.assertTrue(is_contextual_handoff_request("Porfa", previous))
+        self.assertTrue(is_contextual_handoff_request("sí por favor", previous))
+        self.assertTrue(is_contextual_handoff_request("Claro que sí, gracias", previous))
+        self.assertTrue(is_contextual_handoff_request("Me gustaría", previous))
 
     def test_pronoun_request_uses_immediately_preceding_agent_context(self):
         self.assertTrue(
@@ -620,6 +623,12 @@ class TransferAuthorizationTests(unittest.TestCase):
             is_contextual_handoff_request(
                 "Sí",
                 "¿La luminaria está apagada por completo?",
+            )
+        )
+        self.assertFalse(
+            is_contextual_handoff_request(
+                "Sí por favor",
+                "¿Deseas agregar una imagen al reporte?",
             )
         )
 

@@ -68,6 +68,7 @@ from .implementations.encuesta_mesas_directivas import encuesta_mesas_directivas
 from .implementations.get_presupuesto_participativo import get_presupuesto_participativo
 from .implementations.get_actividades_mayo_junio import get_actividades_mayo_junio
 from .implementations.get_actividades_agosto_2026 import get_actividades_agosto_2026
+from .implementations.get_actividades_culturales_septiembre_2026 import get_actividades_culturales_septiembre_2026
 from .implementations.get_utiles_escolares_agosto_2026 import get_utiles_escolares_agosto_2026
 from .implementations.get_unibus import get_unibus
 from .implementations.get_exclusivos import get_exclusivos
@@ -144,6 +145,7 @@ registered_functions = [
     get_presupuesto_participativo,
     get_actividades_mayo_junio,
     get_actividades_agosto_2026,
+    get_actividades_culturales_septiembre_2026,
     get_utiles_escolares_agosto_2026,
     get_unibus,
     get_exclusivos,

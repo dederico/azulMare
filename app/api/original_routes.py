@@ -144,6 +144,7 @@ from app.services.conversation_policy import (
     is_known_automated_outbound,
     is_likely_bot_echo,
     is_non_authoritative_control_source,
+    is_report_reactivation_notification,
     is_verified_public_phone,
     history_after_latest_context_reset,
     should_accept_bot_return_event,
@@ -197,6 +198,12 @@ from app.services.report_completion import (
     ensure_report_completion_storage,
     get_recent_report_completion,
     record_report_completion,
+)
+from app.services.evaluation_state import (
+    clear_evaluation_state,
+    ensure_evaluation_state_storage,
+    get_evaluation_state,
+    save_evaluation_state,
 )
 from app.services.media_payload import get_video_from_payload
 
@@ -679,7 +686,7 @@ EVALUATION_STATES = {
     "WAITING_REASON": "evaluacion_esperando_motivo"
 }
 
-async def handle_hsm_conclusion_notification(payload, from_number):
+async def handle_hsm_conclusion_notification(payload, from_number, storage=None):
     """
     Maneja notificaciones HSM de conclusión de reportes.
     SOLO GUARDA LA INFORMACIÓN, NO ENVÍA NADA AUTOMÁTICAMENTE.
@@ -728,6 +735,15 @@ async def handle_hsm_conclusion_notification(payload, from_number):
     session.evaluation_client_id = client_id  # Guardar para uso posterior
     session.evaluation_channel_id = channel_id  # Guardar para uso posterior
     session.update_activity()
+    save_evaluation_state(
+        storage or LocalStorage(),
+        from_number,
+        state=session.evaluation_state,
+        folio=reporte_id,
+        client_id=client_id,
+        channel_id=channel_id,
+        transport=payload.get("transport") or "wa_direct",
+    )
     
     logger.critical(f"✅ [HSM SAVED] Información guardada, esperando click de OK")
     
@@ -738,7 +754,14 @@ async def handle_hsm_conclusion_notification(payload, from_number):
     }
 
 
-async def handle_evaluation_response(from_number, text, client_id, channel_id, transport="wa_direct"):
+async def handle_evaluation_response(
+    from_number,
+    text,
+    client_id,
+    channel_id,
+    transport="wa_direct",
+    storage=None,
+):
     """
     Maneja respuestas del usuario durante el flujo de evaluación.
 
@@ -752,6 +775,8 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
     Returns:
         bool: True si se procesó como evaluación, False si no
     """
+    storage = storage or LocalStorage()
+
     # 🛡️ FILTRO: No procesar mensajes del bot
     if not text or len(text.strip()) == 0:
         return False
@@ -805,6 +830,15 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
         session.evaluation_client_id = evaluation_client_id
         session.evaluation_channel_id = evaluation_channel_id
         session.update_activity()
+        save_evaluation_state(
+            storage,
+            from_number,
+            state=session.evaluation_state,
+            folio=folio,
+            client_id=evaluation_client_id,
+            channel_id=evaluation_channel_id,
+            transport=transport,
+        )
 
         try:
             await send_conclusion_comment_and_image(
@@ -835,6 +869,15 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
             # Usuario está de acuerdo, pedir calificación
             session.evaluation_state = EVALUATION_STATES["WAITING_RATING"]
             session.update_activity()
+            save_evaluation_state(
+                storage,
+                from_number,
+                state=session.evaluation_state,
+                folio=getattr(session, 'evaluation_folio', ''),
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+            )
             
             rating_message = """¿Qué te pareció la atención de tu reporte?
     1. 😒 Pésimo
@@ -853,6 +896,15 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
             # Usuario no está de acuerdo, pedir motivo
             session.evaluation_state = EVALUATION_STATES["WAITING_REASON"]
             session.update_activity()
+            save_evaluation_state(
+                storage,
+                from_number,
+                state=session.evaluation_state,
+                folio=getattr(session, 'evaluation_folio', ''),
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+            )
             
             reason_message = "¿Podrías indicarnos el motivo por el cuál no tuvo resolución?"
             await send_chat2desk_message_direct(client_id, channel_id, reason_message, transport)
@@ -875,27 +927,34 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
         if rating in ["1", "2", "3", "4", "5"]:
             # Calificación válida
             folio = getattr(session, 'evaluation_folio', '')
-            
-            # 🆕 MARCAR COMO EVALUADO
-            current_time = datetime.now().timestamp()
-            evaluated_reports[folio] = current_time
-            logger.critical(f"📝 [EVALUATED] Reporte {folio} marcado como evaluado")
-            
-            session.evaluation_state = None
-            session.evaluation_folio = None
-            session.last_hsm_time = None  # 🆕 LIMPIAR HSM TIME
-            session.update_activity()
-            
             logger.critical(f"⭐ [EVAL] Calificación recibida: {rating}/5 para folio {folio}")
-            
+
             # Enviar evaluación al CIAC (CONCLUIDO = 1)
-            await send_auto_evaluation(
+            ciac_saved = await send_auto_evaluation(
                 id_reporte=folio,
                 concluido=1,  # Sí está de acuerdo
                 calificacion=int(rating),
                 comentario=""
             )
-            
+            if not ciac_saved:
+                failure_message = (
+                    "No fue posible registrar tu evaluación en este momento. "
+                    "Por favor, envía nuevamente la calificación del 1 al 5."
+                )
+                await send_chat2desk_message_direct(
+                    client_id, channel_id, failure_message, transport
+                )
+                return True
+
+            current_time = datetime.now().timestamp()
+            evaluated_reports[folio] = current_time
+            clear_evaluation_state(storage, from_number)
+            session.evaluation_state = None
+            session.evaluation_folio = None
+            session.last_hsm_time = None
+            session.update_activity()
+            logger.critical(f"📝 [EVALUATED] Reporte {folio} marcado como evaluado")
+
             thanks_message = "Gracias por tu retroalimentación, tomamos en consideración tus comentarios para mejorar la atención a tus reportes"
             await send_chat2desk_message_direct(client_id, channel_id, thanks_message, transport)
             
@@ -920,33 +979,50 @@ async def handle_evaluation_response(from_number, text, client_id, channel_id, t
             return True
 
         folio = getattr(session, 'evaluation_folio', '')
-        # 🆕 MARCAR COMO EVALUADO
-        current_time = datetime.now().timestamp()
 
-        evaluated_reports[folio] = current_time
-        logger.critical(f"📝 [EVALUATED] Reporte {folio} marcado como evaluado")
-        
-        # Finalizar evaluación
-        session.evaluation_state = None
-        session.evaluation_folio = None
-        session.last_hsm_time = None  # 🆕 LIMPIAR HSM TIME
-        session.update_activity()
-        
         # Enviar evaluación al CIAC (CONCLUIDO = 2)
-        await send_auto_evaluation(
+        ciac_saved = await send_auto_evaluation(
             id_reporte=folio,
             concluido=2,  # No está de acuerdo
             calificacion=0,
             comentario=comentario
         )
+        if not ciac_saved:
+            failure_message = (
+                "No fue posible registrar tu retroalimentación en este momento. "
+                "Por favor, envía nuevamente tu comentario."
+            )
+            await send_chat2desk_message_direct(
+                client_id, channel_id, failure_message, transport
+            )
+            return True
 
-        await send_reactivation_email_notifications(
-            reporte_id=folio,
-            comentario=comentario
+        current_time = datetime.now().timestamp()
+        evaluated_reports[folio] = current_time
+        clear_evaluation_state(storage, from_number)
+        session.evaluation_state = None
+        session.evaluation_folio = None
+        session.last_hsm_time = None
+        session.update_activity()
+        logger.critical(f"📝 [EVALUATED] Reporte {folio} marcado como evaluado")
+
+        thanks_message = (
+            "¡Gracias por compartirnos tu retroalimentación! El área de Calidad "
+            "de Atención Ciudadana revisará tu reporte para evaluar su reactivación. "
+            "En caso de ser factible, te mandaremos un mensaje para avisarte que ha "
+            "sido reactivado."
         )
-        
-        thanks_message = "Gracias por tu retroalimentación, tomamos en consideración tus comentarios para mejorar la atención a tus reportes"
         await send_chat2desk_message_direct(client_id, channel_id, thanks_message, transport)
+
+        # El correo es una notificación secundaria y no debe retrasar hasta 90
+        # segundos el acuse al ciudadano. La evaluación ya quedó registrada en
+        # CIAC antes de llegar a este punto.
+        asyncio.create_task(
+            send_reactivation_email_notifications(
+                reporte_id=folio,
+                comentario=comentario,
+            )
+        )
 
         logger.critical(f"❌ [EVALUACIÓN COMPLETA] Reporte {folio}: Desacuerdo - '{comentario[:50]}...'")
         return True
@@ -1323,7 +1399,7 @@ async def download_and_upload_image(client_id, channel_id, image_url, transport=
         logger.error(f"📷 [DOWNLOAD ERROR] {str(e)}")
         return False
 
-async def send_auto_evaluation(id_reporte: str, concluido: int, calificacion: int, comentario: str = ""):
+async def send_auto_evaluation(id_reporte: str, concluido: int, calificacion: int, comentario: str = "") -> bool:
     """
     Envía la evaluación automática al endpoint del CIAC.
     
@@ -1343,7 +1419,8 @@ async def send_auto_evaluation(id_reporte: str, concluido: int, calificacion: in
         
         logger.critical(f"📤 [AUTO-EVALUACIÓN] Enviando: {payload}")
         
-        async with httpx.AsyncClient() as client:
+        timeout = httpx.Timeout(20.0, connect=8.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 "https://ciac.sanpedro.gob.mx/apisag/api/AutoEvaluacion/a73a78a5-3a3f-479e-ae11-063c9014f5b7",
                 headers={
@@ -1353,13 +1430,16 @@ async def send_auto_evaluation(id_reporte: str, concluido: int, calificacion: in
                 json=payload
             )
             
-        if response.status_code == 200:
+        if 200 <= response.status_code < 300:
             logger.critical(f"✅ [AUTO-EVALUACIÓN] Enviada exitosamente para reporte {id_reporte}")
+            return True
         else:
             logger.error(f"❌ [AUTO-EVALUACIÓN] Error {response.status_code}: {response.text}")
+            return False
             
     except Exception as e:
         logger.error(f"Error enviando auto-evaluación: {str(e)}")
+        return False
 
 
 REACTIVATION_NOTIFICATION_RECIPIENTS = [
@@ -4632,6 +4712,20 @@ async def check_inactivity():
                     )
                     continue
 
+                durable_evaluation = get_evaluation_state(db, number)
+                if durable_evaluation:
+                    logger.critical(
+                        "⏰ [INACTIVITY] Evaluación durable pendiente para reporte %s; "
+                        "conversación conservada",
+                        durable_evaluation["folio"],
+                    )
+                    suspend_inactivity_until_new_inbound(
+                        number,
+                        claim_uid,
+                        storage=db,
+                    )
+                    continue
+
                 if session and session.evaluation_state and session.evaluation_folio:
                     if session.evaluation_folio not in evaluated_reports:
                         logger.critical(
@@ -5659,6 +5753,7 @@ async def lifespan(app: FastAPI):
     ensure_report_state_storage(LocalStorage())
     ensure_greeting_outbox_storage(LocalStorage())
     ensure_report_completion_storage(LocalStorage())
+    ensure_evaluation_state_storage(LocalStorage())
     asyncio.create_task(process_chat2desk_webhook_jobs())
     asyncio.create_task(process_greeting_outbox())
     # Startup: se lanzan las tareas de verificación
@@ -6075,6 +6170,21 @@ async def _process_whatsapp_request(request):
                 }, status_code=500)
             # ========EQUIPO CIAC============
             
+        if message_type == 'to_client' and is_report_reactivation_notification(message_text):
+            logger.critical(
+                "♻️ [CIAC REACTIVATION NOTICE] Notificación automática preservada "
+                "para phone=%s message_id=%s text=%s",
+                from_number,
+                message_id,
+                (message_text or "")[:240],
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Notificación de reactivación reconocida como automática",
+                }
+            )
+
         if message_type == 'to_client' and message_text:
             logger.critical(f"🔍 [FILTER DEBUG] Evaluando mensaje: '{message_text}'")
             # 🚫 FILTRO ULTRA ROBUSTO - Bloquear CUALQUIER mensaje de evaluación
@@ -6094,7 +6204,11 @@ async def _process_whatsapp_request(request):
                 logger.debug(f"🚫 [EVALUATION BLOCK] Bloqueando: {message_text[:50]}...")
                 return JSONResponse(content={"status": True, "message": "Mensaje de evaluación bloqueado"})
         
-        hsm_result = await handle_hsm_conclusion_notification(payload, from_number)
+        hsm_result = await handle_hsm_conclusion_notification(
+            payload,
+            from_number,
+            storage=db,
+        )
         if hsm_result:
             return JSONResponse(content=hsm_result)
 
@@ -6811,6 +6925,32 @@ async def _process_whatsapp_request(request):
                 status_code=500,
             )
 
+        # Restaurar primero cualquier encuesta pendiente. El siguiente mensaje
+        # puede llegar a un proceso distinto al que recibió el HSM o el "No".
+        durable_evaluation = get_evaluation_state(db, from_number)
+        if durable_evaluation:
+            if from_number not in user_sessions:
+                user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
+            session = user_sessions[from_number]
+            session.evaluation_state = durable_evaluation["state"]
+            session.evaluation_folio = durable_evaluation["folio"]
+            session.evaluation_client_id = (
+                durable_evaluation.get("client_id") or client_id
+            )
+            session.evaluation_channel_id = (
+                durable_evaluation.get("channel_id") or channel_id
+            )
+            session.last_hsm_time = durable_evaluation.get("updated_at")
+            client_id = client_id or durable_evaluation.get("client_id")
+            channel_id = channel_id or durable_evaluation.get("channel_id")
+            transport = durable_evaluation.get("transport") or transport
+            logger.critical(
+                "♻️ [EVAL RESTORED] phone=%s folio=%s state=%s",
+                from_number,
+                session.evaluation_folio,
+                session.evaluation_state,
+            )
+
         # Capture the citizen's answer before any media/finalization branch can
         # return. This is especially important for image flows: a later "FIN"
         # must finalize the existing state, never become a name or description.
@@ -6823,11 +6963,17 @@ async def _process_whatsapp_request(request):
             "",
         )
         out_of_scope_response = resolve_high_confidence_out_of_scope_response(body)
-        if not out_of_scope_response:
+        if not out_of_scope_response and not durable_evaluation:
             capture_contextual_report_answer(
                 from_number,
                 body,
                 last_outbound_message,
+            )
+        elif durable_evaluation:
+            logger.debug(
+                "Captura de reporte omitida para %s: evaluación pendiente del folio %s",
+                from_number,
+                durable_evaluation["folio"],
             )
         else:
             logger.warning(
@@ -6904,6 +7050,15 @@ async def _process_whatsapp_request(request):
                         session.evaluation_client_id = client_id
                         session.evaluation_channel_id = channel_id
                         session.update_activity()
+                        save_evaluation_state(
+                            db,
+                            from_number,
+                            state=session.evaluation_state,
+                            folio=reporte_id,
+                            client_id=client_id,
+                            channel_id=channel_id,
+                            transport=transport,
+                        )
 
                         logger.critical(f"🎯 [HSM+OK] ✅ Estado configurado:")
                         logger.critical(f"🎯 [HSM+OK]   - evaluation_state: {session.evaluation_state}")
@@ -6944,6 +7099,15 @@ async def _process_whatsapp_request(request):
                             session.evaluation_client_id = client_id
                             session.evaluation_channel_id = channel_id
                             session.update_activity()
+                            save_evaluation_state(
+                                db,
+                                from_number,
+                                state=session.evaluation_state,
+                                folio=session.evaluation_folio,
+                                client_id=client_id,
+                                channel_id=channel_id,
+                                transport=transport,
+                            )
                             
                             return JSONResponse(content={"status": True, "message": "Evaluación iniciada (fallback)"})
                         except Exception as fallback_error:
@@ -6965,7 +7129,12 @@ async def _process_whatsapp_request(request):
             if hasattr(session, 'evaluation_state') and session.evaluation_state:
                 evaluation_text = get_effective_user_message_text(body, reply_context)
                 evaluation_handled = await handle_evaluation_response(
-                    from_number, evaluation_text, client_id, channel_id, transport
+                    from_number,
+                    evaluation_text,
+                    client_id,
+                    channel_id,
+                    transport,
+                    storage=db,
                 )
                 if evaluation_handled:
                     return JSONResponse(content={"status": True, "message": "Evaluation response processed"})
@@ -9088,6 +9257,7 @@ async def reset_conversation(phone_number: str):
             "conversation_lifecycle": False,
             "durable_report_state": False,
             "durable_report_completion": False,
+            "durable_evaluation_state": False,
         }
 
         with report_sessions_lock:
@@ -9128,6 +9298,10 @@ async def reset_conversation(phone_number: str):
             phone_number,
         )
         memory_cleanup["durable_report_completion"] = clear_report_completion(
+            db,
+            phone_number,
+        )
+        memory_cleanup["durable_evaluation_state"] = clear_evaluation_state(
             db,
             phone_number,
         )

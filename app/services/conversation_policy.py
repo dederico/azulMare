@@ -404,6 +404,9 @@ def history_after_latest_context_reset(messages, *, uid_prefix: str = "conversat
 
 def is_known_automated_outbound(text: str | None) -> bool:
     """Recognize deterministic SAM/system templates even without a provider marker."""
+    if is_report_reactivation_notification(text):
+        return True
+
     normalized = normalize_policy_text(text)
     if not normalized:
         return False
@@ -434,6 +437,35 @@ def is_known_automated_outbound(text: str | None) -> bool:
         ),
     )
     return any(all(fragment in normalized for fragment in template) for template in known_templates)
+
+
+def is_report_reactivation_notification(text: str | None) -> bool:
+    """Recognize CIAC's report-reactivation HSM or its rendered citizen message."""
+    raw = str(text or "").strip()
+    normalized = normalize_policy_text(raw)
+    if not normalized:
+        return False
+
+    rendered_notice = all(
+        fragment in normalized
+        for fragment in (
+            "reporte con folio",
+            "ha sido reactivado",
+            "continuara con el proceso de atencion",
+        )
+    )
+    if rendered_notice:
+        return True
+
+    lines = [line.strip().lower() for line in raw.splitlines() if line.strip()]
+    if len(lines) < 2 or lines[0] != "@hsm@":
+        return False
+
+    template_name = lines[1].split("|", 1)[0]
+    return any(
+        marker in template_name
+        for marker in ("reactiv", "reapert", "reabiert")
+    )
 
 
 def should_confirm_operator_outbox_takeover(

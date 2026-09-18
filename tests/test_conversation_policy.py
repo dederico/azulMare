@@ -20,6 +20,7 @@ from app.services.conversation_policy import (
     is_known_automated_outbound,
     is_likely_bot_echo,
     is_non_authoritative_control_source,
+    is_report_reactivation_notification,
     is_trusted_human_control,
     is_verified_public_phone,
     return_greeting_covers_current_inbound,
@@ -349,6 +350,23 @@ class HumanControlPolicyTests(unittest.TestCase):
                 "Te informamos que tu reporte con folio 471071 fue asignado exitosamente."
             )
         )
+
+    def test_rendered_reactivation_notice_is_automated(self):
+        text = (
+            "Tu reporte con folio 472988 ha sido reactivado y continuará con el "
+            "proceso de atención. Gracias por tus comentarios."
+        )
+        self.assertTrue(is_report_reactivation_notification(text))
+        self.assertTrue(is_known_automated_outbound(text))
+
+    def test_reactivation_hsm_is_automated(self):
+        text = "@HSM@\nnotifica_reactivacion|es_mx\n\n472988"
+        self.assertTrue(is_report_reactivation_notification(text))
+        self.assertTrue(is_known_automated_outbound(text))
+
+    def test_unrelated_hsm_is_not_reactivation(self):
+        text = "@HSM@\nnotifica_conclusion|es_mx\n\n472988"
+        self.assertFalse(is_report_reactivation_notification(text))
 
     def test_official_return_macro_is_recognized(self):
         self.assertTrue(

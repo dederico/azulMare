@@ -151,6 +151,7 @@ from app.services.conversation_policy import (
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
     return_greeting_covers_current_inbound,
+    resolve_high_confidence_out_of_scope_response,
 )
 from app.services.report_submission_policy import (
     extract_report_field_answer,
@@ -6821,11 +6822,19 @@ async def _process_whatsapp_request(request):
             ),
             "",
         )
-        capture_contextual_report_answer(
-            from_number,
-            body,
-            last_outbound_message,
-        )
+        out_of_scope_response = resolve_high_confidence_out_of_scope_response(body)
+        if not out_of_scope_response:
+            capture_contextual_report_answer(
+                from_number,
+                body,
+                last_outbound_message,
+            )
+        else:
+            logger.warning(
+                "🧭 [OUT OF SCOPE] Captura de campo de reporte omitida para %s body=%s",
+                from_number,
+                (body or "")[:180],
+            )
 
         if processed_message_ids.contains(uid):
             # The durable claim above is authoritative. A previous local attempt
@@ -8169,11 +8178,12 @@ async def _process_whatsapp_request(request):
             "Historial estructurado preparado para el modelo: %s mensajes previos",
             len(structured_history),
         )
-        capture_citizen_report_evidence(
-            from_number,
-            body,
-            previous_assistant_message=last_outbound_message,
-        )
+        if not out_of_scope_response:
+            capture_citizen_report_evidence(
+                from_number,
+                body,
+                previous_assistant_message=last_outbound_message,
+            )
         log_operational_decision_trace(
             from_number,
             "before_llm_generation",
@@ -8201,6 +8211,13 @@ async def _process_whatsapp_request(request):
                 "📞 [FIXED SECURITY PHONE] Respuesta fija aplicada para %s: %s",
                 from_number,
                 response_content,
+            )
+        elif out_of_scope_response:
+            response_content = out_of_scope_response
+            logger.warning(
+                "🧭 [OUT OF SCOPE] Redirección institucional aplicada para %s body=%s",
+                from_number,
+                (body or "")[:180],
             )
         else:
             # Generar la respuesta del modelo con historial estructurado y el

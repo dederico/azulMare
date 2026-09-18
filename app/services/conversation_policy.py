@@ -16,6 +16,10 @@ WIDGET_EMPTY_RESPONSE_FALLBACK = (
     "No pude obtener una respuesta en este momento. "
     "¿Deseas que te comunique con un agente de Atención Ciudadana?"
 )
+OUT_OF_SCOPE_REDIRECT = (
+    "Este canal está destinado a reportes, denuncias e información municipal "
+    "de San Pedro Garza García. ¿Qué asunto municipal deseas consultar o reportar?"
+)
 
 
 def automatic_report_timeouts_enabled(value: str | None) -> bool:
@@ -66,6 +70,92 @@ def normalize_policy_text(value: str | None) -> str:
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r"[^a-zA-Z0-9\s]", " ", text.lower())
     return " ".join(text.split())
+
+
+def resolve_high_confidence_out_of_scope_response(
+    message: str | None,
+) -> str | None:
+    """Redirect unmistakable general-assistant requests before calling the LLM.
+
+    This guard is intentionally narrow. Prompt policy handles ambiguous topics;
+    local code only blocks clear programming requests and isolated arithmetic so
+    municipal questions involving prices, taxes or calculations remain valid.
+    """
+    raw = str(message or "").strip()
+    normalized = normalize_policy_text(raw)
+    if not normalized:
+        return None
+
+    municipal_markers = (
+        "san pedro",
+        "municipio",
+        "municipal",
+        "reporte",
+        "reportar",
+        "denuncia",
+        "denunciar",
+        "tramite",
+        "servicio",
+        "predial",
+        "multa",
+        "folio",
+        "bache",
+        "luminaria",
+        "basura",
+        "colonia",
+        "calle",
+        "parque",
+        "permiso",
+        "licencia",
+        "atencion ciudadana",
+    )
+    if any(marker in normalized for marker in municipal_markers):
+        return None
+
+    programming_markers = (
+        "hola mundo",
+        "hello world",
+        "python",
+        "javascript",
+        "typescript",
+        "programacion",
+        "codigo fuente",
+        "escribe codigo",
+        "genera codigo",
+        "haz un script",
+        "crea un script",
+        "consulta sql",
+    )
+    if any(marker in normalized for marker in programming_markers):
+        return OUT_OF_SCOPE_REDIRECT
+
+    ascii_text = unicodedata.normalize("NFKD", raw.lower())
+    ascii_text = "".join(char for char in ascii_text if not unicodedata.combining(char))
+    arithmetic_request = re.fullmatch(
+        r"\s*[¿?]*(?:(?:cuanto es|cuanto da|calcula|resuelve|resultado de|"
+        r"suma|resta|multiplica|divide|hazme una suma(?: de)?)\s*)?"
+        r"[0-9\s.,()+\-*/xX÷=]+[?\s]*",
+        ascii_text,
+    )
+    number_count = len(re.findall(r"\d+(?:[.,]\d+)?", ascii_text))
+    has_operator = bool(re.search(r"[+\-*/xX÷]", ascii_text))
+    if arithmetic_request and number_count >= 2 and has_operator:
+        return OUT_OF_SCOPE_REDIRECT
+
+    explicit_math_request = any(
+        marker in normalized
+        for marker in (
+            "hazme una suma",
+            "ponme una suma",
+            "resuelve esta suma",
+            "haz esta operacion matematica",
+            "resuelve esta operacion matematica",
+        )
+    )
+    if explicit_math_request:
+        return OUT_OF_SCOPE_REDIRECT
+
+    return None
 
 
 def is_explicit_report_finalization_token(value: str | None) -> bool:

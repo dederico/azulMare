@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.services.conversation_policy import (
     WIDGET_EMPTY_RESPONSE_FALLBACK,
+    OUT_OF_SCOPE_REDIRECT,
     apply_widget_empty_response_fallback,
     automatic_report_timeouts_enabled,
     authorize_transfer,
@@ -22,6 +23,7 @@ from app.services.conversation_policy import (
     is_trusted_human_control,
     is_verified_public_phone,
     return_greeting_covers_current_inbound,
+    resolve_high_confidence_out_of_scope_response,
     should_replace_unconfirmed_transfer_response,
     should_confirm_operator_outbox_takeover,
     should_accept_bot_return_event,
@@ -36,6 +38,52 @@ class AutomaticReportPolicyTests(unittest.TestCase):
 
     def test_automatic_reports_require_explicit_opt_in(self):
         self.assertTrue(automatic_report_timeouts_enabled("true"))
+
+
+class OutOfScopePolicyTests(unittest.TestCase):
+    def test_programming_requests_are_redirected(self):
+        self.assertEqual(
+            resolve_high_confidence_out_of_scope_response(
+                "Hazme un Hola Mundo en Python"
+            ),
+            OUT_OF_SCOPE_REDIRECT,
+        )
+        self.assertEqual(
+            resolve_high_confidence_out_of_scope_response(
+                "Escribe código fuente en JavaScript"
+            ),
+            OUT_OF_SCOPE_REDIRECT,
+        )
+
+    def test_isolated_arithmetic_is_redirected(self):
+        self.assertEqual(
+            resolve_high_confidence_out_of_scope_response("¿Cuánto es 25 + 38?"),
+            OUT_OF_SCOPE_REDIRECT,
+        )
+        self.assertEqual(
+            resolve_high_confidence_out_of_scope_response("2+2"),
+            OUT_OF_SCOPE_REDIRECT,
+        )
+
+    def test_municipal_calculations_remain_available(self):
+        self.assertIsNone(
+            resolve_high_confidence_out_of_scope_response(
+                "¿Cuánto sería el predial con un descuento de 10%?"
+            )
+        )
+        self.assertIsNone(
+            resolve_high_confidence_out_of_scope_response(
+                "Quiero reportar que el sistema muestra el código Python"
+            )
+        )
+
+    def test_normal_municipal_and_greeting_messages_continue_to_the_model(self):
+        self.assertIsNone(
+            resolve_high_confidence_out_of_scope_response(
+                "Quiero información de actividades en Parque Mississippi"
+            )
+        )
+        self.assertIsNone(resolve_high_confidence_out_of_scope_response("Hola"))
 
 
 class FolioValidationTests(unittest.TestCase):

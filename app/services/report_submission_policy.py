@@ -59,6 +59,8 @@ PROBLEM_SIGNAL_WORDS = (
     "abandonado",
     "abandonada",
     "obstruye",
+    "obstruida",
+    "obstruido",
     "bloquea",
     "falta ",
     "riesgo",
@@ -186,6 +188,14 @@ def normalize_report_number_input(value: str | None) -> str | None:
     normalized = normalize_report_text(raw)
     if raw.isdigit():
         return raw
+    # Una referencia adicional no invalida el número exterior que el ciudadano
+    # proporcionó en respuesta directa a la pregunta por la numeración.
+    number_with_reference = re.fullmatch(
+        r"(\d{1,8})\s*,\s*[^\d].+",
+        raw,
+    )
+    if number_with_reference:
+        return number_with_reference.group(1)
     if normalized in {
         "sin numero",
         "no tiene numero",
@@ -267,6 +277,80 @@ def is_likely_report_description(
         )
     )
     return asked_for_problem
+
+
+def contains_complete_report_phrase(text: str | None, phrases) -> bool:
+    """Match control words as complete words, never inside citizen vocabulary."""
+    normalized = normalize_report_text(text)
+    return any(
+        re.search(rf"(?<!\w){re.escape(normalize_report_text(phrase))}(?!\w)", normalized)
+        for phrase in phrases
+        if normalize_report_text(phrase)
+    )
+
+
+def sidewalk_sign_category_options(prompt: str | None, description: str | None) -> dict[str, str]:
+    """Read the two sidewalk-obstruction IDs from the active CIAC prompt catalog."""
+    issue = normalize_report_text(description)
+    if not all(word in issue for word in ("banqueta", "letrero")):
+        return {}
+    if not any(word in issue for word in ("obstruid", "obstruccion", "obstruye")):
+        return {}
+
+    options = {}
+    for match in re.finditer(
+        r"^\s*Valor:\s*(\d+)\s*,\s*Tipo:\s*(.+)$",
+        str(prompt or ""),
+        flags=re.MULTILINE | re.IGNORECASE,
+    ):
+        label = normalize_report_text(match.group(2))
+        if "obstruccion de banqueta" not in label:
+            continue
+        if "objetos moviles" in label:
+            options["movil"] = match.group(1)
+        elif "construccion fija" in label:
+            options["fijo"] = match.group(1)
+    return options if len(options) == 2 else {}
+
+
+def classify_sidewalk_sign_answer(
+    answer: str | None,
+    *,
+    prompt: str | None,
+    description: str | None,
+) -> str | None:
+    options = sidewalk_sign_category_options(prompt, description)
+    normalized = normalize_report_text(answer)
+    if not options:
+        return None
+    if contains_complete_report_phrase(normalized, ("fijo", "fija", "anclado", "anclada", "no se puede mover")):
+        return options["fijo"]
+    if contains_complete_report_phrase(normalized, ("movil", "se puede mover", "lo mueven")):
+        return options["movil"]
+    return None
+
+
+def next_missing_report_field(selections: dict[str, str], *, prompt: str | None = None) -> tuple[str, str] | None:
+    """Ask only for an absent fact; never discard facts already supplied."""
+    if not is_meaningful_report_description(selections.get("selection4")):
+        return "selection4", "¿Qué problema deseas reportar? Descríbelo brevemente."
+    if normalize_report_text(selections.get("selection5")) in INVALID_REQUIRED_VALUES:
+        return "selection5", "¿En qué calle se encuentra el problema?"
+    if normalize_report_number_input(selections.get("selection6")) is None:
+        return "selection6", "¿Cuál es el número exterior? Si no existe o no lo conoces, indícame “sin número”."
+    if normalize_report_text(selections.get("selection7")) in INVALID_REQUIRED_VALUES | {"0000"}:
+        return "selection7", "¿En qué colonia se encuentra el problema?"
+    if not is_valid_reporter_name(selections.get("selection2")):
+        return "selection2", "Antes de crear el reporte, ¿me compartes tu nombre? También puedes indicar “Anónimo”."
+    category = str(selections.get("selection1") or "").strip()
+    if not category.isdigit() or category == "0":
+        if sidewalk_sign_category_options(prompt, selections.get("selection4")):
+            return "selection1", "Para clasificar el reporte correctamente, ¿el letrero se puede mover o está fijo/anclado a la banqueta?"
+        # Para otros asuntos conservamos la validación existente. Sin una
+        # clasificación respaldada por el catálogo no hay una respuesta que
+        # podamos convertir a ID y repetir la pregunta atraparía al usuario.
+        return None
+    return None
 
 
 def select_citizen_report_description(

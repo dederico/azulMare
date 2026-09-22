@@ -4,10 +4,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from app.services.report_submission_policy import (
+    classify_sidewalk_sign_answer,
+    contains_complete_report_phrase,
     extract_report_field_answer,
     infer_high_confidence_report_category,
     is_likely_report_description,
     merge_citizen_report_description,
+    next_missing_report_field,
     reconcile_with_citizen_evidence,
     select_citizen_report_description,
     validate_and_normalize_report_submission,
@@ -168,6 +171,82 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 "Fin",
             )
         )
+
+    def test_visibilidad_is_not_a_si_finalization(self):
+        text = "El letrero no permite la visibilidad de los vehículos"
+        self.assertFalse(contains_complete_report_phrase(text, ("si", "sí")))
+        self.assertTrue(contains_complete_report_phrase("Sí, termina mi reporte", ("si", "sí")))
+
+    def test_initial_sidewalk_sign_description_is_citizen_evidence(self):
+        self.assertTrue(is_likely_report_description("Banqueta obstruida por letrero"))
+
+    def test_number_with_landmark_keeps_the_number(self):
+        self.assertEqual(
+            extract_report_field_answer(
+                "¿Cuál es el número del domicilio o la numeración más cercana?",
+                "2513, al lado del Banamex",
+            ),
+            ("selection6", "2513"),
+        )
+
+    def test_fin_asks_only_for_missing_name_then_catalog_clarification(self):
+        catalog = (
+            "Valor: 1007, Tipo: Exhorto obstrucción de banqueta con objetos móviles\n"
+            "Valor: 1008, Tipo: Obstrucción de banqueta con construcción fija"
+        )
+        fields = {
+            "selection1": "",
+            "selection2": "",
+            "selection4": "Banqueta obstruida por letrero",
+            "selection5": "Avenida Lázaro Cárdenas",
+            "selection6": "2513",
+            "selection7": "Valle Oriente",
+        }
+        self.assertEqual(next_missing_report_field(fields, prompt=catalog)[0], "selection2")
+        fields["selection2"] = "Gerardo Rodríguez"
+        field, question = next_missing_report_field(fields, prompt=catalog)
+        self.assertEqual(field, "selection1")
+        self.assertIn("mover", question)
+        fields["selection1"] = classify_sidewalk_sign_answer(
+            "Está fijo",
+            prompt=catalog,
+            description=fields["selection4"],
+        )
+        self.assertEqual(fields["selection1"], "1008")
+        self.assertIsNone(next_missing_report_field(fields, prompt=catalog))
+
+    def test_movable_sidewalk_sign_uses_catalog_not_default(self):
+        catalog = (
+            "Valor: 1007, Tipo: Exhorto obstrucción de banqueta con objetos móviles\n"
+            "Valor: 1008, Tipo: Obstrucción de banqueta con construcción fija"
+        )
+        self.assertEqual(
+            classify_sidewalk_sign_answer(
+                "Se puede mover",
+                prompt=catalog,
+                description="Banqueta obstruida por letrero",
+            ),
+            "1007",
+        )
+        self.assertEqual(
+            classify_sidewalk_sign_answer(
+                "No se puede mover",
+                prompt=catalog,
+                description="Banqueta obstruida por letrero",
+            ),
+            "1008",
+        )
+
+    def test_unknown_category_does_not_loop_on_unresolvable_question(self):
+        fields = {
+            "selection1": "",
+            "selection2": "Gerardo Rodríguez",
+            "selection4": "Un problema de infraestructura",
+            "selection5": "Lázaro Cárdenas",
+            "selection6": "2513",
+            "selection7": "Valle Oriente",
+        }
+        self.assertIsNone(next_missing_report_field(fields, prompt=""))
 
     def test_generic_request_alone_is_not_used_as_the_explanation(self):
         self.assertEqual(

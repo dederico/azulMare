@@ -155,6 +155,8 @@ from app.services.conversation_policy import (
     resolve_high_confidence_out_of_scope_response,
 )
 from app.services.report_submission_policy import (
+    classify_sidewalk_sign_answer,
+    contains_complete_report_phrase,
     extract_report_field_answer,
     infer_high_confidence_report_category,
     is_explicit_report_intent,
@@ -162,6 +164,7 @@ from app.services.report_submission_policy import (
     is_meaningful_report_description,
     is_valid_reporter_name,
     merge_citizen_report_description,
+    next_missing_report_field,
     reconcile_with_citizen_evidence,
     select_citizen_report_description,
     validate_and_normalize_report_submission,
@@ -2889,7 +2892,11 @@ def capture_citizen_report_evidence(
     """Persist grounded report evidence without treating workflow answers as facts."""
     inferred_code = infer_high_confidence_report_category(citizen_message)
     has_active_report = from_number in report_sessions
-    if not has_active_report and not inferred_code and not is_explicit_report_intent(citizen_message):
+    standalone_problem = (
+        is_likely_report_description(citizen_message)
+        and not str(citizen_message or "").strip().endswith("?")
+    )
+    if not has_active_report and not inferred_code and not is_explicit_report_intent(citizen_message) and not standalone_problem:
         return
 
     create_or_update_report_session(from_number)
@@ -5069,15 +5076,15 @@ def is_finalization_message(text, from_number=None):
         return True
     
     # Check for direct keywords (simple full or partial matches)
-    if any(keyword in text_lower.split() or keyword in text_lower for keyword in direct_keywords):
+    if contains_complete_report_phrase(text_lower, direct_keywords):
         # But make sure none of the negative indicators are present
-        if not any(neg in text_lower for neg in negative_indicators):
+        if not contains_complete_report_phrase(text_lower, negative_indicators):
             return True
     
     # Check for phrase patterns (more complex expressions)
-    if any(phrase in text_lower for phrase in finalization_phrases):
+    if contains_complete_report_phrase(text_lower, finalization_phrases):
         # But make sure none of the negative indicators are present
-        if not any(neg in text_lower for neg in negative_indicators):
+        if not contains_complete_report_phrase(text_lower, negative_indicators):
             return True
     
     # Additional context-aware checks for very short responses
@@ -6963,12 +6970,31 @@ async def _process_whatsapp_request(request):
             "",
         )
         out_of_scope_response = resolve_high_confidence_out_of_scope_response(body)
+        captured_report_field = None
         if not out_of_scope_response and not durable_evaluation:
-            capture_contextual_report_answer(
+            captured_report_field = capture_contextual_report_answer(
                 from_number,
                 body,
                 last_outbound_message,
             )
+            pending_field = report_sessions.get(from_number, {}).get(
+                "pending_finalization_field"
+            )
+            if pending_field == "selection1":
+                catalog_prompt = config.get("prompt") or system_message
+                category = classify_sidewalk_sign_answer(
+                    body,
+                    prompt=catalog_prompt,
+                    description=get_user_answer(from_number, "selection4"),
+                )
+                if category:
+                    save_user_answer(from_number, "selection1", category)
+                    captured_report_field = ("selection1", category)
+                    logger.critical(
+                        "🧾 [REPORT CATALOG CLARIFICATION] phone=%s category=%s",
+                        from_number,
+                        category,
+                    )
         elif durable_evaluation:
             logger.debug(
                 "Captura de reporte omitida para %s: evaluación pendiente del folio %s",
@@ -7622,7 +7648,13 @@ async def _process_whatsapp_request(request):
                 # Clasificar FIN antes del filtro de ecos. La confirmación
                 # aparece dentro del texto de SAM ("responde FIN"), por lo que
                 # una comparación ingenua por subcadena la descartaba.
-                is_finalization = is_finalization_message(body, from_number)
+                pending_field = report_sessions[from_number].get(
+                    "pending_finalization_field"
+                )
+                is_finalization = (
+                    is_finalization_message(body, from_number)
+                    or bool(pending_field)
+                )
                 
                 # First, ensure this isn't a bot-generated message being echoed back
                 is_bot_message = False
@@ -7647,8 +7679,12 @@ async def _process_whatsapp_request(request):
                     # Skip processing if this appears to be from the bot
                     return JSONResponse(content={"status": True, "message": "Bot message echo ignored"})
                 
-                # Now check if this is providing location or requesting finalization
-                is_location = any(keyword in body.lower() for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"])
+                # Una respuesta a un dato pendiente pertenece al cierre del
+                # reporte, aunque contenga palabras como "calle" o "colonia".
+                is_location = not is_finalization and any(
+                    keyword in body.lower()
+                    for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"]
+                )
 
                 
                 # Log the classification for debugging
@@ -7665,17 +7701,6 @@ async def _process_whatsapp_request(request):
                     folio = None
                     logger.info(f"Report finalization request {request_id} received")
                     
-                    # En lugar de procesar directamente, enviar un mensaje especial al modelo
-                    finalization_prompt = "El usuario quiere finalizar el reporte. " + \
-                             "Por favor, verifica que has recopilado toda la información necesaria " + \
-                             "(asunto, nombre, calle, número, colonia) y llama a la función save_client_selection " + \
-                             "con los datos completos. Si falta algún dato, solicítalo antes de proceder."
-                    
-                    # Añadir este mensaje al historial como si fuera un mensaje del sistema
-                    if from_number in user_sessions:
-                        conversation_history = user_sessions[from_number].history
-                        conversation_history.add_ai_message(f"[SISTEMA: {finalization_prompt}]")
-
                     # El usuario quiere finalizar el reporte
                     images = report_sessions[from_number]["images"]
                     descriptions = report_sessions[from_number]["image_descriptions"]
@@ -7703,10 +7728,46 @@ async def _process_whatsapp_request(request):
                     # Use the location stored in the report session or the current message as fallback
                     user_location = report_sessions[from_number]["location"] or body or "ubicación no especificada"
                     
-                    # Usar la función centralizada para procesar el reporte
-                    result = await process_and_save_report(from_number, user_location, unique_images, unique_descriptions)
-                    
-                    if result['status'] == 'in_progress':
+                    # FIN no debe invocar CIAC con datos que ya sabemos que faltan.
+                    # Las respuestas a esta pregunta reanudan el mismo intento,
+                    # sin exigir que el ciudadano vuelva a escribir FIN.
+                    selections = {
+                        key: get_user_answer(from_number, key)
+                        for key in (
+                            "selection1", "selection2", "selection4",
+                            "selection5", "selection6", "selection7",
+                        )
+                    }
+                    missing_field = next_missing_report_field(
+                        selections,
+                        prompt=config.get("prompt") or system_message,
+                    )
+                    if missing_field:
+                        field_key, question = missing_field
+                        report_sessions[from_number]["pending_finalization_field"] = field_key
+                        result = {
+                            "status": "needs_input",
+                            "message": question,
+                        }
+                        logger.warning(
+                            "🧾 [REPORT FINALIZATION PAUSED] phone=%s missing=%s "
+                            "answered_previous=%s",
+                            from_number,
+                            field_key,
+                            captured_report_field,
+                        )
+                    else:
+                        report_sessions[from_number].pop("pending_finalization_field", None)
+                        result = await process_and_save_report(
+                            from_number,
+                            user_location,
+                            unique_images,
+                            unique_descriptions,
+                        )
+
+                    if result['status'] == 'needs_input':
+                        body = result['message']
+                    elif result['status'] == 'in_progress':
                         body = result['message']
                     elif result['status'] == 'duplicate':
                         body = result['message']

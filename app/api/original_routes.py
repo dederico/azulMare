@@ -201,6 +201,7 @@ from app.services.report_completion import (
     clear_report_completion,
     ensure_report_completion_storage,
     get_recent_report_completion,
+    is_delayed_pre_completion_event,
     record_report_completion,
 )
 from app.services.evaluation_state import (
@@ -3903,30 +3904,9 @@ def has_recent_report(phone_number, max_age_minutes=15):
     return None
 
 
-def get_recent_report_closure_message(phone_number: str) -> str | None:
-    durable_report = get_recent_report_completion(LocalStorage(), phone_number)
-    if durable_report and durable_report.get("folio"):
-        return (
-            f"Tu reporte ya fue registrado con el folio **{durable_report['folio']}**. "
-            "Gracias por reportarlo."
-        )
-
-    recent_report = has_recent_report(phone_number)
-    if recent_report and recent_report.get("folio"):
-        return (
-            f"Tu reporte ya fue registrado con el folio **{recent_report['folio']}**. "
-            "Gracias por reportarlo."
-        )
-
-    dedup_status = dedup_manager.get_status(phone_number)
-    dedup_report = dedup_status.get("recent_report") if isinstance(dedup_status, dict) else None
-    if dedup_report and dedup_report.get("folio"):
-        return (
-            f"Tu reporte ya fue registrado con el folio **{dedup_report['folio']}**. "
-            "Gracias por reportarlo."
-        )
-
-    return None
+def is_delayed_post_folio_webhook(phone_number: str, event_timestamp: float | None) -> bool:
+    completion = get_recent_report_completion(LocalStorage(), phone_number)
+    return is_delayed_pre_completion_event(completion, event_timestamp)
 
 
 # Añade esta función wrapper alrededor de save_client_selection
@@ -7457,10 +7437,9 @@ async def _process_whatsapp_request(request):
                             content={"status": False, "error": "No se pudo enviar saludo institucional"},
                             status_code=500,
                         )
-                closure_message = get_recent_report_closure_message(from_number)
-                if closure_message:
+                if is_delayed_post_folio_webhook(from_number, inbound_event_timestamp):
                     logger.info(
-                        "📷 [POST-FOLIO IGNORE] Ignorando imagen tardía para %s porque ya existe reporte reciente",
+                        "📷 [POST-FOLIO STALE] Ignorando imagen anterior al folio para %s",
                         from_number,
                     )
                     # No volver a anunciar el folio. El webhook tardío queda
@@ -7623,10 +7602,9 @@ async def _process_whatsapp_request(request):
         # Now let's fix the report finalization check in the WhatsApp endpoint
         elif body and from_number in report_sessions and report_sessions[from_number]["images"]:
             # El usuario ya ha enviado imágenes, este texto podría ser información del reporte
-            closure_message = get_recent_report_closure_message(from_number)
-            if closure_message:
+            if is_delayed_post_folio_webhook(from_number, inbound_event_timestamp):
                 logger.info(
-                    "🧾 [POST-FOLIO IGNORE] Ignorando mensaje tardío '%s' para %s porque ya existe reporte reciente",
+                    "🧾 [POST-FOLIO STALE] Ignorando mensaje anterior al folio '%s' para %s",
                     (body or "")[:60],
                     from_number,
                 )

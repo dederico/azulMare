@@ -3,6 +3,7 @@ import unittest
 from app.services.report_completion import (
     clear_report_completion,
     get_recent_report_completion,
+    is_delayed_pre_completion_event,
     record_report_completion,
 )
 
@@ -47,6 +48,13 @@ class DurableReportCompletionTests(unittest.TestCase):
         )
 
         self.assertIsNone(completion)
+
+    def test_only_events_clearly_before_folio_are_stale(self):
+        completion = {"folio": "472626", "completed_at": 100.0}
+        self.assertTrue(is_delayed_pre_completion_event(completion, 90.0))
+        self.assertFalse(is_delayed_pre_completion_event(completion, 99.0))
+        self.assertFalse(is_delayed_pre_completion_event(completion, 101.0))
+        self.assertFalse(is_delayed_pre_completion_event(completion, None))
 
 
 if __name__ == "__main__":

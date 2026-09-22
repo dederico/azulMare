@@ -157,6 +157,19 @@ def get_recent_report_completion(
     return None
 
 
+def is_delayed_pre_completion_event(
+    completion: dict[str, Any] | None,
+    event_timestamp: float | None,
+    *,
+    tolerance_seconds: float = 3.0,
+) -> bool:
+    """Only suppress clearly old webhooks, never new citizen replies after a folio."""
+    if not completion or event_timestamp is None:
+        return False
+    completed_at = float(completion.get("completed_at") or 0)
+    return bool(completed_at and event_timestamp < completed_at - tolerance_seconds)
+
+
 def clear_report_completion(storage, phone_number: str) -> bool:
     key = normalize_phone_key(phone_number)
     with _memory_lock:

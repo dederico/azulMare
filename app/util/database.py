@@ -44,13 +44,6 @@ class LocalStorage:
             f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbName}?sslmode=require"
         )
 
-        logger.debug(
-            "Local storage initialized for database=%s host=%s port=%s",
-            self.dbName,
-            self.host,
-            self.port,
-        )
-
     def migrate(self):
         tables = [Call, User, Config, Notification, File, Message, OutgoingCampaign, OutgoingRecipient]
         for table in tables:

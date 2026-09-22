@@ -157,7 +157,9 @@ from app.services.conversation_policy import (
 from app.services.report_submission_policy import (
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
+    extract_pending_report_answers,
     extract_report_field_answer,
+    fallback_report_category_id,
     infer_high_confidence_report_category,
     is_explicit_report_intent,
     is_likely_report_description,
@@ -168,6 +170,7 @@ from app.services.report_submission_policy import (
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
     select_citizen_report_description,
+    sidewalk_sign_category_options,
     validate_and_normalize_report_submission,
     validation_error_to_user_message,
 )
@@ -6953,14 +6956,34 @@ async def _process_whatsapp_request(request):
         out_of_scope_response = resolve_high_confidence_out_of_scope_response(body)
         captured_report_field = None
         if not out_of_scope_response and not durable_evaluation:
-            captured_report_field = capture_contextual_report_answer(
-                from_number,
-                body,
-                last_outbound_message,
-            )
             pending_field = report_sessions.get(from_number, {}).get(
                 "pending_finalization_field"
             )
+            pending_answers = extract_pending_report_answers(pending_field, body)
+            for selection_key, value in pending_answers.items():
+                if selection_key == "selection4":
+                    value = merge_citizen_report_description(
+                        get_user_answer(from_number, selection_key),
+                        value,
+                    )
+                    inferred_category = infer_high_confidence_report_category(value)
+                    if inferred_category:
+                        save_user_answer(from_number, "selection1", inferred_category)
+                save_user_answer(from_number, selection_key, value)
+            if pending_answers:
+                captured_report_field = next(iter(pending_answers.items()))
+                logger.critical(
+                    "🧾 [REPORT PENDING CAPTURE] phone=%s pending=%s fields=%s",
+                    from_number,
+                    pending_field,
+                    sorted(pending_answers),
+                )
+            else:
+                captured_report_field = capture_contextual_report_answer(
+                    from_number,
+                    body,
+                    last_outbound_message,
+                )
             if pending_field == "selection1":
                 catalog_prompt = config.get("prompt") or system_message
                 category = classify_sidewalk_sign_answer(
@@ -6968,6 +6991,10 @@ async def _process_whatsapp_request(request):
                     prompt=catalog_prompt,
                     description=get_user_answer(from_number, "selection4"),
                 )
+                if not category and str(body or "").strip().casefold() not in {
+                    "fin", "gracias", "ok",
+                }:
+                    category = fallback_report_category_id(catalog_prompt)
                 if category:
                     save_user_answer(from_number, "selection1", category)
                     captured_report_field = ("selection1", category)
@@ -7718,10 +7745,20 @@ async def _process_whatsapp_request(request):
                         )
                     }
                     if not str(selections["selection1"] or "").strip():
+                        catalog_prompt = config.get("prompt") or system_message
                         category = resolve_unambiguous_catalog_category(
-                            config.get("prompt") or system_message,
+                            catalog_prompt,
                             selections["selection4"],
                         )
+                        # La única ambigüedad que todavía vale la pena preguntar
+                        # es letrero fijo vs. móvil. Cualquier otro asunto no
+                        # reconocido entra a la bandeja general de CIAC para que
+                        # no se pierda el reporte ni se invente una clasificación.
+                        if not category and not sidewalk_sign_category_options(
+                            catalog_prompt,
+                            selections["selection4"],
+                        ):
+                            category = fallback_report_category_id(catalog_prompt)
                         if category:
                             save_user_answer(from_number, "selection1", category)
                             selections["selection1"] = category
@@ -7736,7 +7773,43 @@ async def _process_whatsapp_request(request):
                     )
                     if missing_field:
                         field_key, question = missing_field
+                        prior_pending = report_sessions[from_number].get(
+                            "pending_finalization_field"
+                        )
+                        prompted_at = float(
+                            report_sessions[from_number].get(
+                                "pending_finalization_prompted_at", 0
+                            ) or 0
+                        )
+                        repeated_control = (
+                            prior_pending == field_key
+                            and not captured_report_field
+                            and str(body or "").strip().casefold()
+                            in {"fin", "gracias", "ok"}
+                            and datetime.now().timestamp() - prompted_at < 60
+                        )
+                        if repeated_control:
+                            logger.info(
+                                "🧾 [REPORT PENDING CONTROL] phone=%s field=%s body=%s",
+                                from_number,
+                                field_key,
+                                body,
+                            )
+                            mark_inbound_processing_delivered(
+                                uid,
+                                inbound_claim_token,
+                                storage=db,
+                            )
+                            return JSONResponse(
+                                content={
+                                    "status": True,
+                                    "message": "Control repetido de cierre ignorado",
+                                }
+                            )
                         report_sessions[from_number]["pending_finalization_field"] = field_key
+                        report_sessions[from_number][
+                            "pending_finalization_prompted_at"
+                        ] = datetime.now().timestamp()
                         result = {
                             "status": "needs_input",
                             "message": question,
@@ -7750,6 +7823,9 @@ async def _process_whatsapp_request(request):
                         )
                     else:
                         report_sessions[from_number].pop("pending_finalization_field", None)
+                        report_sessions[from_number].pop(
+                            "pending_finalization_prompted_at", None
+                        )
                         result = await process_and_save_report(
                             from_number,
                             user_location,

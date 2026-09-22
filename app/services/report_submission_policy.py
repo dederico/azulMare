@@ -114,6 +114,11 @@ HIGH_CONFIDENCE_REPORT_CATEGORIES = {
     "ruido": "1000",
 }
 
+# Bandeja general del catálogo CIAC para solicitudes que no pueden asignarse
+# con certeza a un asunto especializado. CIAC conserva la explicación original
+# y puede reasignar internamente el reporte.
+UNCLASSIFIED_REPORT_CATEGORY_ID = "486"
+
 
 def normalize_report_text(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
@@ -198,14 +203,75 @@ def normalize_report_number_input(value: str | None) -> str | None:
         return number_with_reference.group(1)
     if normalized in {
         "sin numero",
+        "son numero",
         "no tiene numero",
+        "no tiene numeracion",
         "no hay numero",
         "no se el numero",
+        "es esquina",
+        "en esquina",
         "s/n",
         "sn",
     }:
         return "0000"
     return None
+
+
+def extract_pending_report_answers(
+    pending_field: str | None,
+    citizen_message: str | None,
+) -> dict[str, str]:
+    """Parse the requested field from durable state, independent of prompt wording."""
+    field = str(pending_field or "").strip()
+    raw = str(citizen_message or "").strip()
+    compact = " ".join(raw.split()).strip()
+    normalized = normalize_report_text(compact)
+    if not field or not compact or normalized in REPORT_CONTROL_MESSAGES:
+        return {}
+
+    if field == "selection6":
+        number = normalize_report_number_input(compact)
+        return {field: number} if number is not None else {}
+    if field == "selection2":
+        return {field: compact} if is_valid_reporter_name(compact) else {}
+    if field == "selection4":
+        return {field: compact} if is_meaningful_report_description(compact) else {}
+    if field == "selection7":
+        return {field: compact} if is_meaningful_report_description(compact) else {}
+    if field != "selection5":
+        return {}
+
+    # Citizens frequently send street, exterior number and neighborhood in one
+    # message. Preserve all three instead of asking for information already sent.
+    one_line = re.fullmatch(
+        r"(.+?)\s+(\d{1,8})\s+(?:colonia|fraccionamiento|fracc\.?|col\.?)\s+(.+)",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if one_line:
+        return {
+            "selection5": one_line.group(1).strip(),
+            "selection6": one_line.group(2),
+            "selection7": one_line.group(3).strip(),
+        }
+
+    lines = [" ".join(line.split()).strip() for line in raw.splitlines() if line.strip()]
+    if lines:
+        first = re.fullmatch(r"(.+?)\s+(\d{1,8})", lines[0])
+        if first:
+            answers = {"selection5": first.group(1).strip(), "selection6": first.group(2)}
+            if len(lines) > 1:
+                neighborhood = re.sub(
+                    r"^(?:colonia|fraccionamiento|fracc\.?|col\.?)\s+",
+                    "",
+                    lines[1],
+                    flags=re.IGNORECASE,
+                ).strip()
+                if neighborhood:
+                    answers["selection7"] = neighborhood
+            return answers
+
+    return {"selection5": compact} if is_meaningful_report_description(compact) else {}
 
 
 def extract_report_field_answer(
@@ -324,6 +390,21 @@ def resolve_unambiguous_catalog_category(prompt: str | None, description: str | 
         if issue_words & subject_words(match.group(2))
     }
     return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def fallback_report_category_id(prompt: str | None = None) -> str:
+    """Return CIAC's general Atención Ciudadana inbox for unknown subjects."""
+    # Keep the ID stable even if a shortened runtime prompt omits the catalog.
+    # When present, the label documents that the configured catalog agrees.
+    for match in re.finditer(
+        r"^\s*Valor:\s*(\d+)\s*,\s*Tipo:\s*(.+)$",
+        str(prompt or ""),
+        flags=re.MULTILINE | re.IGNORECASE,
+    ):
+        label = normalize_report_text(match.group(2))
+        if "gestiones direccion de atencion ciudadana" in label:
+            return match.group(1)
+    return UNCLASSIFIED_REPORT_CATEGORY_ID
 
 
 def sidewalk_sign_category_options(prompt: str | None, description: str | None) -> dict[str, str]:

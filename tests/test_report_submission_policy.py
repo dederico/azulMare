@@ -6,7 +6,9 @@ import httpx
 from app.services.report_submission_policy import (
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
+    extract_pending_report_answers,
     extract_report_field_answer,
+    fallback_report_category_id,
     infer_high_confidence_report_category,
     is_likely_report_description,
     merge_citizen_report_description,
@@ -228,6 +230,40 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             ),
             ("selection6", "2513"),
         )
+
+    def test_pending_number_accepts_common_no_number_variants(self):
+        for answer in ("0000", "Sin número", "No tiene numeración", "Es esquina", "Son numero"):
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    extract_pending_report_answers("selection6", answer),
+                    {"selection6": "0000"},
+                )
+
+    def test_pending_street_extracts_compound_multiline_address(self):
+        self.assertEqual(
+            extract_pending_report_answers(
+                "selection5",
+                "Encino 113\nFraccionamiento Olinalá",
+            ),
+            {
+                "selection5": "Encino",
+                "selection6": "113",
+                "selection7": "Olinalá",
+            },
+        )
+
+    def test_pending_state_does_not_treat_controls_as_field_answers(self):
+        self.assertEqual(extract_pending_report_answers("selection5", "FIN"), {})
+        self.assertEqual(extract_pending_report_answers("selection5", "Gracias"), {})
+
+    def test_unknown_subject_uses_general_ciac_catalog_entry(self):
+        catalog = (
+            "Valor: 984, Tipo: Baches\n"
+            "Valor: 486, Tipo: Gestiones dirección de atención ciudadana\n"
+        )
+
+        self.assertEqual(fallback_report_category_id(catalog), "486")
+        self.assertEqual(fallback_report_category_id(""), "486")
 
     def test_fin_asks_only_for_missing_name_then_catalog_clarification(self):
         catalog = (

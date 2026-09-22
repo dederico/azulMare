@@ -12,6 +12,7 @@ from app.services.report_submission_policy import (
     merge_citizen_report_description,
     next_missing_report_field,
     reconcile_with_citizen_evidence,
+    resolve_unambiguous_catalog_category,
     select_citizen_report_description,
     validate_and_normalize_report_submission,
     validation_error_to_user_message,
@@ -179,6 +180,45 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
 
     def test_initial_sidewalk_sign_description_is_citizen_evidence(self):
         self.assertTrue(is_likely_report_description("Banqueta obstruida por letrero"))
+
+    def test_problem_question_captures_unrestricted_citizen_explanation(self):
+        self.assertEqual(
+            extract_report_field_answer(
+                "¿Qué problema presenta el anuncio?",
+                "Estorba la visibilidad",
+            ),
+            ("selection4", "Estorba la visibilidad"),
+        )
+
+    def test_advertisement_category_comes_from_active_catalog(self):
+        catalog = (
+            "Valor: 969, Tipo: Permisos y quejas de anuncios\n"
+            "Valor: 1007, Tipo: Exhorto obstrucción de banqueta con objetos móviles"
+        )
+        self.assertEqual(
+            resolve_unambiguous_catalog_category(
+                catalog,
+                "Un anuncio en la calle. El anuncio obstruye la visibilidad",
+            ),
+            "969",
+        )
+        self.assertEqual(
+            resolve_unambiguous_catalog_category(
+                catalog.replace("Valor: 969", "Valor: 1234"),
+                "El anuncio obstruye la visibilidad",
+            ),
+            "1234",
+        )
+        self.assertIsNone(resolve_unambiguous_catalog_category("", "Un anuncio en la calle"))
+
+    def test_ambiguous_catalog_match_never_picks_arbitrary_id(self):
+        catalog = (
+            "Valor: 1007, Tipo: Exhorto obstrucción de banqueta con objetos móviles\n"
+            "Valor: 1008, Tipo: Obstrucción de banqueta con construcción fija"
+        )
+        self.assertIsNone(
+            resolve_unambiguous_catalog_category(catalog, "La banqueta está obstruida")
+        )
 
     def test_number_with_landmark_keeps_the_number(self):
         self.assertEqual(

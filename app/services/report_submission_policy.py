@@ -232,6 +232,7 @@ def extract_report_field_answer(
         phrase in previous
         for phrase in (
             "que deseas reportar",
+            "que problema presenta",
             "cual es el motivo del reporte",
             "que problema deseas reportar",
             "describe el problema",
@@ -270,6 +271,7 @@ def is_likely_report_description(
         phrase in previous
         for phrase in (
             "que deseas reportar",
+            "que problema presenta",
             "cual es el motivo del reporte",
             "que problema deseas reportar",
             "describe el problema",
@@ -287,6 +289,41 @@ def contains_complete_report_phrase(text: str | None, phrases) -> bool:
         for phrase in phrases
         if normalize_report_text(phrase)
     )
+
+
+def resolve_unambiguous_catalog_category(prompt: str | None, description: str | None) -> str | None:
+    """Use an exact, unique subject noun from the active CIAC catalog only.
+
+    This is intentionally conservative: if several catalog subjects match,
+    classification remains unresolved rather than choosing an arbitrary ID.
+    """
+    ignored = {
+        "avenida", "calle", "ciudadano", "colonia", "donde", "estorba",
+        "lugar", "numero", "problema", "reporte", "solicitud", "tiene",
+        "ubicado", "visibilidad",
+    }
+
+    def subject_words(value: str | None) -> set[str]:
+        words = re.findall(r"[a-z]{6,}", normalize_report_text(value))
+        return {
+            word[:-1] if word.endswith("s") else word
+            for word in words
+            if word not in ignored
+        }
+
+    issue_words = subject_words(description)
+    if not issue_words:
+        return None
+    candidates = {
+        match.group(1)
+        for match in re.finditer(
+            r"^\s*Valor:\s*(\d+)\s*,\s*Tipo:\s*(.+)$",
+            str(prompt or ""),
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+        if issue_words & subject_words(match.group(2))
+    }
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def sidewalk_sign_category_options(prompt: str | None, description: str | None) -> dict[str, str]:
@@ -498,7 +535,11 @@ def validate_and_normalize_report_submission(
 def validation_error_to_user_message(validation_error: str | None) -> str:
     error = normalize_report_text(validation_error)
     if "id de asunto" in error:
-        return "Necesito confirmar qué problema deseas reportar. ¿Podrías describirlo brevemente?"
+        return (
+            "Ya tengo la descripción y los datos del reporte, pero no pude "
+            "identificar con certeza el asunto en el catálogo. No se creó "
+            "ningún folio; puedes pedir atención de un agente para revisarlo."
+        )
     if "nombre real" in error:
         return "Antes de crear el reporte, ¿me compartes tu nombre? También puedes indicar “Anónimo”."
     if "explicacion concreta" in error:

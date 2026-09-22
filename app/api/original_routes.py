@@ -166,6 +166,7 @@ from app.services.report_submission_policy import (
     merge_citizen_report_description,
     next_missing_report_field,
     reconcile_with_citizen_evidence,
+    resolve_unambiguous_catalog_category,
     select_citizen_report_description,
     validate_and_normalize_report_submission,
     validation_error_to_user_message,
@@ -7738,6 +7739,19 @@ async def _process_whatsapp_request(request):
                             "selection5", "selection6", "selection7",
                         )
                     }
+                    if not str(selections["selection1"] or "").strip():
+                        category = resolve_unambiguous_catalog_category(
+                            config.get("prompt") or system_message,
+                            selections["selection4"],
+                        )
+                        if category:
+                            save_user_answer(from_number, "selection1", category)
+                            selections["selection1"] = category
+                            logger.critical(
+                                "🧾 [REPORT CATALOG MATCH] phone=%s category=%s",
+                                from_number,
+                                category,
+                            )
                     missing_field = next_missing_report_field(
                         selections,
                         prompt=config.get("prompt") or system_message,

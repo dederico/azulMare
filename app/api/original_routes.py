@@ -131,6 +131,7 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    classify_optional_image_answer,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     extract_confirmed_folio,
@@ -2518,58 +2519,7 @@ def classify_emergency_response(body: str) -> bool | None:
 
 
 def classify_image_decision_response(body: str) -> str | None:
-    if not body:
-        return None
-
-    normalized = body.strip().lower()
-    if not normalized:
-        return None
-
-    no_patterns = [
-        "no",
-        "no gracias",
-        "sin imagen",
-        "sin foto",
-        "no tengo foto",
-        "no tengo imagen",
-        "no deseo agregar imagen",
-        "no deseo agregar una imagen",
-        "prefiero no",
-        "continua sin imagen",
-        "continúa sin imagen",
-        "sigue sin imagen",
-        "no puedo tomar foto",
-        "no puedo tomar una foto",
-        "no puedo enviar foto",
-        "no puedo enviar una foto",
-        "es peligroso tomar foto",
-        "es riesgoso tomar foto",
-    ]
-
-    yes_patterns = [
-        "si",
-        "sí",
-        "si deseo",
-        "sí deseo",
-        "quiero agregar imagen",
-        "quiero agregar una imagen",
-        "te envio foto",
-        "te envío foto",
-        "te mando foto",
-        "voy a mandar foto",
-        "voy a enviar foto",
-    ]
-
-    if normalized in ("no", "sí", "si"):
-        return "no" if normalized == "no" else "yes"
-
-    if any(pattern in normalized for pattern in no_patterns):
-        return "no"
-
-    if any(pattern in normalized for pattern in yes_patterns):
-        return "yes"
-
-    return None
+    return classify_optional_image_answer(body)
 
 
 def is_explicit_human_handoff_request(body: str) -> bool:
@@ -5344,8 +5294,10 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             'folio': recent_report['folio']
         }
     
-    # Check for empty images
-    if not images:
+    # Images are optional once the citizen explicitly declined them. Keep the
+    # guard only while the image question is still unanswered.
+    session = report_sessions.get(from_number, {})
+    if not images and session.get("image_decision") != "no":
         return {
             'status': 'no_images',
             'message': "No se han adjuntado imágenes al reporte. Por favor, envía al menos una imagen."
@@ -7636,18 +7588,10 @@ async def _process_whatsapp_request(request):
                 body = "Se recibió una notificación de imagen, pero no se encontró la URL de la imagen."
                 logger.warning("No se pudo obtener la URL de la imagen del formulario de datos.")
 
-        elif body and from_number in report_sessions and not report_sessions[from_number].get("images"):
-            # Los campos ya se capturaron arriba usando la pregunta previa de
-            # SAM. No ejecutar inferencias globales: palabras como "carro" o
-            # "teléfono" se confundían con calles/colonias parecidas.
-            logger.debug(
-                "[%s] Sesión de reporte activa; captura estructurada por contexto aplicada",
-                from_number,
-            )
-
-        # Now let's fix the report finalization check in the WhatsApp endpoint
-        elif body and from_number in report_sessions and report_sessions[from_number]["images"]:
-            # El usuario ya ha enviado imágenes, este texto podría ser información del reporte
+        # Finalize the same way with or without images. Previously the entire
+        # deterministic path lived behind `images`, so declining an optional
+        # image returned control to the LLM and caused repeated questions.
+        elif body and from_number in report_sessions:
             if is_delayed_post_folio_webhook(from_number, inbound_event_timestamp):
                 logger.info(
                     "🧾 [POST-FOLIO STALE] Ignorando mensaje anterior al folio '%s' para %s",
@@ -7679,6 +7623,7 @@ async def _process_whatsapp_request(request):
                 is_finalization = (
                     is_finalization_message(body, from_number)
                     or bool(pending_field)
+                    or report_sessions[from_number].get("image_decision") == "no"
                 )
                 
                 # First, ensure this isn't a bot-generated message being echoed back

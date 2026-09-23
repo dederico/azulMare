@@ -8,6 +8,7 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    classify_optional_image_answer,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
@@ -34,6 +35,23 @@ from app.services.conversation_policy import (
 
 
 class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_optional_image_answer_does_not_match_arbitrary_substrings(self):
+        self.assertEqual(classify_optional_image_answer("No"), "no")
+        self.assertEqual(
+            classify_optional_image_answer("Sí, deseo seguir sin agregar imagen"),
+            "no",
+        )
+        self.assertEqual(
+            classify_optional_image_answer("No quiero compartir una foto"),
+            "no",
+        )
+        self.assertIsNone(
+            classify_optional_image_answer("No hay luz mercurial en mi calle")
+        )
+        self.assertIsNone(
+            classify_optional_image_answer("Estorba la visibilidad")
+        )
+
     def test_context_reset_marker_is_stable_for_same_webhook_uid(self):
         first = context_reset_marker_uid("new-request", 972178561)
         retry = context_reset_marker_uid("new-request", "972178561")

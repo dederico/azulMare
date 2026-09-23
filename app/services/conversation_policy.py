@@ -33,6 +33,32 @@ def context_reset_marker_uid(reason: str, event_id) -> str:
     return f"conversation-reset-{safe_reason}-{safe_event_id}"
 
 
+def classify_optional_image_answer(value: str | None) -> str | None:
+    """Classify an answer to the optional-image question without substrings."""
+    normalized = " ".join(str(value or "").casefold().split())
+    if normalized in {"no", "sí", "si"}:
+        return "no" if normalized == "no" else "yes"
+
+    no_patterns = (
+        r"\bno\s+gracias\b",
+        r"\bsin\s+(?:imagen|foto)\b",
+        r"\bno\s+(?:tengo|deseo|quiero|puedo)\b.*\b(?:imagen|foto)\b",
+        r"\b(?:prefiero|continua|continúa|sigue)\b.*\bsin\s+(?:imagen|foto)\b",
+        r"\b(?:continuar|seguir)\b.*\bsin\b.*\b(?:imagen|foto)\b",
+        r"\b(?:es\s+peligroso|es\s+riesgoso)\b.*\b(?:imagen|foto|tomar)\b",
+    )
+    yes_patterns = (
+        r"\bs[ií]\s+deseo\b",
+        r"\bquiero\s+agregar\b.*\b(?:imagen|foto)\b",
+        r"\b(?:te\s+env[ií]o|te\s+mando|voy\s+a\s+(?:mandar|enviar))\b.*\bfoto\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in no_patterns):
+        return "no"
+    if any(re.search(pattern, normalized) for pattern in yes_patterns):
+        return "yes"
+    return None
+
+
 def automatic_report_timeouts_enabled(value: str | None) -> bool:
     """Automatic report creation is opt-in; silence must never create a folio."""
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.services.conversation_policy import (
+    assistant_asked_for_optional_image,
     WIDGET_EMPTY_RESPONSE_FALLBACK,
     OUT_OF_SCOPE_REDIRECT,
     apply_widget_empty_response_fallback,
@@ -99,11 +100,22 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             classify_optional_image_answer("No quiero compartir una foto"),
             "no",
         )
+        self.assertEqual(
+            classify_optional_image_answer("No quiero compartir imagen"),
+            "no",
+        )
         self.assertIsNone(
             classify_optional_image_answer("No hay luz mercurial en mi calle")
         )
         self.assertIsNone(
             classify_optional_image_answer("Estorba la visibilidad")
+        )
+
+    def test_legacy_required_image_message_is_treated_as_optional_prompt(self):
+        self.assertTrue(
+            assistant_asked_for_optional_image(
+                "No se han adjuntado imágenes al reporte. Por favor, envía al menos una imagen."
+            )
         )
 
     def test_context_reset_marker_is_stable_for_same_webhook_uid(self):

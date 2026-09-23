@@ -18,6 +18,38 @@ class ReportIntakePolicyTests(unittest.TestCase):
         fields.update(extract_catalog_location("En Palo blanco", fields))
         self.assertEqual(fields["selection7"], "Palo Blanco")
 
+    def test_real_andres_street_typo_is_uniquely_normalized(self):
+        self.assertEqual(
+            extract_catalog_location("General Garcia Naranjo", {}),
+            {"selection5": "General Francisco Naranjo"},
+        )
+
+    def test_short_ambiguous_street_fragment_is_not_fuzzy_guessed(self):
+        self.assertEqual(extract_catalog_location("Garcia Naranjo", {}), {})
+
+    def test_exact_captured_conversation_reaches_one_confirmation(self):
+        fields = {}
+        session = {"unsolicited_location_fragments": 0}
+
+        for message in ("General Garcia Naranjo", "En Palo Blanco"):
+            location = extract_catalog_location(message, fields)
+            self.assertTrue(location)
+            fields.update(location)
+            session["unsolicited_location_fragments"] += 1
+
+        fields.update(
+            {
+                "selection1": "982",
+                "selection4": "No hay luminarias",
+            }
+        )
+        self.assertTrue(should_request_intake_confirmation(fields, session))
+        self.assertEqual(
+            build_intake_confirmation(fields),
+            "Entiendo que deseas levantar un reporte porque No hay luminarias, "
+            "en la calle General Francisco Naranjo, colonia Palo Blanco. ¿Es correcto?",
+        )
+
     def test_ambiguous_palo_blanco_is_not_guessed_without_context(self):
         self.assertEqual(extract_catalog_location("Palo Blanco", {}), {})
         self.assertEqual(

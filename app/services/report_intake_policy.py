@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from app.api.colonies_array import SAN_PEDRO_COLONIES
 from app.api.streets_array import SAN_PEDRO_STREETS_REAL
@@ -36,6 +37,24 @@ class IntakeDecision:
     response: str | None = None
 
 
+def _unique_street_typo_match(normalized: str) -> str | None:
+    """Return a canonical street only when a multi-word typo has one clear match."""
+    if len(normalized.split()) < 3:
+        return None
+    ranked = sorted(
+        (
+            SequenceMatcher(None, normalized, catalog_name).ratio(),
+            canonical,
+        )
+        for catalog_name, canonical in STREET_INDEX.items()
+    )
+    best_score, best_value = ranked[-1]
+    second_score = ranked[-2][0] if len(ranked) > 1 else 0.0
+    if best_score >= 0.80 and best_score - second_score >= 0.05:
+        return best_value
+    return None
+
+
 def extract_catalog_location(
     message: str | None,
     existing: dict[str, str] | None = None,
@@ -56,7 +75,7 @@ def extract_catalog_location(
         flags=re.I,
     ).strip()
     normalized = _normalize(candidate)
-    street = STREET_INDEX.get(normalized)
+    street = STREET_INDEX.get(normalized) or _unique_street_typo_match(normalized)
     colony = COLONY_INDEX.get(normalized)
 
     if explicit_colony and colony:

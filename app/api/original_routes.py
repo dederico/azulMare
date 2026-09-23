@@ -128,6 +128,7 @@ from app.services.conversation_lifecycle import (
 )
 from app.services.conversation_policy import (
     apply_widget_empty_response_fallback,
+    assistant_asked_for_optional_image,
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
@@ -2491,22 +2492,6 @@ def create_or_update_report_session(from_number):
             # Actualizar timestamp si ya existe
             report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
             logger.critical(f"🎯 [UPDATE SESSION] Timestamp actualizado para {from_number}")
-
-
-def assistant_asked_for_optional_image(message: str) -> bool:
-    if not message:
-        return False
-
-    normalized = message.lower()
-    patterns = [
-        "deseas agregar una imagen",
-        "deseas agregar imagen",
-        "agregar una imagen para complementar tu reporte",
-        "agregar imagen para complementar tu reporte",
-        "¿deseas agregar una imagen",
-        "quieres agregar una imagen",
-    ]
-    return any(pattern in normalized for pattern in patterns)
 
 
 def assistant_asked_if_emergency(message: str) -> bool:
@@ -5310,7 +5295,11 @@ async def process_and_save_report(from_number, location, images=None, descriptio
     if not images and session.get("image_decision") != "no":
         return {
             'status': 'no_images',
-            'message': "No se han adjuntado imágenes al reporte. Por favor, envía al menos una imagen."
+            'message': (
+                "No se han adjuntado imágenes al reporte. "
+                "¿Deseas agregar una imagen para complementar tu reporte? "
+                "La imagen es opcional."
+            )
         }
     
     # Mark as in progress (with thread safety)

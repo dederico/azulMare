@@ -61,6 +61,23 @@ def classify_optional_image_answer(value: str | None) -> str | None:
     return None
 
 
+def assistant_asked_for_optional_image(message: str | None) -> bool:
+    """Recognize both the current optional prompt and the legacy image guard."""
+    normalized = " ".join(str(message or "").casefold().split())
+    return any(
+        pattern in normalized
+        for pattern in (
+            "deseas agregar una imagen",
+            "deseas agregar imagen",
+            "agregar una imagen para complementar tu reporte",
+            "agregar imagen para complementar tu reporte",
+            "quieres agregar una imagen",
+            "no se han adjuntado imágenes al reporte",
+            "no se han adjuntado imagenes al reporte",
+        )
+    )
+
+
 def evaluation_prompt_matches_state(
     state: str | None,
     last_outbound_message: str | None,

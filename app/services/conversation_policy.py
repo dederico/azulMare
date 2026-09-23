@@ -43,11 +43,11 @@ def classify_optional_image_answer(value: str | None) -> str | None:
 
     no_patterns = (
         r"\bno\s+gracias\b",
-        r"\bsin\s+(?:imagen|foto)\b",
-        r"\bno\s+(?:tengo|deseo|quiero|puedo)\b.*\b(?:imagen|foto)\b",
-        r"\b(?:prefiero|continua|continúa|sigue)\b.*\bsin\s+(?:imagen|foto)\b",
-        r"\b(?:continuar|seguir)\b.*\bsin\b.*\b(?:imagen|foto)\b",
-        r"\b(?:es\s+peligroso|es\s+riesgoso)\b.*\b(?:imagen|foto|tomar)\b",
+        r"\bsin\s+(?:im[aá]gen(?:es)?|fotos?)\b",
+        r"\bno\s+(?:tengo|deseo|quiero|puedo)\b.*\b(?:im[aá]gen(?:es)?|fotos?)\b",
+        r"\b(?:prefiero|continua|continúa|sigue)\b.*\bsin\s+(?:im[aá]gen(?:es)?|fotos?)\b",
+        r"\b(?:continuar|seguir)\b.*\bsin\b.*\b(?:im[aá]gen(?:es)?|fotos?)\b",
+        r"\b(?:es\s+peligroso|es\s+riesgoso)\b.*\b(?:im[aá]gen(?:es)?|fotos?|tomar)\b",
     )
     yes_patterns = (
         r"\bs[ií]\s+deseo\b",
@@ -108,6 +108,41 @@ def evaluation_prompt_matches_state(
         )
     if normalized_state in {"waiting_reason", "evaluacion_esperando_motivo"}:
         return "motivo" in prompt and "resolucion" in prompt
+    return False
+
+
+def should_preserve_evaluation_across_new_request(
+    state: str | None,
+    last_outbound_message: str | None,
+    inbound_message: str | None,
+) -> bool:
+    """Keep a visible survey turn from being reset by ``is_new_request``.
+
+    Chat2Desk can label a delayed survey answer as a new request.  Preserve the
+    current turn only when both sides are unambiguous: the last visible prompt
+    must match the durable survey state and the inbound value must be a valid
+    answer for that state.  This deliberately does not preserve an old survey
+    for report details such as an address, ``FIN`` or a new report request.
+    """
+    if not evaluation_prompt_matches_state(state, last_outbound_message):
+        return False
+
+    normalized_state = str(state or "").strip().casefold()
+    answer = normalize_policy_text(inbound_message)
+    if not answer:
+        return False
+
+    if normalized_state in {"waiting_ok_click", "evaluacion_esperando_click_ok"}:
+        return answer == "ok"
+    if normalized_state in {
+        "waiting_resolution_response",
+        "evaluacion_esperando_respuesta_resolucion",
+    }:
+        return answer in {"si", "s", "no", "n"}
+    if normalized_state in {"waiting_rating", "evaluacion_esperando_calificacion"}:
+        return answer in {"1", "2", "3", "4", "5"}
+    if normalized_state in {"waiting_reason", "evaluacion_esperando_motivo"}:
+        return bool(answer)
     return False
 
 

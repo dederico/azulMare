@@ -30,6 +30,7 @@ from app.services.conversation_policy import (
     return_greeting_covers_current_inbound,
     resolve_high_confidence_out_of_scope_response,
     should_replace_unconfirmed_transfer_response,
+    should_preserve_evaluation_across_new_request,
     should_confirm_operator_outbox_takeover,
     should_accept_bot_return_event,
     should_send_initial_greeting,
@@ -38,6 +39,53 @@ from app.services.conversation_policy import (
 
 
 class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_delayed_resolution_answer_preserves_visible_evaluation(self):
+        prompt = "¿Está de acuerdo con la resolución? Por favor responda Sí o No."
+        for answer in ("Sí", "S", "No", "N"):
+            with self.subTest(answer=answer):
+                self.assertTrue(
+                    should_preserve_evaluation_across_new_request(
+                        "evaluacion_esperando_respuesta_resolucion",
+                        prompt,
+                        answer,
+                    )
+                )
+
+    def test_new_report_does_not_revive_old_evaluation(self):
+        prompt = "¿Está de acuerdo con la resolución? Por favor responda Sí o No."
+        for answer in ("Quiero reportar un bache", "Vasconcelos 123", "FIN"):
+            with self.subTest(answer=answer):
+                self.assertFalse(
+                    should_preserve_evaluation_across_new_request(
+                        "evaluacion_esperando_respuesta_resolucion",
+                        prompt,
+                        answer,
+                    )
+                )
+
+    def test_evaluation_boundary_requires_matching_prompt_and_answer_type(self):
+        self.assertTrue(
+            should_preserve_evaluation_across_new_request(
+                "evaluacion_esperando_calificacion",
+                "¿Qué te pareció la atención? Escribe una calificación del 1 al 5.",
+                "5",
+            )
+        )
+        self.assertFalse(
+            should_preserve_evaluation_across_new_request(
+                "evaluacion_esperando_calificacion",
+                "¿En qué calle se encuentra el problema?",
+                "5",
+            )
+        )
+        self.assertFalse(
+            should_preserve_evaluation_across_new_request(
+                "evaluacion_esperando_calificacion",
+                "¿Qué te pareció la atención? Escribe una calificación del 1 al 5.",
+                "Palo Blanco",
+            )
+        )
+
     def test_burst_progress_does_not_repeat_visible_question(self):
         question = "¿Cuál es el número del domicilio o poste más cercano?"
         self.assertTrue(
@@ -102,6 +150,10 @@ class AutomaticReportPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             classify_optional_image_answer("No quiero compartir imagen"),
+            "no",
+        )
+        self.assertEqual(
+            classify_optional_image_answer("No tengo fotos"),
             "no",
         )
         self.assertIsNone(

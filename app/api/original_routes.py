@@ -155,6 +155,7 @@ from app.services.conversation_policy import (
     should_confirm_operator_outbox_takeover,
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
+    should_preserve_evaluation_across_new_request,
     should_suppress_repeated_report_question,
     return_greeting_covers_current_inbound,
     resolve_high_confidence_out_of_scope_response,
@@ -2922,17 +2923,30 @@ def reconcile_report_fields_with_citizen_evidence(
     yoga_number: str,
     selection1: str,
     selection4: str,
+    durable_messages=None,
 ) -> tuple[str, str]:
     """Make captured citizen evidence authoritative over model-generated fields."""
     citizen_description = get_user_answer(yoga_number, "selection4")
     conversation_turns: list[tuple[str, str]] = []
     session = user_sessions.get(yoga_number)
-    if session:
+    if session and not durable_messages:
         for message in session.history.messages[-40:]:
             if isinstance(message, HumanMessage):
                 conversation_turns.append(("user", message.content))
             elif isinstance(message, AIMessage):
                 conversation_turns.append(("assistant", message.content))
+    for message in list(durable_messages or [])[-40:]:
+        content = getattr(message, "message", None)
+        direction = getattr(message, "direction", None)
+        if not content:
+            continue
+        turn = (
+            "user" if direction == "inbound"
+            else "assistant" if direction == "outbound"
+            else None
+        )
+        if turn:
+            conversation_turns.append((turn, content))
 
     transcript_description = select_citizen_report_description(conversation_turns)
     if transcript_description:
@@ -3599,6 +3613,9 @@ def prepare_inbound_session_boundary(
     from_number,
     uid,
     lifecycle_session_key,
+    *,
+    pending_evaluation_state=None,
+    inbound_message=None,
 ):
     """Resolve and apply a new-session boundary before handling any attachment."""
     recent_messages = (
@@ -3634,6 +3651,19 @@ def prepare_inbound_session_boundary(
         msg.direction in {"inbound", "outbound"} and bool(msg.message)
         for msg in messages_db
     )
+    last_outbound_message = next(
+        (
+            msg.message
+            for msg in reversed(messages_db)
+            if msg.direction == "outbound" and msg.message
+        ),
+        "",
+    )
+    preserve_pending_evaluation = should_preserve_evaluation_across_new_request(
+        pending_evaluation_state,
+        last_outbound_message,
+        inbound_message,
+    )
     boundary_requested = should_send_initial_greeting(
         is_new_request=bool(payload.get("is_new_request")),
         history_available=True,
@@ -3643,6 +3673,17 @@ def prepare_inbound_session_boundary(
             messages_db,
         ),
     )
+    if preserve_pending_evaluation:
+        # The citizen is answering the survey question that is still visible.
+        # A delayed Chat2Desk message may nevertheless carry is_new_request;
+        # that transport flag must not erase the question or inject a greeting.
+        boundary_requested = False
+        logger.critical(
+            "🧭 [EVAL BOUNDARY PRESERVED] phone=%s state=%s uid=%s",
+            from_number,
+            pending_evaluation_state,
+            uid,
+        )
     if replaying_same_new_request:
         # Chat2Desk may retry the same webhook after SAM already sent the
         # greeting but before the complete turn was acknowledged. The retry
@@ -3650,7 +3691,7 @@ def prepare_inbound_session_boundary(
         # a second institutional greeting.
         boundary_requested = False
     greeting_required = False
-    if not replaying_same_new_request:
+    if not replaying_same_new_request and not preserve_pending_evaluation:
         greeting_required = claim_session_greeting(
             from_number,
             lifecycle_session_key,
@@ -6857,6 +6898,11 @@ async def _process_whatsapp_request(request):
             transport=transport,
         )
 
+        # Read the durable survey before applying a Chat2Desk session boundary.
+        # A delayed but valid answer must retain the visible survey prompt; a
+        # report message will not match and keeps the normal new-request flow.
+        durable_evaluation = get_evaluation_state(db, from_number)
+
         try:
             (
                 initial_greeting_required,
@@ -6868,6 +6914,12 @@ async def _process_whatsapp_request(request):
                 from_number,
                 uid,
                 lifecycle_session_key,
+                pending_evaluation_state=(
+                    durable_evaluation.get("state")
+                    if durable_evaluation
+                    else None
+                ),
+                inbound_message=body,
             )
             processing_conversation_epoch = int(
                 (get_lifecycle_state(from_number, storage=db) or {}).get(
@@ -6888,7 +6940,6 @@ async def _process_whatsapp_request(request):
 
         # Restaurar primero cualquier encuesta pendiente. El siguiente mensaje
         # puede llegar a un proceso distinto al que recibió el HSM o el "No".
-        durable_evaluation = get_evaluation_state(db, from_number)
         if durable_evaluation:
             if from_number not in user_sessions:
                 user_sessions[from_number] = WhatsAppSession(ChatMessageHistory())
@@ -7866,6 +7917,7 @@ async def _process_whatsapp_request(request):
                             from_number,
                             selections["selection1"],
                             selections["selection4"],
+                            durable_messages=preloaded_messages_db,
                         )
                     )
                     if reconciled_description:

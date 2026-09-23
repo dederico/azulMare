@@ -25,6 +25,23 @@ from app.services.functions.implementations.save_selection2 import save_client_s
 
 
 class ReportSubmissionPolicyTests(unittest.TestCase):
+    def test_widget_transcript_recovers_original_bache_description(self):
+        description = select_citizen_report_description(
+            [
+                ("assistant", "¿Qué asunto municipal deseas consultar o reportar?"),
+                ("user", "Quiero reportar un bache"),
+                ("assistant", "¿En qué calle se encuentra el problema?"),
+                ("user", "Vasconcelos"),
+                ("assistant", "¿Cuál es el número exterior?"),
+                ("user", "123"),
+                ("assistant", "¿En qué colonia se encuentra el problema?"),
+                ("user", "Centro"),
+                ("assistant", "¿Deseas agregar una imagen para complementar tu reporte?"),
+                ("user", "No tengo fotos"),
+            ]
+        )
+        self.assertEqual(description, "Quiero reportar un bache")
+
     def test_andres_burst_messages_accumulate_without_following_prompt_order(self):
         fields = {
             "selection1": "",

@@ -32,10 +32,35 @@ from app.services.conversation_policy import (
     should_confirm_operator_outbox_takeover,
     should_accept_bot_return_event,
     should_send_initial_greeting,
+    should_suppress_repeated_report_question,
 )
 
 
 class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_burst_progress_does_not_repeat_visible_question(self):
+        question = "¿Cuál es el número del domicilio o poste más cercano?"
+        self.assertTrue(
+            should_suppress_repeated_report_question(
+                question,
+                question,
+                report_progress_made=True,
+            )
+        )
+        self.assertFalse(
+            should_suppress_repeated_report_question(
+                question,
+                question,
+                report_progress_made=False,
+            )
+        )
+        self.assertFalse(
+            should_suppress_repeated_report_question(
+                question,
+                "¿En qué colonia se encuentra el problema?",
+                report_progress_made=True,
+            )
+        )
+
     def test_evaluation_only_consumes_answer_after_matching_visible_prompt(self):
         self.assertTrue(
             evaluation_prompt_matches_state(

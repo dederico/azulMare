@@ -94,6 +94,21 @@ def evaluation_prompt_matches_state(
     return False
 
 
+def should_suppress_repeated_report_question(
+    previous_outbound: str | None,
+    proposed_outbound: str | None,
+    *,
+    report_progress_made: bool,
+) -> bool:
+    """Do not echo an already-visible question after accepting burst data."""
+    if not report_progress_made:
+        return False
+    previous = normalize_policy_text(previous_outbound)
+    proposed = normalize_policy_text(proposed_outbound)
+    is_question = str(proposed_outbound or "").strip().endswith("?")
+    return bool(previous and proposed and previous == proposed and is_question)
+
+
 def automatic_report_timeouts_enabled(value: str | None) -> bool:
     """Automatic report creation is opt-in; silence must never create a folio."""
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

@@ -10,6 +10,7 @@ from app.services.report_submission_policy import (
     extract_report_field_answer,
     fallback_report_category_id,
     infer_high_confidence_report_category,
+    infer_unsolicited_report_answers,
     is_likely_report_description,
     merge_citizen_report_description,
     next_missing_report_field,
@@ -24,6 +25,28 @@ from app.services.functions.implementations.save_selection2 import save_client_s
 
 
 class ReportSubmissionPolicyTests(unittest.TestCase):
+    def test_andres_burst_messages_accumulate_without_following_prompt_order(self):
+        fields = {
+            "selection1": "",
+            "selection2": "",
+            "selection4": "",
+            "selection5": "General Francisco Naranjo",
+            "selection6": "",
+            "selection7": "",
+        }
+
+        updates = infer_unsolicited_report_answers(fields, "en Palo Blanco")
+        self.assertEqual(updates, {"selection7": "Palo Blanco"})
+        fields.update(updates)
+
+        updates = infer_unsolicited_report_answers(fields, "no hay luminarias")
+        self.assertEqual(updates["selection1"], "982")
+        self.assertEqual(updates["selection4"], "no hay luminarias")
+        fields.update(updates)
+
+        updates = infer_unsolicited_report_answers(fields, "368")
+        self.assertEqual(updates, {"selection6": "368"})
+
     def valid_submission(self, **overrides):
         values = {
             "selection1": "984",

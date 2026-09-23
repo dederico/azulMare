@@ -154,6 +154,7 @@ from app.services.conversation_policy import (
     should_confirm_operator_outbox_takeover,
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
+    should_suppress_repeated_report_question,
     return_greeting_covers_current_inbound,
     resolve_high_confidence_out_of_scope_response,
 )
@@ -164,6 +165,7 @@ from app.services.report_submission_policy import (
     extract_report_field_answer,
     fallback_report_category_id,
     infer_high_confidence_report_category,
+    infer_unsolicited_report_answers,
     is_explicit_report_intent,
     is_likely_report_description,
     is_meaningful_report_description,
@@ -6971,6 +6973,26 @@ async def _process_whatsapp_request(request):
                     body,
                     last_outbound_message,
                 )
+            current_answers = {
+                key: get_user_answer(from_number, key)
+                for key in (
+                    "selection1", "selection2", "selection4",
+                    "selection5", "selection6", "selection7",
+                )
+            }
+            unsolicited_answers = infer_unsolicited_report_answers(
+                current_answers,
+                body,
+            )
+            for selection_key, value in unsolicited_answers.items():
+                save_user_answer(from_number, selection_key, value)
+            if unsolicited_answers and not captured_report_field:
+                captured_report_field = next(iter(unsolicited_answers.items()))
+                logger.critical(
+                    "🧾 [REPORT BURST CAPTURE] phone=%s fields=%s",
+                    from_number,
+                    sorted(unsolicited_answers),
+                )
             if pending_field == "selection1":
                 catalog_prompt = config.get("prompt") or system_message
                 category = classify_sidewalk_sign_answer(
@@ -8231,6 +8253,32 @@ async def _process_whatsapp_request(request):
                 storage=db,
             )
             response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
+
+        if (
+            from_number in report_sessions
+            and should_suppress_repeated_report_question(
+                last_outbound_message,
+                response_content,
+                report_progress_made=bool(captured_report_field),
+            )
+        ):
+            logger.info(
+                "🧾 [REPORT BURST RESPONSE COALESCED] phone=%s field=%s question=%s",
+                from_number,
+                captured_report_field[0] if captured_report_field else None,
+                response_content[:180],
+            )
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Dato acumulado; pregunta repetida omitida",
+                }
+            )
 
         assistant_message = Message(
             time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

@@ -390,6 +390,52 @@ def is_likely_report_description(
     return asked_for_problem
 
 
+def infer_unsolicited_report_answers(
+    existing: dict[str, str],
+    citizen_message: str | None,
+) -> dict[str, str]:
+    """Capture useful report fragments even when citizens answer in bursts.
+
+    Chat users often send street, neighborhood and problem as separate messages
+    without waiting for SAM.  Prompt-only extraction loses those fragments when
+    the visible question still asks for a different field.
+    """
+    compact = " ".join(str(citizen_message or "").split()).strip()
+    normalized = normalize_report_text(compact)
+    if not compact or normalized in REPORT_CONTROL_MESSAGES:
+        return {}
+
+    updates: dict[str, str] = {}
+    if not str(existing.get("selection6") or "").strip():
+        number = normalize_report_number_input(compact)
+        if number is not None:
+            updates["selection6"] = number
+            return updates
+
+    inferred_category = infer_high_confidence_report_category(compact)
+    if inferred_category or any(signal in normalized for signal in PROBLEM_SIGNAL_WORDS):
+        updates["selection4"] = merge_citizen_report_description(
+            existing.get("selection4"),
+            compact,
+        )
+        if inferred_category:
+            updates["selection1"] = inferred_category
+        return updates
+
+    # Once a street is known, short phrases such as "en Palo Blanco" are a
+    # natural neighborhood fragment. Avoid interpreting street-like prefixes.
+    if (
+        str(existing.get("selection5") or "").strip()
+        and not str(existing.get("selection7") or "").strip()
+        and normalized.startswith("en ")
+    ):
+        neighborhood = compact[3:].strip()
+        street_prefixes = ("calle ", "avenida ", "av. ", "carretera ", "boulevard ")
+        if neighborhood and not normalize_report_text(neighborhood).startswith(street_prefixes):
+            updates["selection7"] = neighborhood
+    return updates
+
+
 def contains_complete_report_phrase(text: str | None, phrases) -> bool:
     """Match control words as complete words, never inside citizen vocabulary."""
     normalized = normalize_report_text(text)

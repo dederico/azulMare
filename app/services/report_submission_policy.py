@@ -188,6 +188,39 @@ def is_valid_reporter_name(value: str | None) -> bool:
     )
 
 
+def normalize_reporter_name_input(value: str | None) -> str | None:
+    """Convert explicit privacy/name refusals into CIAC's anonymous identity."""
+    raw = " ".join(str(value or "").split()).strip()
+    normalized = normalize_report_text(raw)
+    colloquial_refusal = re.fullmatch(
+        r"(?:no+|nel(?:\s+pastel)?|nop|nope|paso|mejor\s+no)(?:\s+gracias)?[.!]?",
+        normalized,
+    )
+    refuses_action = re.search(
+        r"\b(?:no\s+(?:quiero|deseo|voy\s+a)|prefiero\s+no|me\s+niego)\b",
+        normalized,
+    )
+    refuses_personal_data = (
+        re.search(
+            r"\b(?:no|nunca)\b.*\b(?:compart\w*|proporcion\w*|dar\w*|decir\w*|revel\w*)\b",
+            normalized,
+        )
+        and re.search(r"\b(?:nombre|datos?|informacion)\b", normalized)
+    )
+    privacy_language = re.search(
+        r"\b(?:anonim\w*|omitir\w*|privad\w*|personal(?:es)?|reserv\w*|sin\s+nombre)\b",
+        normalized,
+    )
+    if (
+        colloquial_refusal
+        or refuses_action
+        or refuses_personal_data
+        or privacy_language
+    ):
+        return "Anónimo"
+    return raw if is_valid_reporter_name(raw) else None
+
+
 def normalize_report_number_input(value: str | None) -> str | None:
     raw = " ".join(str(value or "").split()).strip()
     normalized = normalize_report_text(raw)
@@ -226,14 +259,17 @@ def extract_pending_report_answers(
     raw = str(citizen_message or "").strip()
     compact = " ".join(raw.split()).strip()
     normalized = normalize_report_text(compact)
-    if not field or not compact or normalized in REPORT_CONTROL_MESSAGES:
+    if not field or not compact:
+        return {}
+    if normalized in REPORT_CONTROL_MESSAGES and field != "selection2":
         return {}
 
     if field == "selection6":
         number = normalize_report_number_input(compact)
         return {field: number} if number is not None else {}
     if field == "selection2":
-        return {field: compact} if is_valid_reporter_name(compact) else {}
+        name = normalize_reporter_name_input(compact)
+        return {field: name} if name else {}
     if field == "selection4":
         return {field: compact} if is_meaningful_report_description(compact) else {}
     if field == "selection7":
@@ -282,7 +318,13 @@ def extract_report_field_answer(
     previous = normalize_report_text(previous_assistant_message)
     answer = " ".join(str(citizen_message or "").split()).strip()
     normalized_answer = normalize_report_text(answer)
-    if not previous or normalized_answer in REPORT_CONTROL_MESSAGES:
+    asks_for_name = any(
+        phrase in previous
+        for phrase in ("cual es tu nombre", "me compartes tu nombre", "nombre del ciudadano")
+    )
+    if not previous or (
+        normalized_answer in REPORT_CONTROL_MESSAGES and not asks_for_name
+    ):
         return None
 
     if any(phrase in previous for phrase in ("numero exterior", "cual es el numero", "que numero")):
@@ -292,8 +334,9 @@ def extract_report_field_answer(
         return ("selection5", answer) if is_meaningful_report_description(answer) else None
     if any(phrase in previous for phrase in ("en que colonia", "cual es la colonia", "nombre de la colonia")):
         return ("selection7", answer) if is_meaningful_report_description(answer) else None
-    if any(phrase in previous for phrase in ("cual es tu nombre", "me compartes tu nombre", "nombre del ciudadano")):
-        return ("selection2", answer) if is_valid_reporter_name(answer) else None
+    if asks_for_name:
+        name = normalize_reporter_name_input(answer)
+        return ("selection2", name) if name else None
     if any(
         phrase in previous
         for phrase in (
@@ -568,7 +611,7 @@ def validate_and_normalize_report_submission(
 ) -> tuple[dict[str, str] | None, str | None]:
     values = {
         "selection1": " ".join(str(selection1 or "").split()).strip(),
-        "selection2": " ".join(str(selection2 or "").split()).strip(),
+        "selection2": normalize_reporter_name_input(selection2) or "",
         "selection3": "",
         "selection4": " ".join(str(selection4 or "").split()).strip(),
         "selection5": " ".join(str(selection5 or "").split()).strip(),

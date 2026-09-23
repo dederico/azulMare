@@ -13,6 +13,7 @@ from app.services.report_submission_policy import (
     is_likely_report_description,
     merge_citizen_report_description,
     next_missing_report_field,
+    normalize_reporter_name_input,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
     select_citizen_report_description,
@@ -255,6 +256,52 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
     def test_pending_state_does_not_treat_controls_as_field_answers(self):
         self.assertEqual(extract_pending_report_answers("selection5", "FIN"), {})
         self.assertEqual(extract_pending_report_answers("selection5", "Gracias"), {})
+
+    def test_name_refusal_is_saved_as_anonymous(self):
+        for answer in (
+            "No",
+            "NEL",
+            "Nel pastel",
+            "Nop",
+            "Paso",
+            "No gracias",
+            "Preferiría omitirlo",
+            "Prefiero no compartirlo",
+            "No quiero dar mi nombre",
+            "No compartiré datos personales",
+            "Esa información es privada",
+            "Me reservo mis datos",
+            "Sin nombre",
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(normalize_reporter_name_input(answer), "Anónimo")
+                self.assertEqual(
+                    extract_pending_report_answers("selection2", answer),
+                    {"selection2": "Anónimo"},
+                )
+
+    def test_contextual_name_refusal_continues_as_anonymous(self):
+        for answer in ("No", "No gracias", "Prefiero mantenerlo privado"):
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    extract_report_field_answer(
+                        "Antes de crear el reporte, ¿me compartes tu nombre?",
+                        answer,
+                    ),
+                    ("selection2", "Anónimo"),
+                )
+
+    def test_anonymous_name_leaves_only_the_next_missing_field(self):
+        fields = {
+            "selection1": "982",
+            "selection2": "Anónimo",
+            "selection4": "No hay alumbrado en mi calle desde hace un mes",
+            "selection5": "General Francisco Naranjo",
+            "selection6": "338",
+            "selection7": "Palo Blanco",
+        }
+
+        self.assertIsNone(next_missing_report_field(fields))
 
     def test_unknown_subject_uses_general_ciac_catalog_entry(self):
         catalog = (

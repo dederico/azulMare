@@ -36,8 +36,10 @@ def context_reset_marker_uid(reason: str, event_id) -> str:
 def classify_optional_image_answer(value: str | None) -> str | None:
     """Classify an answer to the optional-image question without substrings."""
     normalized = " ".join(str(value or "").casefold().split())
-    if normalized in {"no", "sí", "si"}:
-        return "no" if normalized == "no" else "yes"
+    # These single-letter forms are consumed only while the optional-image
+    # question is active, so common chat abbreviations are unambiguous here.
+    if normalized in {"n", "no", "s", "sí", "si"}:
+        return "no" if normalized in {"n", "no"} else "yes"
 
     no_patterns = (
         r"\bno\s+gracias\b",

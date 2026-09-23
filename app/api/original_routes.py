@@ -7620,6 +7620,19 @@ async def _process_whatsapp_request(request):
                 pending_field = report_sessions[from_number].get(
                     "pending_finalization_field"
                 )
+                # Resolve the current image answer before deciding whether this
+                # same request must enter deterministic finalization. Previously
+                # the decision was saved only later in the LLM path, causing a
+                # valid "No" to produce one more image question.
+                if report_sessions[from_number].get("image_prompted"):
+                    current_image_decision = classify_image_decision_response(body)
+                    if current_image_decision:
+                        report_sessions[from_number]["image_decision"] = current_image_decision
+                        logger.critical(
+                            "🖼️ [IMAGE DECISION EARLY] %s respondió sobre imagen: %s",
+                            from_number,
+                            current_image_decision,
+                        )
                 is_finalization = (
                     is_finalization_message(body, from_number)
                     or bool(pending_field)
@@ -7708,6 +7721,32 @@ async def _process_whatsapp_request(request):
                             "selection5", "selection6", "selection7",
                         )
                     }
+                    # Rebuild lagging durable fields from citizen-authored
+                    # evidence before asking anything again. This covers older
+                    # widget sessions where the transcript contains the problem
+                    # but selection1/selection4 were never persisted.
+                    reconciled_category, reconciled_description = (
+                        reconcile_report_fields_with_citizen_evidence(
+                            from_number,
+                            selections["selection1"],
+                            selections["selection4"],
+                        )
+                    )
+                    if reconciled_description:
+                        save_user_answer(from_number, "selection4", reconciled_description)
+                        selections["selection4"] = reconciled_description
+                    if reconciled_category:
+                        save_user_answer(from_number, "selection1", reconciled_category)
+                        selections["selection1"] = reconciled_category
+
+                    # A widget handle is not a citizen name. If no name was
+                    # volunteered by finalization, submit privately as Anónimo.
+                    if (
+                        str(transport or "").casefold() == "widget"
+                        and not str(selections["selection2"] or "").strip()
+                    ):
+                        save_user_answer(from_number, "selection2", "Anónimo")
+                        selections["selection2"] = "Anónimo"
                     if not str(selections["selection1"] or "").strip():
                         catalog_prompt = config.get("prompt") or system_message
                         category = resolve_unambiguous_catalog_category(

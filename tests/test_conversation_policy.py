@@ -36,6 +36,8 @@ from app.services.conversation_policy import (
 
 class AutomaticReportPolicyTests(unittest.TestCase):
     def test_optional_image_answer_does_not_match_arbitrary_substrings(self):
+        self.assertEqual(classify_optional_image_answer("N"), "no")
+        self.assertEqual(classify_optional_image_answer("S"), "yes")
         self.assertEqual(classify_optional_image_answer("No"), "no")
         self.assertEqual(
             classify_optional_image_answer("Sí, deseo seguir sin agregar imagen"),

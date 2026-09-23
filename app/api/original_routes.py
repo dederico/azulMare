@@ -137,6 +137,7 @@ from app.services.conversation_policy import (
     extract_confirmed_folio,
     greeting_display_name,
     event_precedes_context_boundary,
+    evaluation_prompt_matches_state,
     inactivity_snapshot_is_still_stale,
     is_explicit_report_finalization_token,
     is_bot_return_message,
@@ -6924,9 +6925,24 @@ async def _process_whatsapp_request(request):
             ),
             "",
         )
+        evaluation_turn_active = bool(
+            durable_evaluation
+            and evaluation_prompt_matches_state(
+                durable_evaluation.get("state"),
+                last_outbound_message,
+            )
+        )
+        if durable_evaluation and not evaluation_turn_active:
+            logger.warning(
+                "🧭 [EVAL SUSPENDED] phone=%s folio=%s state=%s last_outbound=%s",
+                from_number,
+                durable_evaluation.get("folio"),
+                durable_evaluation.get("state"),
+                str(last_outbound_message or "")[:160],
+            )
         out_of_scope_response = resolve_high_confidence_out_of_scope_response(body)
         captured_report_field = None
-        if not out_of_scope_response and not durable_evaluation:
+        if not out_of_scope_response and not evaluation_turn_active:
             pending_field = report_sessions.get(from_number, {}).get(
                 "pending_finalization_field"
             )
@@ -6974,7 +6990,7 @@ async def _process_whatsapp_request(request):
                         from_number,
                         category,
                     )
-        elif durable_evaluation:
+        elif evaluation_turn_active:
             logger.debug(
                 "Captura de reporte omitida para %s: evaluación pendiente del folio %s",
                 from_number,
@@ -7129,7 +7145,7 @@ async def _process_whatsapp_request(request):
                 logger.critical(f"🎯 [REPLY SESSION] Sesión de reporte creada por contexto de reply")
 
         # ✅ SOLO evaluar respuestas del ciudadano, nunca mensajes salientes del bot
-        if from_number in user_sessions:
+        if evaluation_turn_active and from_number in user_sessions:
             session = user_sessions[from_number]
             if hasattr(session, 'evaluation_state') and session.evaluation_state:
                 evaluation_text = get_effective_user_message_text(body, reply_context)

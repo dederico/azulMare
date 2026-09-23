@@ -12,6 +12,7 @@ from app.services.conversation_policy import (
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
+    evaluation_prompt_matches_state,
     extract_confirmed_folio,
     greeting_display_name,
     inactivity_snapshot_is_still_stale,
@@ -35,6 +36,32 @@ from app.services.conversation_policy import (
 
 
 class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_evaluation_only_consumes_answer_after_matching_visible_prompt(self):
+        self.assertTrue(
+            evaluation_prompt_matches_state(
+                "evaluacion_esperando_respuesta_resolucion",
+                "¿Está de acuerdo con la resolución? Por favor responda Sí o No.",
+            )
+        )
+        self.assertFalse(
+            evaluation_prompt_matches_state(
+                "evaluacion_esperando_respuesta_resolucion",
+                "¿Deseas agregar una imagen para complementar tu reporte?",
+            )
+        )
+        self.assertFalse(
+            evaluation_prompt_matches_state(
+                "evaluacion_esperando_calificacion",
+                "¿En qué calle se encuentra el problema?",
+            )
+        )
+        self.assertTrue(
+            evaluation_prompt_matches_state(
+                "evaluacion_esperando_motivo",
+                "¿Podrías indicarnos el motivo por el cuál no tuvo resolución?",
+            )
+        )
+
     def test_optional_image_answer_does_not_match_arbitrary_substrings(self):
         self.assertEqual(classify_optional_image_answer("N"), "no")
         self.assertEqual(classify_optional_image_answer("S"), "yes")

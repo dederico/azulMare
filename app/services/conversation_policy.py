@@ -61,6 +61,39 @@ def classify_optional_image_answer(value: str | None) -> str | None:
     return None
 
 
+def evaluation_prompt_matches_state(
+    state: str | None,
+    last_outbound_message: str | None,
+) -> bool:
+    """Allow a survey state to consume input only after its visible question.
+
+    Evaluation state is durable and can outlive the chat turn that created it.
+    Without this check an old survey can interpret report details, ``FIN`` or an
+    address as survey answers and hijack a new report.
+    """
+    normalized_state = str(state or "").strip().casefold()
+    prompt = normalize_policy_text(last_outbound_message)
+    if not normalized_state or not prompt:
+        return False
+
+    if normalized_state in {"waiting_ok_click", "evaluacion_esperando_click_ok"}:
+        return "responde" in prompt and "ok" in prompt
+    if normalized_state in {
+        "waiting_resolution_response",
+        "evaluacion_esperando_respuesta_resolucion",
+    }:
+        return "de acuerdo" in prompt and "resolucion" in prompt
+    if normalized_state in {"waiting_rating", "evaluacion_esperando_calificacion"}:
+        return (
+            "que te parecio" in prompt
+            or "calificacion" in prompt
+            or ("1" in prompt and "5" in prompt and "evaluacion" in prompt)
+        )
+    if normalized_state in {"waiting_reason", "evaluacion_esperando_motivo"}:
+        return "motivo" in prompt and "resolucion" in prompt
+    return False
+
+
 def automatic_report_timeouts_enabled(value: str | None) -> bool:
     """Automatic report creation is opt-in; silence must never create a folio."""
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

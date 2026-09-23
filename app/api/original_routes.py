@@ -131,6 +131,7 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     extract_confirmed_folio,
     greeting_display_name,
@@ -3666,6 +3667,14 @@ def prepare_inbound_session_boundary(
     messages_db, context_reset_marker = history_after_latest_context_reset(
         list(reversed(recent_messages))
     )
+    requested_new_boundary_marker = context_reset_marker_uid(
+        "new-request",
+        uid,
+    )
+    replaying_same_new_request = bool(
+        payload.get("is_new_request")
+        and context_reset_marker == requested_new_boundary_marker
+    )
     if (
         context_reset_marker
         and applied_context_reset_markers.get(from_number) != context_reset_marker
@@ -3689,13 +3698,25 @@ def prepare_inbound_session_boundary(
             messages_db,
         ),
     )
-    greeting_required = claim_session_greeting(
-        from_number,
-        lifecycle_session_key,
-        boundary_requested=boundary_requested,
-        storage=db,
-    )
-    if greeting_required and bool(payload.get("is_new_request")) and has_prior_history:
+    if replaying_same_new_request:
+        # Chat2Desk may retry the same webhook after SAM already sent the
+        # greeting but before the complete turn was acknowledged. The retry
+        # must continue the original work without creating a second epoch or
+        # a second institutional greeting.
+        boundary_requested = False
+    greeting_required = False
+    if not replaying_same_new_request:
+        greeting_required = claim_session_greeting(
+            from_number,
+            lifecycle_session_key,
+            boundary_requested=boundary_requested,
+            storage=db,
+        )
+    if (
+        greeting_required
+        and bool(payload.get("is_new_request"))
+        and not replaying_same_new_request
+    ):
         context_reset_marker = persist_context_reset_marker(
             db,
             from_number,
@@ -3775,12 +3796,10 @@ def clear_local_conversation_context(phone_number: str, *, drop_session: bool = 
 def persist_context_reset_marker(db, phone_number: str, reason: str, event_id) -> str:
     """Persist a durable boundary so every replica excludes the previous session."""
     safe_reason = re.sub(r"[^a-z0-9_-]", "-", str(reason or "boundary").lower())
-    safe_event_id = re.sub(
-        r"[^a-zA-Z0-9_-]",
-        "-",
-        str(event_id or datetime.now().timestamp()),
+    marker_uid = context_reset_marker_uid(
+        safe_reason,
+        event_id or datetime.now().timestamp(),
     )
-    marker_uid = f"conversation-reset-{safe_reason}-{safe_event_id}"
     new_epoch = advance_conversation_epoch(phone_number, storage=db)
     db.Insert(
         Message(
@@ -8050,7 +8069,7 @@ async def _process_whatsapp_request(request):
             if not sent:
                 raise RuntimeError("Chat2Desk no confirmó el saludo institucional")
 
-            if is_simple_greeting(body):
+            if is_simple_greeting(body) or is_explicit_report_intent(body):
                 persist_successful_delivery_marker(db, from_number, uid, message_id)
                 mark_inbound_processing_delivered(
                     uid,
@@ -8060,7 +8079,10 @@ async def _process_whatsapp_request(request):
                 return JSONResponse(
                     content={
                         "status": True,
-                        "message": "Saludo institucional de nueva sesión enviado",
+                        "message": (
+                            "Saludo institucional enviado; esperando respuesta "
+                            "a la pregunta de emergencia"
+                        ),
                     }
                 )
 

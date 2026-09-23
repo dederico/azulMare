@@ -22,6 +22,17 @@ OUT_OF_SCOPE_REDIRECT = (
 )
 
 
+def context_reset_marker_uid(reason: str, event_id) -> str:
+    """Build the stable marker that makes a conversation boundary idempotent."""
+    safe_reason = re.sub(r"[^a-z0-9_-]", "-", str(reason or "boundary").lower())
+    safe_event_id = re.sub(
+        r"[^a-zA-Z0-9_-]",
+        "-",
+        str(event_id or "unknown"),
+    )
+    return f"conversation-reset-{safe_reason}-{safe_event_id}"
+
+
 def automatic_report_timeouts_enabled(value: str | None) -> bool:
     """Automatic report creation is opt-in; silence must never create a folio."""
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

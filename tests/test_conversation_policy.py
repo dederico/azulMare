@@ -8,6 +8,7 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
     extract_confirmed_folio,
@@ -33,6 +34,13 @@ from app.services.conversation_policy import (
 
 
 class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_context_reset_marker_is_stable_for_same_webhook_uid(self):
+        first = context_reset_marker_uid("new-request", 972178561)
+        retry = context_reset_marker_uid("new-request", "972178561")
+
+        self.assertEqual(first, "conversation-reset-new-request-972178561")
+        self.assertEqual(retry, first)
+
     def test_automatic_reports_are_disabled_by_default(self):
         self.assertFalse(automatic_report_timeouts_enabled(None))
         self.assertFalse(automatic_report_timeouts_enabled("false"))

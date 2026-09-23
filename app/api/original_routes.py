@@ -179,6 +179,13 @@ from app.services.report_submission_policy import (
     validate_and_normalize_report_submission,
     validation_error_to_user_message,
 )
+from app.services.report_intake_policy import (
+    build_intake_confirmation,
+    classify_intake_confirmation,
+    extract_catalog_location,
+    next_question_after_intake_confirmation,
+    should_request_intake_confirmation,
+)
 from app.services.inbound_processing import (
     claim_inbound_processing,
     is_latest_inbound_processing_claim,
@@ -6943,12 +6950,84 @@ async def _process_whatsapp_request(request):
                 str(last_outbound_message or "")[:160],
             )
         out_of_scope_response = resolve_high_confidence_out_of_scope_response(body)
+        intake_response_override = None
+        intake_turn_handled = False
         captured_report_field = None
         if not out_of_scope_response and not evaluation_turn_active:
+            existing_answers = {
+                key: get_user_answer(from_number, key)
+                for key in (
+                    "selection1", "selection2", "selection4",
+                    "selection5", "selection6", "selection7",
+                )
+            }
+            active_report_session = report_sessions.get(from_number, {})
+            pending_intake = active_report_session.get("pending_intake_confirmation")
+            if pending_intake:
+                confirmation = classify_intake_confirmation(body)
+                if confirmation == "CONFIRMED":
+                    with report_sessions_lock:
+                        active_report_session.pop("pending_intake_confirmation", None)
+                        active_report_session["intake_confirmed"] = True
+                    intake_response_override = next_question_after_intake_confirmation(
+                        existing_answers
+                    )
+                    intake_turn_handled = True
+                    logger.critical(
+                        "🧭 [INTAKE CONFIRMED] phone=%s fields=%s",
+                        from_number,
+                        sorted(pending_intake),
+                    )
+                elif confirmation == "REJECTED":
+                    with report_sessions_lock:
+                        active_report_session.pop("pending_intake_confirmation", None)
+                        active_report_session["intake_confirmation_rejected"] = True
+                    intake_response_override = (
+                        "Entendido. ¿Qué dato deseas corregir: el problema, la calle "
+                        "o la colonia?"
+                    )
+                    intake_turn_handled = True
+                    logger.critical(
+                        "🧭 [INTAKE REJECTED] phone=%s", from_number
+                    )
+
+            if not intake_turn_handled:
+                catalog_location = extract_catalog_location(body, existing_answers)
+                if catalog_location:
+                    contextual_location = extract_report_field_answer(
+                        last_outbound_message,
+                        body,
+                    )
+                    catalog_field = next(iter(catalog_location))
+                    location_was_requested = bool(
+                        contextual_location
+                        and contextual_location[0] == catalog_field
+                    )
+                    create_or_update_report_session(from_number)
+                    for selection_key, value in catalog_location.items():
+                        save_user_answer(from_number, selection_key, value)
+                        existing_answers[selection_key] = value
+                    if not location_was_requested:
+                        with report_sessions_lock:
+                            report_sessions[from_number]["unsolicited_location_fragments"] = (
+                                int(report_sessions[from_number].get(
+                                    "unsolicited_location_fragments", 0
+                                )) + 1
+                            )
+                    captured_report_field = next(iter(catalog_location.items()))
+                    logger.critical(
+                        "🗺️ [CATALOG LOCATION CAPTURE] phone=%s fields=%s",
+                        from_number,
+                        sorted(catalog_location),
+                    )
+
             pending_field = report_sessions.get(from_number, {}).get(
                 "pending_finalization_field"
             )
-            pending_answers = extract_pending_report_answers(pending_field, body)
+            pending_answers = (
+                {} if intake_turn_handled or captured_report_field
+                else extract_pending_report_answers(pending_field, body)
+            )
             for selection_key, value in pending_answers.items():
                 if selection_key == "selection4":
                     value = merge_citizen_report_description(
@@ -6967,7 +7046,7 @@ async def _process_whatsapp_request(request):
                     pending_field,
                     sorted(pending_answers),
                 )
-            else:
+            elif not intake_turn_handled and not captured_report_field:
                 captured_report_field = capture_contextual_report_answer(
                     from_number,
                     body,
@@ -6980,9 +7059,9 @@ async def _process_whatsapp_request(request):
                     "selection5", "selection6", "selection7",
                 )
             }
-            unsolicited_answers = infer_unsolicited_report_answers(
-                current_answers,
-                body,
+            unsolicited_answers = (
+                {} if intake_turn_handled or captured_report_field
+                else infer_unsolicited_report_answers(current_answers, body)
             )
             for selection_key, value in unsolicited_answers.items():
                 save_user_answer(from_number, selection_key, value)
@@ -6992,6 +7071,36 @@ async def _process_whatsapp_request(request):
                     "🧾 [REPORT BURST CAPTURE] phone=%s fields=%s",
                     from_number,
                     sorted(unsolicited_answers),
+                )
+            current_answers = {
+                key: get_user_answer(from_number, key)
+                for key in (
+                    "selection1", "selection2", "selection4",
+                    "selection5", "selection6", "selection7",
+                )
+            }
+            active_report_session = report_sessions.get(from_number, {})
+            confirmation_prompt = build_intake_confirmation(current_answers)
+            should_confirm_fragmented_intake = (
+                not intake_turn_handled
+                and should_request_intake_confirmation(
+                    current_answers,
+                    active_report_session,
+                )
+            )
+            if should_confirm_fragmented_intake:
+                with report_sessions_lock:
+                    active_report_session["pending_intake_confirmation"] = {
+                        key: current_answers.get(key)
+                        for key in (
+                            "selection1", "selection4", "selection5", "selection7"
+                        )
+                    }
+                intake_response_override = confirmation_prompt
+                intake_turn_handled = True
+                logger.critical(
+                    "🧭 [FRAGMENTED INTAKE CONFIRMATION] phone=%s",
+                    from_number,
                 )
             if pending_field == "selection1":
                 catalog_prompt = config.get("prompt") or system_message
@@ -8573,7 +8682,14 @@ async def _process_whatsapp_request(request):
         }
 
         fixed_phone_response = resolve_fixed_security_phone_response(body)
-        if fixed_phone_response:
+        if intake_response_override:
+            response_content = intake_response_override
+            logger.critical(
+                "🧭 [INTAKE RESPONSE OVERRIDE] phone=%s response=%s",
+                from_number,
+                response_content,
+            )
+        elif fixed_phone_response:
             response_content = fixed_phone_response
             logger.critical(
                 "📞 [FIXED SECURITY PHONE] Respuesta fija aplicada para %s: %s",
@@ -8688,6 +8804,7 @@ async def _process_whatsapp_request(request):
             return JSONResponse(
                 content={"status": True, "message": "Respuesta obsoleta descartada"}
             )
+
         log_operational_decision_trace(
             from_number,
             "after_llm_generation",

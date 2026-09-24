@@ -17,6 +17,7 @@ from app.services.report_submission_policy import (
     normalize_reporter_name_input,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
+    sanitize_report_description,
     select_citizen_report_description,
     validate_and_normalize_report_submission,
     validation_error_to_user_message,
@@ -25,6 +26,49 @@ from app.services.functions.implementations.save_selection2 import save_client_s
 
 
 class ReportSubmissionPolicyTests(unittest.TestCase):
+    def test_sam_location_acknowledgement_is_removed_from_description(self):
+        contaminated = (
+            "A todos los vecinos se nos baja la luz. "
+            "Ubicación registrada: Calle Plata. Para finalizar tu reporte con "
+            "las imágenes que has enviado, avísame cuando estés listo. "
+            "Mi vecino se pone a soldar todo el día sin tener permiso alguno. "
+            "Ubicación del reporte: Plaza 414, la calle Plaza 419, San Pedro 400"
+        )
+
+        self.assertEqual(
+            sanitize_report_description(contaminated),
+            "A todos los vecinos se nos baja la luz. Mi vecino se pone a soldar "
+            "todo el día sin tener permiso alguno",
+        )
+
+    def test_submission_sanitizes_legacy_sam_prose_before_ciac(self):
+        values, error = self.valid_submission(
+            selection4=(
+                "Hay un bache profundo. Ubicación registrada: Vasconcelos 321. "
+                "Para finalizar tu reporte con las imágenes que has enviado, "
+                "avísame cuando estés listo."
+            )
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(values["selection4"], "Hay un bache profundo")
+
+    def test_transcript_ignores_persisted_sam_prose_mislabeled_as_inbound(self):
+        description = select_citizen_report_description(
+            [
+                ("assistant", "¿Qué deseas reportar?"),
+                ("user", "No hay luz en toda la cuadra"),
+                ("assistant", "¿En qué calle se encuentra el problema?"),
+                (
+                    "user",
+                    "Ubicación registrada: Calle Plata. Para finalizar tu reporte "
+                    "con las imágenes que has enviado, avísame cuando estés listo.",
+                ),
+            ]
+        )
+
+        self.assertEqual(description, "No hay luz en toda la cuadra")
+
     def test_widget_transcript_recovers_original_bache_description(self):
         description = select_citizen_report_description(
             [

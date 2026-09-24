@@ -126,6 +126,40 @@ def normalize_report_text(value: str | None) -> str:
     return " ".join(text.casefold().split())
 
 
+def sanitize_report_description(value: str | None) -> str:
+    """Remove known SAM operational prose from a CIAC explanation.
+
+    An older location branch rewrote the inbound ``body`` with an assistant
+    acknowledgement before persisting it.  Those records therefore look like
+    citizen messages in historical conversations.  Keep the citizen's actual
+    problem wording while removing only the exact operational templates that
+    SAM generated.
+    """
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+
+    operational_patterns = (
+        # Remove the complete legacy acknowledgement, including the location
+        # copied between its two fixed clauses.
+        r"\bubicaci[oó]n registrada:\s*.*?\.\s*para finalizar tu reporte "
+        r"con las im[aá]genes que has enviado,?\s*av[ií]same cuando est[eé]s "
+        r"listo\.?",
+        r"\bpara finalizar tu reporte con las im[aá]genes que has enviado,?\s*"
+        r"av[ií]same cuando est[eé]s listo\.?",
+        r"\bubicaci[oó]n registrada:\s*[^.]+\.?",
+        r"\bubicaci[oó]n del reporte:\s*[^.]+(?:\.|$)",
+        r"\bno se han adjuntado im[aá]genes al reporte\.\s*"
+        r"(?:por favor,?\s*)?env[ií]a al menos una imagen\.?",
+    )
+    for pattern in operational_patterns:
+        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = re.sub(r"(?:\.\s*){2,}", ". ", text)
+    return " ".join(text.split()).strip(" .,:;-")
+
+
 def infer_high_confidence_report_category(description: str | None) -> str | None:
     normalized = normalize_report_text(description)
     if not normalized:
@@ -147,8 +181,8 @@ def merge_citizen_report_description(
     *,
     max_length: int = 1500,
 ) -> str:
-    current = " ".join(str(existing or "").split()).strip()
-    incoming = " ".join(str(citizen_message or "").split()).strip()
+    current = sanitize_report_description(existing)
+    incoming = sanitize_report_description(citizen_message)
     normalized_current = normalize_report_text(current)
     normalized_incoming = normalize_report_text(incoming)
 
@@ -572,7 +606,7 @@ def select_citizen_report_description(
     previous_assistant = ""
 
     for role, raw_content in conversation_turns:
-        content = " ".join(str(raw_content or "").split()).strip()
+        content = sanitize_report_description(raw_content)
         normalized = normalize_report_text(content)
         normalized_role = str(role or "").strip().lower()
         if normalized_role == "assistant":
@@ -659,7 +693,7 @@ def validate_and_normalize_report_submission(
         "selection1": " ".join(str(selection1 or "").split()).strip(),
         "selection2": normalize_reporter_name_input(selection2) or "",
         "selection3": "",
-        "selection4": " ".join(str(selection4 or "").split()).strip(),
+        "selection4": sanitize_report_description(selection4),
         "selection5": " ".join(str(selection5 or "").split()).strip(),
         "selection6": " ".join(str(selection6 or "").split()).strip(),
         "selection7": " ".join(str(selection7 or "").split()).strip(),

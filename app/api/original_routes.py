@@ -7864,7 +7864,16 @@ async def _process_whatsapp_request(request):
                     # Es información de ubicación
                     report_sessions[from_number]["location"] = body
                     report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
-                    body = f"Ubicación registrada: {body}. Para finalizar tu reporte con las imágenes que has enviado, avísame cuando estés listo."
+                    # Nunca reemplazar el mensaje entrante con prosa de SAM. El
+                    # mismo `body` se persiste más adelante como inbound y se
+                    # usa como evidencia ciudadana al construir selection4.
+                    # El modelo recibe la ubicación original y decide el
+                    # siguiente dato faltante con el estado durable existente.
+                    logger.debug(
+                        "Ubicación conservada como texto ciudadano para %s: %s",
+                        from_number,
+                        body[:160],
+                    )
                 elif is_finalization:
                     # Generate a unique request ID for this report finalization request
                     request_id = f"{from_number}-{int(datetime.now().timestamp())}"

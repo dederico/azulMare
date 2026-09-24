@@ -3148,7 +3148,7 @@ async def save_client_selection2_guarded(
     selection1 (string): ID numérico oficial que corresponda EXACTAMENTE al problema descrito. Nunca uses un ID por defecto.
     selection2 (string): Nombre del cliente.
     selection3 (string): SIEMPRE debe ser una cadena vacía "".
-    selection4 (string): Explicación concreta y fiel usando únicamente lo dicho por el ciudadano. Nunca la dejes vacía ni uses una frase genérica.
+    selection4 (string): Hechos concretos del problema usando únicamente lo dicho por el ciudadano. No incluyas saludos, frases como "quiero levantar un reporte", repeticiones ni ubicación; calle, número y colonia van en selection5, selection6 y selection7.
     selection5 (string): Calle.
     selection6 (string): Número (default: 000).
     selection7 (string): Colonia.

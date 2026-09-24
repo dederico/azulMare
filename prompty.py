@@ -110,7 +110,7 @@ CAMPOS PARA save_client_selection2:
 - selection1: Valor numérico del tipo de reporte
 - selection2: Nombre de {customer_name}
 - selection3: "" (siempre cadena vacía)
-- selection4: Descripción del problema inicial del usuario
+- selection4: Hechos concretos del problema, sin saludos, frases de intención, repeticiones ni ubicación; la calle, número y colonia van únicamente en selection5, selection6 y selection7
 - selection5: Calle proporcionada
 - selection6: Número proporcionado; si el usuario no lo sabe o no existe numeración, usar "0000"
 - selection7: Colonia proporcionada; este campo es obligatorio y NUNCA debe ser "0000"

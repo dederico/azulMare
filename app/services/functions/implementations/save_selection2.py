@@ -1,5 +1,8 @@
 # Módulo de almacenamiento temporal por usuario y pregunta
-from app.services.report_submission_policy import validate_and_normalize_report_submission
+from app.services.report_submission_policy import (
+    build_ciac_report_summary,
+    validate_and_normalize_report_submission,
+)
 
 
 user_answers = {}  # key: phone_number, value: dict con {question_number: answer}
@@ -21,7 +24,7 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
         selection1 (string): ID numérico oficial que corresponda EXACTAMENTE al problema descrito. Nunca uses un ID por defecto.
         selection2 (string): Nombre del cliente.
         selection3 (string): SIEMPRE debe ser una cadena vacía "".
-        selection4 (string): Explicación concreta y fiel del reporte usando únicamente datos proporcionados por el ciudadano. Nunca debe quedar vacía ni usar textos genéricos.
+        selection4 (string): Hechos del problema proporcionados por el ciudadano, sin saludos, repeticiones ni ubicación. Nunca debe quedar vacía ni usar textos genéricos.
         selection5 (string): Calle.
         selection6 (string): Número (default: 000).
         selection7 (string): Colonia.
@@ -148,7 +151,15 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
 
     # Los valores ya fueron normalizados y validados antes de preparar el POST.
     nombre = selection2
-    descripcion = selection4
+    # selection4 conserva la evidencia original. Sólo el campo `reporte` del
+    # payload recibe una redacción municipal breve basada en los datos ya
+    # validados; ningún otro campo se modifica.
+    descripcion = build_ciac_report_summary(
+        selection4,
+        selection5,
+        selection6,
+        selection7,
+    )
 
     # Para la calle, validar que no sea None antes de intentar hacer strip()
     calle = selection5

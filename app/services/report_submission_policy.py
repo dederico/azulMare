@@ -160,6 +160,121 @@ def sanitize_report_description(value: str | None) -> str:
     return " ".join(text.split()).strip(" .,:;-")
 
 
+def build_ciac_report_summary(
+    description: str | None,
+    street: str | None,
+    number: str | None,
+    neighborhood: str | None,
+    *,
+    max_length: int = 750,
+) -> str:
+    """Build the concise municipal summary sent only in CIAC's report field.
+
+    The original citizen evidence remains untouched in conversation storage and
+    ``selection4``.  This presentation layer removes greetings, report-intent
+    boilerplate and repeated clauses, then appends the already validated
+    structured location without asking a model to invent or infer facts.
+    """
+    cleaned = sanitize_report_description(description)
+    raw_clauses = re.split(r"(?:[.!?]+|\s+-\s+)", cleaned)
+    clauses: list[str] = []
+    normalized_clauses: list[str] = []
+
+    greeting_pattern = re.compile(
+        r"^(?:hola|buen\s+d[ií]a|buenas\s+tardes|buenas\s+noches)"
+        r"(?:\s*[,;:-]\s*|\s+|$)",
+        flags=re.IGNORECASE,
+    )
+    intent_patterns = (
+        re.compile(
+            r"^(?:yo\s+)?(?:quiero|necesito|deseo)\s+"
+            r"(?:(?:levantar|hacer|realizar|generar)\s+)?"
+            r"(?:un\s+)?reporte(?:\s+(?:de|sobre|por))?"
+            r"(?:\s*[,;:-]\s*|\s+|$)",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(
+            r"^(?:para\s+)?reportar(?:\s+que)?(?:\s*[,;:-]\s*|\s+|$)",
+            flags=re.IGNORECASE,
+        ),
+        re.compile(
+            r"^(?:quiero|necesito|deseo)\s+reportar"
+            r"(?:\s+que)?(?:\s*[,;:-]\s*|\s+|$)",
+            flags=re.IGNORECASE,
+        ),
+    )
+
+    for raw_clause in raw_clauses:
+        clause = " ".join(raw_clause.split()).strip(" ,:;-")
+        if not clause:
+            continue
+        clause = greeting_pattern.sub("", clause).strip(" ,:;-")
+        for pattern in intent_patterns:
+            clause = pattern.sub("", clause).strip(" ,:;-")
+        if not clause:
+            continue
+
+        normalized = normalize_report_text(clause)
+        if normalized in REPORT_INTENT_PHRASES or normalized in normalized_clauses:
+            continue
+        # Prefer the more informative clause when one only repeats part of it.
+        if any(normalized in existing for existing in normalized_clauses):
+            continue
+        contained_indexes = [
+            index
+            for index, existing in enumerate(normalized_clauses)
+            if existing in normalized
+        ]
+        for index in reversed(contained_indexes):
+            del clauses[index]
+            del normalized_clauses[index]
+        clauses.append(clause)
+        normalized_clauses.append(normalized)
+
+    problem = ". ".join(clauses).strip(" .")
+    if not problem:
+        problem = cleaned.strip(" .")
+    # A generic location tail adds no problem detail and would otherwise yield
+    # wording such as "en la calle en Vasconcelos" once the structured address
+    # is appended below.
+    problem = re.sub(
+        r"\s+en\s+(?:la\s+)?(?:calle|ubicaci[oó]n|direcci[oó]n)\s*$",
+        "",
+        problem,
+        flags=re.IGNORECASE,
+    ).strip(" .")
+
+    normalized_problem = normalize_report_text(problem)
+    if normalized_problem.startswith("se reporta"):
+        summary = problem
+    elif normalized_problem.startswith(
+        ("hay ", "no hay ", "falta ", "el ", "la ", "los ", "las ")
+    ):
+        summary = f"Se reporta que {problem[0].lower() + problem[1:]}"
+    else:
+        summary = f"Se reporta {problem[0].lower() + problem[1:]}" if problem else ""
+
+    clean_street = " ".join(str(street or "").split()).strip(" ,")
+    clean_number = " ".join(str(number or "").split()).strip(" ,")
+    clean_neighborhood = " ".join(str(neighborhood or "").split()).strip(" ,")
+    location = clean_street
+    if clean_number and clean_number != "0000":
+        location = f"{location} {clean_number}".strip()
+    if clean_neighborhood:
+        location = (
+            f"{location}, colonia {clean_neighborhood}"
+            if location
+            else f"colonia {clean_neighborhood}"
+        )
+    if location:
+        summary = f"{summary.rstrip(' .')} en {location}"
+
+    summary = " ".join(summary.split()).strip(" .")
+    if len(summary) > max_length:
+        summary = summary[:max_length].rsplit(" ", 1)[0].rstrip(" ,.;:")
+    return f"{summary}." if summary else ""
+
+
 def infer_high_confidence_report_category(description: str | None) -> str | None:
     normalized = normalize_report_text(description)
     if not normalized:

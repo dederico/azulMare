@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from app.services.report_submission_policy import (
+    build_ciac_report_summary,
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
     extract_pending_report_answers,
@@ -26,6 +27,51 @@ from app.services.functions.implementations.save_selection2 import save_client_s
 
 
 class ReportSubmissionPolicyTests(unittest.TestCase):
+    def test_ciac_summary_removes_intent_greeting_repetition_and_uses_location(self):
+        summary = build_ciac_report_summary(
+            "Quiero levantar un reporte, una luminaria que no funciona. "
+            "Hola, quiero levantar un reporte - Ubicación del reporte: "
+            "Vasconcelos 123, La colonia es Centro",
+            "Vasconcelos",
+            "123",
+            "Centro",
+        )
+
+        self.assertEqual(
+            summary,
+            "Se reporta una luminaria que no funciona en Vasconcelos 123, "
+            "colonia Centro.",
+        )
+
+    def test_ciac_summary_does_not_change_original_evidence(self):
+        original = "Quiero reportar un bache que obstruye el carril derecho"
+
+        summary = build_ciac_report_summary(
+            original,
+            "Vasconcelos",
+            "321",
+            "Centro",
+        )
+
+        self.assertEqual(original, "Quiero reportar un bache que obstruye el carril derecho")
+        self.assertEqual(
+            summary,
+            "Se reporta un bache que obstruye el carril derecho en Vasconcelos "
+            "321, colonia Centro.",
+        )
+
+    def test_ciac_summary_omits_synthetic_zero_number(self):
+        self.assertEqual(
+            build_ciac_report_summary(
+                "No hay luminarias en la calle",
+                "General Francisco Naranjo",
+                "0000",
+                "Palo Blanco",
+            ),
+            "Se reporta que no hay luminarias en General Francisco Naranjo, "
+            "colonia Palo Blanco.",
+        )
+
     def test_sam_location_acknowledgement_is_removed_from_description(self):
         contaminated = (
             "A todos los vecinos se nos baja la luz. "
@@ -554,6 +600,11 @@ class SaveSelectionBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "Folio: 471999")
         self.assertEqual(client.post.await_count, 2)
         self.assertEqual(client.post.await_args.kwargs["json"]["asunto"], "984")
+        self.assertEqual(
+            client.post.await_args.kwargs["json"]["reporte"],
+            "Se reporta que hay un bache frente a mi domicilio en Vasconcelos "
+            "321, colonia Centro.",
+        )
 
     async def test_invalid_ciac_response_is_not_presented_as_a_folio(self):
         response = MagicMock()

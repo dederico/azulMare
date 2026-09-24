@@ -8983,6 +8983,14 @@ async def _process_whatsapp_request(request):
             "necesaria falló, usa reason_code='tool_failure'. Nunca uses falta de contexto para sacar del flujo "
             "una emergencia, un reporte, un folio o un seguimiento."
         )
+        system_prompt += (
+            "\n\nENRUTAMIENTO DE INFORMACIÓN MUNICIPAL: Para reservaciones, disponibilidad o renta "
+            "de canchas, incluidas las canchas de tenis del Parque Clouthier, llama obligatoriamente "
+            "a get_urls(); no uses get_parques_emblematicos() para responder sobre reservaciones. "
+            "Para preguntas sobre el Circuito CETIS 66, sus paradas, ubicaciones, horarios de entrada "
+            "o salida y requisitos para abordar, llama a get_circuito_cetis(). Para otros circuitos "
+            "de transporte utiliza get_circuitos_de_transporte()."
+        )
         if initial_greeting_required:
             system_prompt += (
                 "\n\nSALUDO YA ENVIADO: El sistema ya envió el saludo institucional de esta "

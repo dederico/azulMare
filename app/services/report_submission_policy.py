@@ -375,6 +375,20 @@ def normalize_report_number_input(value: str | None) -> str | None:
     normalized = normalize_report_text(raw)
     if raw.isdigit():
         return raw
+    # Citizens rarely answer with a bare number. Accept the same value when it
+    # is wrapped in natural wording such as "Número 136" or "el número es
+    # 136". This parser is only used while resolving the exterior-number field,
+    # so it does not steal unrelated numbers from the report description.
+    labelled_number = re.fullmatch(
+        r"(?:el\s+)?n[uú]mero(?:\s+exterior)?\s*(?:es\s+|[:#]\s*)?(\d{1,8})[.!]?",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if labelled_number:
+        return labelled_number.group(1)
+    hash_number = re.fullmatch(r"#\s*(\d{1,8})[.!]?", raw)
+    if hash_number:
+        return hash_number.group(1)
     # Una referencia adicional no invalida el número exterior que el ciudadano
     # proporcionó en respuesta directa a la pregunta por la numeración.
     number_with_reference = re.fullmatch(
@@ -438,6 +452,21 @@ def extract_pending_report_answers(
             "selection5": one_line.group(1).strip(),
             "selection6": one_line.group(2),
             "selection7": one_line.group(3).strip(),
+        }
+
+    # Preserve the structured part of addresses that include a landmark after
+    # the number, for example "Río Guadalquivir 136 esquina con Río
+    # Tamazunchale". The landmark remains citizen evidence in the transcript;
+    # CIAC receives the canonical street and exterior number in their fields.
+    street_number_reference = re.fullmatch(
+        r"(.+?)\s+(\d{1,8})(?:\s+(?:esquina|entre|frente|a\s+un\s+lado)\b.*)?",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if street_number_reference:
+        return {
+            "selection5": street_number_reference.group(1).strip(),
+            "selection6": street_number_reference.group(2),
         }
 
     lines = [" ".join(line.split()).strip() for line in raw.splitlines() if line.strip()]
@@ -706,6 +735,20 @@ def next_missing_report_field(selections: dict[str, str], *, prompt: str | None 
         # clasificación respaldada por el catálogo no hay una respuesta que
         # podamos convertir a ID y repetir la pregunta atraparía al usuario.
         return None
+    return None
+
+
+def next_missing_report_detail_before_image(
+    selections: dict[str, str],
+    *,
+    prompt: str | None = None,
+) -> tuple[str, str] | None:
+    """Return only report facts that must precede the optional-image question."""
+    missing = next_missing_report_field(selections, prompt=prompt)
+    if missing and missing[0] in {
+        "selection4", "selection5", "selection6", "selection7",
+    }:
+        return missing
     return None
 
 

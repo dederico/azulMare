@@ -34,11 +34,60 @@ from app.services.conversation_policy import (
     should_confirm_operator_outbox_takeover,
     should_accept_bot_return_event,
     should_send_initial_greeting,
+    should_suppress_recent_post_folio_input,
     should_suppress_repeated_report_question,
 )
 
 
 class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_recent_folio_suppresses_brenda_late_fragments_and_media(self):
+        completion = {"folio": "473811", "completed_at": 100.0}
+
+        for text in ("136", "Número 136", "Anónimo", "FIN", "Sí"):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    should_suppress_recent_post_folio_input(
+                        completion,
+                        text=text,
+                        now=120.0,
+                    )
+                )
+
+        self.assertTrue(
+            should_suppress_recent_post_folio_input(
+                completion,
+                text="",
+                has_media=True,
+                now=120.0,
+            )
+        )
+
+    def test_recent_folio_does_not_block_new_request_or_normal_question(self):
+        completion = {"folio": "473811", "completed_at": 100.0}
+
+        self.assertFalse(
+            should_suppress_recent_post_folio_input(
+                completion,
+                text="Quiero levantar otro reporte por un bache",
+                explicit_new_report=True,
+                now=120.0,
+            )
+        )
+        self.assertFalse(
+            should_suppress_recent_post_folio_input(
+                completion,
+                text="¿Dónde puedo consultar el estatus de mi reporte?",
+                now=120.0,
+            )
+        )
+        self.assertFalse(
+            should_suppress_recent_post_folio_input(
+                completion,
+                text="136",
+                now=400.0,
+            )
+        )
+
     def test_delayed_resolution_answer_preserves_visible_evaluation(self):
         prompt = "¿Está de acuerdo con la resolución? Por favor responda Sí o No."
         for answer in ("Sí", "S", "No", "N"):

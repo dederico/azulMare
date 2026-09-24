@@ -14,7 +14,9 @@ from app.services.report_submission_policy import (
     infer_unsolicited_report_answers,
     is_likely_report_description,
     merge_citizen_report_description,
+    next_missing_report_detail_before_image,
     next_missing_report_field,
+    normalize_report_number_input,
     normalize_reporter_name_input,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
@@ -382,6 +384,42 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 "selection7": "Olinalá",
             },
         )
+
+    def test_brenda_address_extracts_street_and_number_before_landmark(self):
+        self.assertEqual(
+            extract_pending_report_answers(
+                "selection5",
+                "Río Guadalquivir 136 esquina con Río Tamazunchale",
+            ),
+            {
+                "selection5": "Río Guadalquivir",
+                "selection6": "136",
+            },
+        )
+
+    def test_number_parser_accepts_natural_citizen_wording(self):
+        for answer in ("Número 136", "El número es 136", "Número exterior: 136", "#136"):
+            with self.subTest(answer=answer):
+                self.assertEqual(normalize_report_number_input(answer), "136")
+                self.assertEqual(
+                    extract_pending_report_answers("selection6", answer),
+                    {"selection6": "136"},
+                )
+
+    def test_image_question_waits_for_report_details_but_not_reporter_name(self):
+        fields = {
+            "selection1": "486",
+            "selection2": "",
+            "selection4": "Música a alto volumen",
+            "selection5": "Río Guadalquivir",
+            "selection6": "",
+            "selection7": "Del Valle",
+        }
+        missing = next_missing_report_detail_before_image(fields)
+        self.assertEqual(missing[0], "selection6")
+
+        fields["selection6"] = "136"
+        self.assertIsNone(next_missing_report_detail_before_image(fields))
 
     def test_pending_state_does_not_treat_controls_as_field_answers(self):
         self.assertEqual(extract_pending_report_answers("selection5", "FIN"), {})

@@ -22,6 +22,58 @@ OUT_OF_SCOPE_REDIRECT = (
 )
 
 
+def should_suppress_recent_post_folio_input(
+    completion: dict | None,
+    *,
+    text: str | None,
+    has_media: bool = False,
+    is_new_request: bool = False,
+    explicit_new_report: bool = False,
+    now: float | None = None,
+    window_seconds: float = 180.0,
+) -> bool:
+    """Keep late report fragments from reopening a completed workflow.
+
+    Chat2Desk can deliver an older citizen message after SAM has already sent
+    the folio. A recent completion is therefore a terminal state for short
+    field answers, FIN and unaccompanied media. Explicit new requests remain
+    available, so this guard does not freeze the rest of the assistant.
+    """
+    if not completion or is_new_request or explicit_new_report:
+        return False
+
+    try:
+        import time
+
+        current_time = float(time.time() if now is None else now)
+        completed_at = float(completion.get("completed_at") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    age = current_time - completed_at
+    if completed_at <= 0 or age < -3 or age > float(window_seconds):
+        return False
+
+    if has_media:
+        return True
+
+    normalized = normalize_policy_text(text)
+    if not normalized:
+        return False
+    if normalized.isdigit():
+        return True
+    if normalized in {
+        "fin", "finalizar", "listo", "lista", "ok", "gracias",
+        "si", "no", "anonimo", "anonima", "sin nombre",
+    }:
+        return True
+    if re.fullmatch(
+        r"(?:el\s+)?numero(?:\s+exterior)?\s*(?:es\s+|[:#]\s*)?\d{1,8}[.!]?",
+        normalized,
+    ):
+        return True
+    return False
+
+
 def context_reset_marker_uid(reason: str, event_id) -> str:
     """Build the stable marker that makes a conversation boundary idempotent."""
     safe_reason = re.sub(r"[^a-z0-9_-]", "-", str(reason or "boundary").lower())

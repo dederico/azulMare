@@ -156,6 +156,7 @@ from app.services.conversation_policy import (
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
     should_preserve_evaluation_across_new_request,
+    should_suppress_recent_post_folio_input,
     should_suppress_repeated_report_question,
     return_greeting_covers_current_inbound,
     resolve_high_confidence_out_of_scope_response,
@@ -173,6 +174,7 @@ from app.services.report_submission_policy import (
     is_meaningful_report_description,
     is_valid_reporter_name,
     merge_citizen_report_description,
+    next_missing_report_detail_before_image,
     next_missing_report_field,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
@@ -6938,6 +6940,51 @@ async def _process_whatsapp_request(request):
                 status_code=500,
             )
 
+        recent_completion = get_recent_report_completion(
+            db,
+            from_number,
+            max_age_seconds=180,
+        )
+        if should_suppress_recent_post_folio_input(
+            recent_completion,
+            text=body,
+            has_media=bool(
+                payload.get("photo")
+                or payload.get("video")
+                or payload.get("audio")
+            ),
+            is_new_request=bool(payload.get("is_new_request")),
+            explicit_new_report=is_explicit_report_intent(body),
+        ):
+            # A confirmed folio is terminal for late field answers and media.
+            # Remove any replica-local snapshot that could otherwise resurrect
+            # the old report, then consume the webhook without another prompt.
+            with report_sessions_lock:
+                report_sessions.pop(from_number, None)
+            user_answers.pop(from_number, None)
+            delete_report_state(db, from_number)
+            logger.warning(
+                "🧾 [POST-FOLIO TERMINAL] Ignorando continuación tardía para %s "
+                "folio=%s uid=%s media=%s body=%s",
+                from_number,
+                recent_completion.get("folio"),
+                uid,
+                bool(payload.get("photo") or payload.get("video") or payload.get("audio")),
+                (body or "")[:120],
+            )
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Continuación tardía posterior al folio ignorada",
+                    "folio": recent_completion.get("folio"),
+                }
+            )
+
         # Restaurar primero cualquier encuesta pendiente. El siguiente mensaje
         # puede llegar a un proceso distinto al que recibió el HSM o el "No".
         if durable_evaluation:
@@ -8059,6 +8106,11 @@ async def _process_whatsapp_request(request):
                         # Limpiar la sesión de reporte después de finalizar
                         if from_number in report_sessions:
                             del report_sessions[from_number]
+                        # El folio confirmado termina también los campos
+                        # acumulados. Conservarlos permitía que un webhook
+                        # tardío reabriera el reporte recién creado.
+                        user_answers.pop(from_number, None)
+                        delete_report_state(db, from_number)
                                                 
                         # Importante: Construir un mensaje informativo que *NO* requiera acción adicional del usuario
                         image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
@@ -8836,6 +8888,38 @@ async def _process_whatsapp_request(request):
                 original_response[:240],
                 response_content[:240],
             )
+
+        if (
+            from_number in report_sessions
+            and assistant_asked_for_optional_image(response_content)
+        ):
+            report_values = {
+                key: get_user_answer(from_number, key)
+                for key in (
+                    "selection1", "selection2", "selection4",
+                    "selection5", "selection6", "selection7",
+                )
+            }
+            missing_before_image = next_missing_report_detail_before_image(
+                report_values,
+                prompt=config.get("prompt") or system_message,
+            )
+            if missing_before_image:
+                original_response = response_content
+                field_key, response_content = missing_before_image
+                with report_sessions_lock:
+                    report_sessions[from_number]["pending_finalization_field"] = field_key
+                    report_sessions[from_number][
+                        "pending_finalization_prompted_at"
+                    ] = datetime.now().timestamp()
+                logger.warning(
+                    "🧾 [PREMATURE IMAGE PROMPT] phone=%s missing=%s "
+                    "original=%s replacement=%s",
+                    from_number,
+                    field_key,
+                    original_response[:240],
+                    response_content[:240],
+                )
         if not is_latest_inbound_processing_claim(
             uid,
             from_number,

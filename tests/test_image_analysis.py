@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.services.image_analysis import (
     analyze_image_url,
+    build_conversational_image_acknowledgement,
     build_image_acknowledgement,
 )
 
@@ -63,6 +64,18 @@ class ImageAnalysisTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("veo un bache profundo sobre el pavimento", message)
+
+    def test_conversational_image_never_claims_there_is_a_report(self):
+        message = build_conversational_image_acknowledgement(
+            "Francisco",
+            "una tarjeta de presentación de una sastrería",
+        )
+
+        self.assertIn("consulta", message)
+        self.assertIn("levantar un reporte municipal", message)
+        self.assertIn("vuelve a enviar la imagen", message)
+        self.assertNotIn("guardado para el reporte", message)
+        self.assertNotIn("responde FIN", message)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ from app.services.functions.implementations.geocoding import latlong_to_address
 from app.services.functions.implementations.nearest_office import find_nearest_government_office
 from app.services.image_analysis import (
     analyze_image_url,
+    build_conversational_image_acknowledgement,
     build_image_acknowledgement,
 )
 
@@ -165,6 +166,7 @@ from app.services.conversation_policy import (
 from app.services.report_submission_policy import (
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
+    establishes_report_intent,
     extract_pending_report_answers,
     extract_report_field_answer,
     fallback_report_category_id,
@@ -178,6 +180,7 @@ from app.services.report_submission_policy import (
     next_missing_report_detail_before_image,
     next_missing_report_field,
     reconcile_with_citizen_evidence,
+    report_session_has_confirmed_intent,
     resolve_unambiguous_catalog_category,
     select_citizen_report_description,
     sidewalk_sign_category_options,
@@ -2257,6 +2260,11 @@ def process_reply_message(from_number, body, reply_context):
         contextualized_message = f"[Respondiendo a: '{original_message[:50]}...'] {body}"
         
         logger.critical(f"🔗 [REPLY DETECTED] {from_number} respondió '{body}' a '{original_message[:30]}...'")
+
+        if establishes_report_intent(body):
+            confirm_report_intent(from_number, body, source="citizen_reply_helper")
+        if not has_confirmed_report_intent(from_number):
+            return contextualized_message
         
         # Si el mensaje original era una pregunta específica, intentar categorizar la respuesta
         original_lower = original_message.lower()
@@ -2411,6 +2419,15 @@ def process_quoted_message(from_number, text, quoted_info):
         quoted_text = quoted_info['quoted_text']
         
         logger.critical(f"📝 [QUOTED PROCESSING] Usuario {from_number}: '{user_response}' (citó: '{quoted_text[:30]}...')")
+
+        if establishes_report_intent(user_response):
+            confirm_report_intent(
+                from_number,
+                user_response,
+                source="citizen_quote",
+            )
+        if not has_confirmed_report_intent(from_number):
+            return user_response
         
         # Actualizar actividad del usuario
         update_user_activity_on_reply(from_number)
@@ -2448,11 +2465,6 @@ def process_quoted_message(from_number, text, quoted_info):
             elif any(keyword in quoted_lower for keyword in ['problema', 'tipo', 'motivo', 'reporte']):
                 save_user_answer(from_number, "selection4", user_response)
                 logger.critical(f"💾 [QUOTED SAVE] Problema guardado: {user_response}")
-        
-        # Crear o actualizar sesión de reporte si es necesario
-        if from_number not in report_sessions:
-            create_or_update_report_session(from_number)
-            logger.critical(f"🎯 [QUOTED SESSION] Sesión creada por mensaje citado")
         
         return user_response
         
@@ -2538,12 +2550,51 @@ def create_or_update_report_session(from_number):
                 "image_decision": None,
                 "declared_emergency": None,
                 "citizen_report_messages": [],
+                "report_intent_confirmed": False,
             }
             logger.critical(f"🎯 [NEW SESSION] Sesión de reporte creada para {from_number}")
         else:
             # Actualizar timestamp si ya existe
             report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
             logger.critical(f"🎯 [UPDATE SESSION] Timestamp actualizado para {from_number}")
+
+
+def has_confirmed_report_intent(from_number: str) -> bool:
+    """Return True only for a report grounded in citizen-authored evidence."""
+    session = report_sessions.get(from_number)
+    confirmed = report_session_has_confirmed_intent(session)
+    if confirmed and session is not None and session.get("report_intent_confirmed") is not True:
+        with report_sessions_lock:
+            session["report_intent_confirmed"] = True
+        logger.critical(
+            "🧾 [REPORT INTENT RECOVERED] phone=%s from legacy citizen evidence",
+            from_number,
+        )
+    return confirmed
+
+
+def confirm_report_intent(
+    from_number: str,
+    citizen_message: str,
+    *,
+    source: str,
+) -> None:
+    """Activate report mode from citizen evidence, never assistant wording."""
+    create_or_update_report_session(from_number)
+    normalized = " ".join(str(citizen_message or "").split()).strip()
+    with report_sessions_lock:
+        session = report_sessions[from_number]
+        session["report_intent_confirmed"] = True
+        messages = session.setdefault("citizen_report_messages", [])
+        if normalized and normalized not in messages:
+            messages.append(normalized)
+            del messages[:-20]
+    logger.critical(
+        "🧾 [REPORT INTENT CONFIRMED] phone=%s source=%s evidence=%s",
+        from_number,
+        source,
+        normalized[:240],
+    )
 
 
 def assistant_asked_if_emergency(message: str) -> bool:
@@ -2799,53 +2850,9 @@ def should_create_report_session(body, response_content):
     Determina si una conversación justifica crear una sesión de reporte.
     MUY RESTRICTIVO - solo para casos obvios de reportes.
     """
-    citizen_text = (body or "").lower()
-    assistant_text = (response_content or "").lower()
-
-    if is_explicit_report_intent(citizen_text) or infer_high_confidence_report_category(citizen_text):
-        return True
-    
-    # 🎯 PALABRAS CLAVE SUPER ESPECÍFICAS PARA REPORTES
-    report_indicators = [
-        "quiero reportar", "hacer un reporte", "levantar reporte", 
-        "tengo un problema con", "reportar un bache", "reportar basura",
-        "reportar luminaria", "hay un bache", "luz apagada", 
-        "basura acumulada", "fuga de agua", "semáforo descompuesto",
-        "reporte de", "problema en la calle", "hacer reporte",
-        "se fue la luz", "no hay luz", "sin luz", "sin energia",
-        "sin energía", "no tengo luz", "se fue la electricidad",
-        "no tengo electricidad"
-    ]
-    
-    # 🎯 PALABRAS QUE INDICAN QUE NO ES REPORTE
-    non_report_indicators = [
-        "calidad del aire", "información sobre", "horarios", 
-        "qué puedes hacer", "ayuda", "hola", "buenos días",
-        "pregunta", "cuándo", "dónde está", "cómo funciona",
-        "oficina", "trámite", "registro civil"
-    ]
-    
-    # Si hay indicadores de NO-reporte, definitivamente NO crear sesión
-    if any(indicator in citizen_text for indicator in non_report_indicators):
-        return False
-
-    if any(indicator in citizen_text for indicator in report_indicators):
-        return True
-
-    # Para expresiones nuevas que no están en ningún catálogo, la decisión del
-    # modelo de entrar al flujo se usa sólo para abrir la sesión. Nunca se usa
-    # su texto como explicación ni como clasificación del reporte.
-    assistant_started_report_flow = any(
-        phrase in assistant_text
-        for phrase in (
-            "qué deseas reportar",
-            "que deseas reportar",
-            "para levantar el reporte",
-            "complementar tu reporte",
-            "motivo del reporte",
-        )
-    )
-    return assistant_started_report_flow
+    # La intención pertenece exclusivamente al ciudadano. Una respuesta del
+    # modelo, una imagen o una palabra de control nunca pueden abrir el flujo.
+    return establishes_report_intent(body)
 
 def normalize_selection_key(question_key):
     """Normaliza llaves legacy ('1') y canónicas ('selection1')."""
@@ -2894,15 +2901,18 @@ def capture_citizen_report_evidence(
 ) -> None:
     """Persist grounded report evidence without treating workflow answers as facts."""
     inferred_code = infer_high_confidence_report_category(citizen_message)
-    has_active_report = from_number in report_sessions
-    standalone_problem = (
-        is_likely_report_description(citizen_message)
-        and not str(citizen_message or "").strip().endswith("?")
-    )
-    if not has_active_report and not inferred_code and not is_explicit_report_intent(citizen_message) and not standalone_problem:
+    establishes_intent = establishes_report_intent(citizen_message)
+    if not has_confirmed_report_intent(from_number) and not establishes_intent:
         return
 
-    create_or_update_report_session(from_number)
+    if establishes_intent:
+        confirm_report_intent(
+            from_number,
+            citizen_message,
+            source="citizen_evidence",
+        )
+    else:
+        create_or_update_report_session(from_number)
     session = report_sessions[from_number]
     messages = session.setdefault("citizen_report_messages", [])
     normalized_message = " ".join(str(citizen_message or "").split()).strip()
@@ -2942,6 +2952,9 @@ def capture_contextual_report_answer(
     Citizen vocabulary is intentionally unrestricted. The question supplies
     the structure, while the citizen's own answer remains the source of truth.
     """
+    if not has_confirmed_report_intent(from_number):
+        return None
+
     extracted = extract_report_field_answer(
         previous_assistant_message,
         citizen_message,
@@ -3031,6 +3044,7 @@ def build_report_state_snapshot(from_number: str) -> dict:
     answer_map = user_answers.get(from_number, {}) if from_number else {}
     return {
         "has_report_session": from_number in report_sessions,
+        "report_intent_confirmed": has_confirmed_report_intent(from_number),
         "image_prompted": session.get("image_prompted"),
         "image_decision": session.get("image_decision"),
         "declared_emergency": session.get("declared_emergency"),
@@ -3079,6 +3093,16 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         return (
             "VALIDATION_BLOCK: La conversación está siendo atendida por un agente humano. "
             "No se puede crear un folio durante el takeover."
+        )
+
+    if not has_confirmed_report_intent(yoga_number):
+        logger.critical(
+            "🚫 [REPORT INTENT BLOCK] save_client_selection2 blocked for %s",
+            yoga_number,
+        )
+        return (
+            "VALIDATION_BLOCK: El ciudadano no ha confirmado que desea levantar "
+            "un reporte. No se creó ningún folio."
         )
 
     selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
@@ -3311,7 +3335,10 @@ async def transfer_to_group_guarded(
     explicit_handoff = bool(context.get("explicit_handoff"))
     report_intent = bool(context.get("report_intent"))
     report_state = context.get("report_state") or {}
-    report_session_present = bool(report_state.get("has_report_session"))
+    report_session_present = bool(
+        report_state.get("has_report_session")
+        and report_state.get("report_intent_confirmed")
+    )
     has_report_session = bool(
         report_session_present
         and (
@@ -5064,38 +5091,20 @@ def is_finalization_message(text, from_number=None):
                     logger.critical(f"🚫 [POST-REPORT BLOCKED] '{text}' ignorado para {from_number} (hace {elapsed_seconds:.1f}s)")
                     return False
     
-    # 1. Direct finalization keywords
+    # Finalizar es una orden sobre el reporte, no una palabra genérica. Términos
+    # como "sí", "enviar", "registro" o "presentar" aparecen normalmente en
+    # consultas y jamás deben cerrar el flujo por sí solos.
     direct_keywords = [
-        # Basic completion terms
-        "listo", "lista", "ya terminé", "ya termine", "terminé", "termine", "he terminado", 
-        "estoy listo", "estoy lista", "finalizar", "finaliza", "finalizado", "culminar",
-        "completar", "completado", "completo", "completa", "acabar", "acabado", "acabé", 
-        "acabe", "concluir", "concluido", "concluso", "concluyó", "concluyo",
-        
-        # Report specific
-        "generar reporte", "genera reporte", "crear reporte", "crea reporte", "hacer reporte", 
+        "generar reporte", "genera reporte", "crear reporte", "crea reporte", "hacer reporte",
         "haz reporte", "levantar reporte", "levanta reporte", "enviar reporte", "envía reporte",
-        "reportar", "reporta", "reportarlo", "ingresar reporte", "ingresa reporte", "manda reporte",
-        "mandar reporte", "envia", "enviar", "registrar", "registra", "registrarlo", "registro",
-        
-        # Send/submit variations
-        "enviar", "envía", "mandar", "manda", "envíalo", "envialo", "mándalo", "mandalo",
-        "someter", "somete", "somételo", "sometelo", "presentar", "presenta", "preséntalo",
-        "presentarlo", "subir", "sube", "súbelo", "súbelo", "procesar", "procesa", "procésalo",
-        
-        # OK/Proceed variations
-        "adelante", "procede", "proceda", "continua", "continúa", "avanza", "ejecuta", "ejecutar",
-        "seguir adelante", "sigue adelante", "dale", "dale paso", "confirmar", "confirma", "aceptar",
-        "acepta", "aprobar", "aprueba", "ok", "okay", "sí", "si", "afirmativo",
-        
-        # Añadir estas expresiones específicas
-        "son todas", "es todo", "todas", "solo estas", "eso es todo", "ya están todas"
+        "ingresar reporte", "ingresa reporte", "manda reporte", "mandar reporte",
+        "finalizar reporte", "finaliza reporte", "terminar reporte", "termina reporte",
+        "ya terminé el reporte", "ya termine el reporte",
     ]
     
     # 2. Phrase patterns that indicate finalization
     finalization_phrases = [
-        "ya está", "ya esta", "eso es todo", "es todo", "eso sería todo", "con eso", 
-        "así está bien", "asi esta bien", "ya quedó", "ya quedo", "está completo", "esta completo",
+        "eso es todo", "es todo", "eso sería todo",
         "puedes finalizar", "puedes terminar", "puedes proceder", "puedes continuar",
         "puedes procesar", "puedes enviarlo", "puedes mandarlo", "puedes registrarlo",
         "por favor finaliza", "por favor termina", "por favor procede", "por favor continúa",
@@ -5104,7 +5113,7 @@ def is_finalization_message(text, from_number=None):
         "no más fotos", "no más imágenes", "no más", "solo esas fotos", "solo esas imágenes",
         "son todas las fotos", "son todas las imágenes", "ya tengo todas", "ya mandé todas",
         "ya envié todas", "puedes hacer", "puedes generar", "genera el reporte", "crea el reporte",
-        "son todas", "es todo", "todas", "esas son todas"  # Repetimos aquí para asegurar detección
+        "son todas", "esas son todas"
     ]
     
     # 3. Negative-word filters (words that might indicate the user is NOT ready)
@@ -5132,17 +5141,6 @@ def is_finalization_message(text, from_number=None):
     if contains_complete_report_phrase(text_lower, finalization_phrases):
         # But make sure none of the negative indicators are present
         if not contains_complete_report_phrase(text_lower, negative_indicators):
-            return True
-    
-    # Additional context-aware checks for very short responses
-    if len(text_lower.split()) <= 3:  # Very short responses
-        # Common short approvals
-        short_approvals = ["ok", "sí", "si", "yes", "ya", "dale", "eso", "ese", "esta bien", "está bien", "listo"]
-        if any(text_lower == word or text_lower.startswith(word + " ") or text_lower.endswith(" " + word) for word in short_approvals):
-            return True
-            
-        # Check for standalone "1" or "ok" which users sometimes send as confirmation
-        if text_lower in ["1", "ok", "👍", "👌"]:
             return True
     
     # If none of the above conditions match, it's not a finalization message
@@ -5360,6 +5358,20 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             "message": "La conversación está siendo atendida por un agente humano; no se creó ningún folio.",
         }
 
+    if not has_confirmed_report_intent(from_number):
+        logger.critical(
+            "🚫 [REPORT INTENT BLOCK] CIAC submission blocked for %s: "
+            "no citizen-confirmed report intent",
+            from_number,
+        )
+        return {
+            "status": "validation_block",
+            "message": (
+                "No crearé un reporte sin tu confirmación. "
+                "Si deseas levantar uno, indícame qué problema municipal quieres reportar."
+            ),
+        }
+
     logger.debug(f"process_and_save_report: Processing report for {from_number}")
     log_operational_decision_trace(
         from_number,
@@ -5564,11 +5576,28 @@ def _restore_durable_report_context(storage, payload):
         )
         delete_report_state(storage, phone_number)
         persisted = None
+    discard_unconfirmed = False
     with report_sessions_lock:
         if persisted and persisted.get("report_session"):
-            report_sessions[phone_number] = persisted["report_session"]
+            restored_session = persisted["report_session"]
+            if report_session_has_confirmed_intent(restored_session):
+                restored_session["report_intent_confirmed"] = True
+                report_sessions[phone_number] = restored_session
+            else:
+                # State created only by media/emergency/location in older
+                # deployments is unsafe and must not survive a worker hop.
+                report_sessions.pop(phone_number, None)
+                user_answers.pop(phone_number, None)
+                discard_unconfirmed = True
+                persisted = None
+                logger.warning(
+                    "🧹 [UNCONFIRMED REPORT STATE] discarded for phone=%s",
+                    phone_number,
+                )
         else:
             report_sessions.pop(phone_number, None)
+    if discard_unconfirmed:
+        delete_report_state(storage, phone_number)
     if persisted and persisted.get("user_answers"):
         user_answers[phone_number] = persisted["user_answers"]
     else:
@@ -6737,7 +6766,7 @@ async def _process_whatsapp_request(request):
         fotos_urls = get_images_from_payload(payload)
 
         # Si hay un reporte en progreso, añadir las imágenes a su lista
-        if from_number in report_sessions and fotos_urls:
+        if has_confirmed_report_intent(from_number) and fotos_urls:
             for foto_url in fotos_urls:
                 if foto_url not in report_sessions[from_number]["images"]:
                     report_sessions[from_number]["images"].append(foto_url)
@@ -7149,6 +7178,7 @@ async def _process_whatsapp_request(request):
             not out_of_scope_response
             and not evaluation_turn_active
             and not quoted_hsm_ok
+            and has_confirmed_report_intent(from_number)
         ):
             existing_answers = {
                 key: get_user_answer(from_number, key)
@@ -7189,7 +7219,7 @@ async def _process_whatsapp_request(request):
 
             if not intake_turn_handled:
                 catalog_location = extract_catalog_location(body, existing_answers)
-                if catalog_location:
+                if catalog_location and has_confirmed_report_intent(from_number):
                     contextual_location = extract_report_field_answer(
                         last_outbound_message,
                         body,
@@ -7498,13 +7528,14 @@ async def _process_whatsapp_request(request):
                             return JSONResponse(content={"status": False, "error": "Error crítico en HSM+OK"})  
 
             
-            # Si no hay sesión de reporte pero la respuesta sugiere actividad de reporte, crearla
-            if (from_number not in report_sessions and 
-                (should_create_report_session(body, "") or 
-                any(keyword in reply_context.get('original_message', '').lower() 
-                    for keyword in ['reporte', 'problema', 'bache', 'luminaria', 'basura', 'número', 'numero', 'calle', 'colonia']))):
-                create_or_update_report_session(from_number)
-                logger.critical(f"🎯 [REPLY SESSION] Sesión de reporte creada por contexto de reply")
+            # Una cita o el texto previo de SAM no son evidencia ciudadana. La
+            # sesión sólo nace cuando el mensaje actual expresa el reporte.
+            if from_number not in report_sessions and should_create_report_session(body, ""):
+                confirm_report_intent(
+                    from_number,
+                    body,
+                    source="citizen_reply",
+                )
 
         # ✅ SOLO evaluar respuestas del ciudadano, nunca mensajes salientes del bot
         if evaluation_turn_active and from_number in user_sessions:
@@ -7721,7 +7752,7 @@ async def _process_whatsapp_request(request):
                             body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
                             
                             # Si hay un reporte en progreso, actualizar la ubicación
-                            if from_number in report_sessions:
+                            if has_confirmed_report_intent(from_number):
                                 report_sessions[from_number]["location"] = address
                                 report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
                             
@@ -7756,10 +7787,16 @@ async def _process_whatsapp_request(request):
                         status_code=500,
                     )
 
-            video_message = (
-                "Recibí tu video, pero por el momento no puedo analizar archivos de video. "
-                "Por favor envíame una o más fotografías del problema para agregarlas al reporte."
-            )
+            if has_confirmed_report_intent(from_number):
+                video_message = (
+                    "Recibí tu video, pero por el momento no puedo analizar archivos de video. "
+                    "Por favor envíame una o más fotografías del problema para agregarlas al reporte."
+                )
+            else:
+                video_message = (
+                    "Recibí tu video, pero por el momento no puedo analizar archivos de video. "
+                    "Cuéntame qué información o ayuda municipal necesitas."
+                )
             db.Insert(
                 Message(
                     time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -7832,44 +7869,67 @@ async def _process_whatsapp_request(request):
                         }
                     )
 
-                previous = get_user_answer(from_number, "selection8") or ""
-                updated_list = [url.strip() for url in previous.split(",") if url.strip()]
-                updated_list.append(photo_url)
-                new_value = ",".join(updated_list)
-                save_user_answer(from_number, "selection8", new_value)
-                logger.info(f"[{from_number}] Imagen añadida a selection8: {photo_url}")
                 try:
                     # Analizar la imagen con rate limiting
                     image_description = await analyze_image_with_rate_limit(client, photo_url)
 
-                    # Almacenar en la sesión de reporte usando la estructura centralizada
-                    create_or_update_report_session(from_number)
-                    
-                    # Añadir esta imagen al reporte en progreso - con verificación
-                    if isinstance(photo_url, str) and (photo_url.startswith("http") or "storage.chat2desk.com" in photo_url):
-                        # Asegurar que la sesión tenga la estructura completa
-                        create_or_update_report_session(from_number)
-                        # Asegurarse de que la imagen no esté duplicada
-                        if photo_url not in report_sessions[from_number]["images"]:
-                            report_sessions[from_number]["images"].append(photo_url)
-                            report_sessions[from_number]["image_descriptions"].append(image_description)
-                            report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
-                            
-                            logger.info(f"Imagen #{len(report_sessions[from_number]['images'])} añadida al reporte para {from_number}")
+                    if has_confirmed_report_intent(from_number):
+                        previous = get_user_answer(from_number, "selection8") or ""
+                        updated_list = [
+                            url.strip() for url in previous.split(",") if url.strip()
+                        ]
+                        if photo_url not in updated_list:
+                            updated_list.append(photo_url)
+                        save_user_answer(
+                            from_number,
+                            "selection8",
+                            ",".join(updated_list),
+                        )
+
+                        # Añadir la imagen exclusivamente al reporte confirmado.
+                        session = report_sessions[from_number]
+                        if isinstance(photo_url, str) and (
+                            photo_url.startswith("http")
+                            or "storage.chat2desk.com" in photo_url
+                        ):
+                            if photo_url not in session["images"]:
+                                session["images"].append(photo_url)
+                                session["image_descriptions"].append(image_description)
+                                session["timestamp"] = datetime.now(
+                                    pytz.timezone('America/Mexico_City')
+                                )
                         else:
-                            logger.warning(f"Imagen duplicada ignorada: {photo_url[:50]}...")
+                            logger.error(
+                                "URL de imagen inválida: %s...",
+                                str(photo_url)[:50],
+                            )
+
+                        num_images = len(session["images"])
+                        first_description = (
+                            session["image_descriptions"][0]
+                            if session["image_descriptions"]
+                            else None
+                        )
+                        body = build_image_acknowledgement(
+                            sender_name,
+                            first_description,
+                            num_images,
+                        )
+                        logger.info(
+                            "Imagen #%s añadida al reporte confirmado para %s",
+                            num_images,
+                            from_number,
+                        )
                     else:
-                        logger.error(f"URL de imagen inválida: {str(photo_url)[:50]}...")
-                    
-                    num_images = len(report_sessions[from_number]["images"])
-                    la_foto = report_sessions[from_number]["image_descriptions"][0]
-                    body = build_image_acknowledgement(
-                        sender_name,
-                        la_foto,
-                        num_images,
-                    )
-                    
-                    logger.debug(f"Imagen añadida al reporte en progreso para {from_number}. Total: {num_images}")
+                        body = build_conversational_image_acknowledgement(
+                            sender_name,
+                            image_description,
+                        )
+                        logger.critical(
+                            "🖼️ [CONVERSATIONAL IMAGE] phone=%s image not attached "
+                            "because report intent is unconfirmed",
+                            from_number,
+                        )
 
                     if not conversation_epoch_is_current(
                         from_number,
@@ -7969,7 +8029,7 @@ async def _process_whatsapp_request(request):
         # Finalize the same way with or without images. Previously the entire
         # deterministic path lived behind `images`, so declining an optional
         # image returned control to the LLM and caused repeated questions.
-        elif body and from_number in report_sessions:
+        elif body and has_confirmed_report_intent(from_number):
             if is_delayed_post_folio_webhook(from_number, inbound_event_timestamp):
                 logger.info(
                     "🧾 [POST-FOLIO STALE] Ignorando mensaje anterior al folio '%s' para %s",
@@ -8378,8 +8438,10 @@ async def _process_whatsapp_request(request):
     # Agregar mensaje actual del usuario al historial y guardarlo en la base de datos
     conversation_history.add_user_message(body)
 
-    if assistant_asked_for_optional_image(last_outbound_message):
-        create_or_update_report_session(from_number)
+    if (
+        has_confirmed_report_intent(from_number)
+        and assistant_asked_for_optional_image(last_outbound_message)
+    ):
         with report_sessions_lock:
             report_sessions[from_number]["image_prompted"] = True
 
@@ -8393,9 +8455,8 @@ async def _process_whatsapp_request(request):
                 )
 
     if assistant_asked_if_emergency(last_outbound_message):
-        create_or_update_report_session(from_number)
         emergency_answer = classify_emergency_response(body)
-        if emergency_answer is not None:
+        if emergency_answer is not None and has_confirmed_report_intent(from_number):
             with report_sessions_lock:
                 report_sessions[from_number]["declared_emergency"] = emergency_answer
             logger.critical(
@@ -8610,7 +8671,7 @@ async def _process_whatsapp_request(request):
             response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
 
         if (
-            from_number in report_sessions
+            has_confirmed_report_intent(from_number)
             and should_suppress_repeated_report_question(
                 last_outbound_message,
                 response_content,
@@ -8764,7 +8825,12 @@ async def _process_whatsapp_request(request):
     current_datetime = datetime.now(mexico_tz)
     date_string = current_datetime.strftime("%Y-%m-%d")
     hour = current_datetime.strftime("%I:%M:%S %p")
-    fotos_urls = report_sessions[from_number]["images"] if from_number in report_sessions and report_sessions[from_number]["images"] else []
+    fotos_urls = (
+        report_sessions[from_number]["images"]
+        if has_confirmed_report_intent(from_number)
+        and report_sessions[from_number]["images"]
+        else []
+    )
 
     # Aplanar cualquier lista anidada y asegurar que todo sean strings
     flat_fotos = []
@@ -8779,7 +8845,7 @@ async def _process_whatsapp_request(request):
     # Crear el string final
     fotos_string = ",".join(flat_fotos) if flat_fotos else ""
     
-    if from_number in report_sessions:
+    if has_confirmed_report_intent(from_number):
         # Actualizar la sesión con los datos del contexto LLM
         with report_sessions_lock:
             session = report_sessions[from_number]
@@ -9034,7 +9100,7 @@ async def _process_whatsapp_request(request):
             )
 
         if (
-            from_number in report_sessions
+            has_confirmed_report_intent(from_number)
             and assistant_asked_for_optional_image(response_content)
         ):
             report_values = {
@@ -9092,7 +9158,10 @@ async def _process_whatsapp_request(request):
         )
         transfer_guard_context.pop(str(message_id), None)
 
-        if from_number in report_sessions and assistant_asked_for_optional_image(response_content):
+        if (
+            has_confirmed_report_intent(from_number)
+            and assistant_asked_for_optional_image(response_content)
+        ):
             with report_sessions_lock:
                 report_sessions[from_number]["image_prompted"] = True
                 report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))

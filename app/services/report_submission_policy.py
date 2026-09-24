@@ -34,6 +34,9 @@ REPORT_CONTROL_MESSAGES = {
 
 REPORT_INTENT_PHRASES = (
     "quiero reportar",
+    "quisiera reportar",
+    "vengo a reportar",
+    "para reportar",
     "quiero hacer un reporte",
     "quiero levantar un reporte",
     "hacer un reporte",
@@ -42,6 +45,7 @@ REPORT_INTENT_PHRASES = (
     "deseo reportar",
     "quiero levantar reporte",
     "necesito levantar un reporte",
+    "reporte normal",
 )
 
 PROBLEM_SIGNAL_WORDS = (
@@ -81,6 +85,9 @@ HIGH_CONFIDENCE_REPORT_CATEGORIES = {
     "focos": "982",
     "arbotante": "983",
     "arbotantes": "983",
+    "poste de luz": "982",
+    "postes de luz": "982",
+    "alumbrado": "982",
     "bache": "984",
     "baches": "984",
     "hueco": "984",
@@ -566,6 +573,31 @@ def is_likely_report_description(
         )
     )
     return asked_for_problem
+
+
+def establishes_report_intent(
+    value: str | None,
+) -> bool:
+    """Require citizen-authored evidence before activating report behavior."""
+    raw = " ".join(str(value or "").split()).strip()
+    if not raw:
+        return False
+    if raw.endswith("?"):
+        return False
+    if is_explicit_report_intent(raw):
+        return True
+    return is_likely_report_description(raw)
+
+
+def report_session_has_confirmed_intent(session: dict | None) -> bool:
+    """Support new sessions and safely recover grounded legacy sessions."""
+    session = session or {}
+    if session.get("report_intent_confirmed") is True:
+        return True
+    return any(
+        establishes_report_intent(message)
+        for message in session.get("citizen_report_messages", []) or []
+    )
 
 
 def infer_unsolicited_report_answers(

@@ -96,7 +96,7 @@ def build_image_acknowledgement(
         )
 
     clean_name = str(sender_name or "").strip() or "Gracias"
-    clean_description = str(description or "").strip()
+    clean_description = str(description or "").strip().rstrip(" .")
     if clean_description:
         receipt = f"{clean_name} recibí tu imagen; veo {clean_description}. La he guardado para el reporte."
     else:
@@ -105,4 +105,23 @@ def build_image_acknowledgement(
     return (
         f"{receipt} Si deseas continuar con tu reporte, responde FIN. "
         "En caso de que tengas otra foto, por favor envíala."
+    )
+
+
+def build_conversational_image_acknowledgement(
+    sender_name: str,
+    description: str | None,
+) -> str:
+    """Acknowledge media without inventing a municipal report workflow."""
+    clean_name = str(sender_name or "").strip()
+    clean_description = str(description or "").strip().rstrip(" .")
+    prefix = f"{clean_name}, recibí tu imagen" if clean_name else "Recibí tu imagen"
+    if clean_description:
+        prefix = f"{prefix}; veo {clean_description}."
+    else:
+        prefix = f"{prefix}."
+    return (
+        f"{prefix} ¿Deseas hacer una consulta sobre ella o levantar un reporte "
+        "municipal? Si deseas reportar, dime qué problema ocurre y vuelve a enviar "
+        "la imagen cuando te la solicite."
     )

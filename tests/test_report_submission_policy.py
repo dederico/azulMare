@@ -7,6 +7,7 @@ from app.services.report_submission_policy import (
     build_ciac_report_summary,
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
+    establishes_report_intent,
     extract_pending_report_answers,
     extract_report_field_answer,
     fallback_report_category_id,
@@ -18,6 +19,7 @@ from app.services.report_submission_policy import (
     next_missing_report_field,
     normalize_report_number_input,
     normalize_reporter_name_input,
+    report_session_has_confirmed_intent,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
     sanitize_report_description,
@@ -29,6 +31,41 @@ from app.services.functions.implementations.save_selection2 import save_client_s
 
 
 class ReportSubmissionPolicyTests(unittest.TestCase):
+    def test_only_citizen_report_evidence_activates_report_mode(self):
+        self.assertTrue(establishes_report_intent("Quiero reportar un bache"))
+        self.assertTrue(establishes_report_intent("Reporte normal"))
+        self.assertTrue(
+            establishes_report_intent(
+                "Poste de luz dañado a punto de caer en la calzada"
+            )
+        )
+        self.assertTrue(
+            establishes_report_intent(
+                "Para reportar una persona durmiendo en mi banqueta"
+            )
+        )
+        self.assertTrue(establishes_report_intent("No funciona una luminaria"))
+        self.assertFalse(establishes_report_intent("Arreglo todo tipo de ropa"))
+        self.assertFalse(establishes_report_intent("Recomendaciones para mi negocio"))
+        self.assertFalse(establishes_report_intent("FIN"))
+        self.assertFalse(
+            establishes_report_intent(
+                "¿Puedo circular sin placas si mi licencia es de otro estado?"
+            )
+        )
+
+    def test_legacy_session_requires_grounded_citizen_evidence(self):
+        self.assertFalse(
+            report_session_has_confirmed_intent(
+                {"citizen_report_messages": ["Recomendaciones para mi sastrería"]}
+            )
+        )
+        self.assertTrue(
+            report_session_has_confirmed_intent(
+                {"citizen_report_messages": ["Hay un bache frente a mi casa"]}
+            )
+        )
+
     def test_ciac_summary_removes_intent_greeting_repetition_and_uses_location(self):
         summary = build_ciac_report_summary(
             "Quiero levantar un reporte, una luminaria que no funciona. "

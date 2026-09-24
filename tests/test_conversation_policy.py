@@ -14,6 +14,7 @@ from app.services.conversation_policy import (
     dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
     evaluation_prompt_matches_state,
+    evaluation_turn_matches_visible_prompt,
     extract_confirmed_folio,
     greeting_display_name,
     inactivity_snapshot_is_still_stale,
@@ -24,6 +25,7 @@ from app.services.conversation_policy import (
     is_known_automated_outbound,
     is_likely_bot_echo,
     is_non_authoritative_control_source,
+    is_quoted_hsm_completion_ok,
     is_report_reactivation_notification,
     is_trusted_human_control,
     is_verified_public_phone,
@@ -182,6 +184,51 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             evaluation_prompt_matches_state(
                 "evaluacion_esperando_motivo",
                 "¿Podrías indicarnos el motivo por el cuál no tuvo resolución?",
+            )
+        )
+
+    def test_hsm_ok_prompt_accepts_the_actual_button_instruction(self):
+        self.assertTrue(
+            evaluation_prompt_matches_state(
+                "evaluacion_esperando_click_ok",
+                "Presiona o escribe OK para conocer los detalles de tu reporte.",
+            )
+        )
+        self.assertTrue(
+            should_preserve_evaluation_across_new_request(
+                "evaluacion_esperando_click_ok",
+                "Presiona o escribe OK para conocer los detalles de tu reporte.",
+                "OK",
+            )
+        )
+
+    def test_durable_prompt_keeps_survey_active_when_history_is_stale(self):
+        self.assertTrue(
+            evaluation_turn_matches_visible_prompt(
+                "evaluacion_esperando_respuesta_resolucion",
+                "Tu reporte ha sido generado con éxito. Folio 473812.",
+                "¿Está de acuerdo con la resolución? Responda Sí o No.",
+            )
+        )
+        self.assertFalse(
+            evaluation_turn_matches_visible_prompt(
+                "evaluacion_esperando_respuesta_resolucion",
+                "Tu reporte ha sido generado con éxito. Folio 473812.",
+                None,
+            )
+        )
+
+    def test_quoted_hsm_ok_is_control_event_not_report_content(self):
+        quoted_hsm = (
+            "@HSM@\nnotifica_conclusion|es_mx\n\n473812\n"
+            "Quiero levantar un reporte, una luminaria que no funciona."
+        )
+        self.assertTrue(is_quoted_hsm_completion_ok(quoted_hsm, "OK"))
+        self.assertFalse(is_quoted_hsm_completion_ok(quoted_hsm, "Sí"))
+        self.assertFalse(
+            is_quoted_hsm_completion_ok(
+                "¿Deseas agregar una imagen para complementar tu reporte?",
+                "OK",
             )
         )
 

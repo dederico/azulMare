@@ -138,7 +138,7 @@ from app.services.conversation_policy import (
     extract_confirmed_folio,
     greeting_display_name,
     event_precedes_context_boundary,
-    evaluation_prompt_matches_state,
+    evaluation_turn_matches_visible_prompt,
     inactivity_snapshot_is_still_stale,
     is_explicit_report_finalization_token,
     is_bot_return_message,
@@ -148,6 +148,7 @@ from app.services.conversation_policy import (
     is_known_automated_outbound,
     is_likely_bot_echo,
     is_non_authoritative_control_source,
+    is_quoted_hsm_completion_ok,
     is_report_reactivation_notification,
     is_verified_public_phone,
     history_after_latest_context_reset,
@@ -709,6 +710,10 @@ EVALUATION_STATES = {
     "WAITING_RATING": "evaluacion_esperando_calificacion", 
     "WAITING_REASON": "evaluacion_esperando_motivo"
 }
+EVALUATION_OK_PROMPT = "Presiona o escribe OK para conocer los detalles de tu reporte."
+EVALUATION_RESOLUTION_PROMPT = (
+    "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
+)
 
 async def handle_hsm_conclusion_notification(payload, from_number, storage=None):
     """
@@ -767,6 +772,7 @@ async def handle_hsm_conclusion_notification(payload, from_number, storage=None)
         client_id=client_id,
         channel_id=channel_id,
         transport=payload.get("transport") or "wa_direct",
+        visible_prompt=EVALUATION_OK_PROMPT,
     )
     
     logger.critical(f"✅ [HSM SAVED] Información guardada, esperando click de OK")
@@ -875,13 +881,24 @@ async def handle_evaluation_response(
         except Exception as e:
             logger.error(f"❌ [EVAL] Error enviando conclusión para folio {folio}: {str(e)}")
 
-        validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-        await send_chat2desk_message_direct(
+        validation_message = EVALUATION_RESOLUTION_PROMPT
+        prompt_sent = await send_chat2desk_message_direct(
             evaluation_client_id,
             evaluation_channel_id,
             validation_message,
             transport,
         )
+        if prompt_sent:
+            save_evaluation_state(
+                storage,
+                from_number,
+                state=session.evaluation_state,
+                folio=folio,
+                client_id=evaluation_client_id,
+                channel_id=evaluation_channel_id,
+                transport=transport,
+                visible_prompt=validation_message,
+            )
         logger.critical(f"✅ [EVAL] Evaluación activada para folio {folio} desde WAITING_OK_CLICK")
         return True
     
@@ -912,7 +929,23 @@ async def handle_evaluation_response(
 
     Escribe el número de la opción que quieres seleccionar."""
 
-            await send_chat2desk_message_direct(client_id, channel_id, rating_message, transport)
+            prompt_sent = await send_chat2desk_message_direct(
+                client_id,
+                channel_id,
+                rating_message,
+                transport,
+            )
+            if prompt_sent:
+                save_evaluation_state(
+                    storage,
+                    from_number,
+                    state=session.evaluation_state,
+                    folio=getattr(session, 'evaluation_folio', ''),
+                    client_id=client_id,
+                    channel_id=channel_id,
+                    transport=transport,
+                    visible_prompt=rating_message,
+                )
             logger.critical(f"✅ [EVALUACIÓN] Usuario {from_number} acordó con resolución")
             return True
             
@@ -931,7 +964,23 @@ async def handle_evaluation_response(
             )
             
             reason_message = "¿Podrías indicarnos el motivo por el cuál no tuvo resolución?"
-            await send_chat2desk_message_direct(client_id, channel_id, reason_message, transport)
+            prompt_sent = await send_chat2desk_message_direct(
+                client_id,
+                channel_id,
+                reason_message,
+                transport,
+            )
+            if prompt_sent:
+                save_evaluation_state(
+                    storage,
+                    from_number,
+                    state=session.evaluation_state,
+                    folio=getattr(session, 'evaluation_folio', ''),
+                    client_id=client_id,
+                    channel_id=channel_id,
+                    transport=transport,
+                    visible_prompt=reason_message,
+                )
             logger.critical(f"⚠️ [EVALUACIÓN] Usuario {from_number} NO acordó con resolución")
             return True
             
@@ -3617,6 +3666,7 @@ def prepare_inbound_session_boundary(
     lifecycle_session_key,
     *,
     pending_evaluation_state=None,
+    pending_evaluation_prompt=None,
     inbound_message=None,
 ):
     """Resolve and apply a new-session boundary before handling any attachment."""
@@ -3661,10 +3711,16 @@ def prepare_inbound_session_boundary(
         ),
         "",
     )
-    preserve_pending_evaluation = should_preserve_evaluation_across_new_request(
-        pending_evaluation_state,
-        last_outbound_message,
-        inbound_message,
+    preserve_pending_evaluation = any(
+        should_preserve_evaluation_across_new_request(
+            pending_evaluation_state,
+            visible_prompt,
+            inbound_message,
+        )
+        for visible_prompt in (
+            last_outbound_message,
+            pending_evaluation_prompt,
+        )
     )
     boundary_requested = should_send_initial_greeting(
         is_new_request=bool(payload.get("is_new_request")),
@@ -6904,6 +6960,27 @@ async def _process_whatsapp_request(request):
         # A delayed but valid answer must retain the visible survey prompt; a
         # report message will not match and keeps the normal new-request flow.
         durable_evaluation = get_evaluation_state(db, from_number)
+        reply_context = extract_reply_context(payload)
+        quoted_hsm_ok = bool(
+            reply_context.get('is_quoted')
+            and is_quoted_hsm_completion_ok(
+                reply_context.get('original_message'),
+                reply_context.get('user_response'),
+            )
+        )
+        effective_inbound_text = (
+            reply_context.get('user_response')
+            if reply_context.get('is_reply')
+            else body
+        )
+        durable_evaluation_answer = bool(
+            durable_evaluation
+            and should_preserve_evaluation_across_new_request(
+                durable_evaluation.get("state"),
+                durable_evaluation.get("visible_prompt"),
+                effective_inbound_text,
+            )
+        )
 
         try:
             (
@@ -6921,7 +6998,12 @@ async def _process_whatsapp_request(request):
                     if durable_evaluation
                     else None
                 ),
-                inbound_message=body,
+                pending_evaluation_prompt=(
+                    durable_evaluation.get("visible_prompt")
+                    if durable_evaluation
+                    else None
+                ),
+                inbound_message=effective_inbound_text,
             )
             processing_conversation_epoch = int(
                 (get_lifecycle_state(from_number, storage=db) or {}).get(
@@ -6940,21 +7022,43 @@ async def _process_whatsapp_request(request):
                 status_code=500,
             )
 
+        if (
+            durable_evaluation
+            and initial_greeting_required
+            and bool(payload.get("is_new_request"))
+            and not durable_evaluation_answer
+        ):
+            # A real Chat2Desk session boundary supersedes an unanswered old
+            # survey. Valid delayed survey answers never enter this branch
+            # because prepare_inbound_session_boundary preserves their turn.
+            clear_evaluation_state(db, from_number)
+            durable_evaluation = None
+            user_sessions.pop(from_number, None)
+            logger.critical(
+                "🧹 [EVAL NEW SESSION RESET] phone=%s uid=%s",
+                from_number,
+                uid,
+            )
+
         recent_completion = get_recent_report_completion(
             db,
             from_number,
             max_age_seconds=180,
         )
-        if should_suppress_recent_post_folio_input(
-            recent_completion,
-            text=body,
-            has_media=bool(
-                payload.get("photo")
-                or payload.get("video")
-                or payload.get("audio")
-            ),
-            is_new_request=bool(payload.get("is_new_request")),
-            explicit_new_report=is_explicit_report_intent(body),
+        if (
+            not durable_evaluation_answer
+            and not quoted_hsm_ok
+            and should_suppress_recent_post_folio_input(
+                recent_completion,
+                text=body,
+                has_media=bool(
+                    payload.get("photo")
+                    or payload.get("video")
+                    or payload.get("audio")
+                ),
+                is_new_request=bool(payload.get("is_new_request")),
+                explicit_new_report=is_explicit_report_intent(body),
+            )
         ):
             # A confirmed folio is terminal for late field answers and media.
             # Remove any replica-local snapshot that could otherwise resurrect
@@ -7023,9 +7127,10 @@ async def _process_whatsapp_request(request):
         )
         evaluation_turn_active = bool(
             durable_evaluation
-            and evaluation_prompt_matches_state(
+            and evaluation_turn_matches_visible_prompt(
                 durable_evaluation.get("state"),
                 last_outbound_message,
+                durable_evaluation.get("visible_prompt"),
             )
         )
         if durable_evaluation and not evaluation_turn_active:
@@ -7040,7 +7145,11 @@ async def _process_whatsapp_request(request):
         intake_response_override = None
         intake_turn_handled = False
         captured_report_field = None
-        if not out_of_scope_response and not evaluation_turn_active:
+        if (
+            not out_of_scope_response
+            and not evaluation_turn_active
+            and not quoted_hsm_ok
+        ):
             existing_answers = {
                 key: get_user_answer(from_number, key)
                 for key in (
@@ -7214,6 +7323,11 @@ async def _process_whatsapp_request(request):
                 from_number,
                 durable_evaluation["folio"],
             )
+        elif quoted_hsm_ok:
+            logger.critical(
+                "🎯 [HSM CONTROL EVENT] Captura de reporte omitida para %s",
+                from_number,
+            )
         else:
             logger.warning(
                 "🧭 [OUT OF SCOPE] Captura de campo de reporte omitida para %s body=%s",
@@ -7232,15 +7346,13 @@ async def _process_whatsapp_request(request):
             processed_message_ids.clear()
             processed_message_ids.add(uid)
 
-        reply_context = extract_reply_context(payload)
         # 🆕 PROCESAR RESPUESTA SI ES DETECTADA
         if reply_context['is_reply']:
             if reply_context.get('is_quoted', False):
                 logger.critical(f"📨 [QUOTED DETECTED] Usuario {from_number} citó: '{reply_context['original_message'][:30]}...' y respondió: '{reply_context['user_response']}'")
                 
                 # 🎯 CASO ESPECIAL: HSM + OK = Activar evaluación manualmente
-                if ('@HSM@' in reply_context.get('original_message', '') and 
-                    reply_context.get('user_response', '').upper() == 'OK'):
+                if quoted_hsm_ok:
                     
                     try:
                         logger.critical(f"🎯 [HSM+OK QUOTED] ===== INICIANDO PROCESAMIENTO =====")
@@ -7278,6 +7390,14 @@ async def _process_whatsapp_request(request):
                             reporte_id = "UNKNOWN"
                         
                         logger.critical(f"🎯 [HSM+OK] Activando evaluación para reporte {reporte_id}")
+
+                        # A conclusion survey is independent from report
+                        # intake. Remove any stale snapshot before arming the
+                        # survey so the quoted HSM cannot reopen the old report.
+                        with report_sessions_lock:
+                            report_sessions.pop(from_number, None)
+                        user_answers.pop(from_number, None)
+                        delete_report_state(db, from_number)
                         
                         # Configurar estado de evaluación
                         if from_number not in user_sessions:
@@ -7314,8 +7434,24 @@ async def _process_whatsapp_request(request):
                         
                         # Enviar pregunta de evaluación
                         logger.critical(f"📤 [HSM+OK] Enviando pregunta de evaluación")
-                        validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-                        await send_chat2desk_message_direct(client_id, channel_id, validation_message, transport)
+                        validation_message = EVALUATION_RESOLUTION_PROMPT
+                        prompt_sent = await send_chat2desk_message_direct(
+                            client_id,
+                            channel_id,
+                            validation_message,
+                            transport,
+                        )
+                        if prompt_sent:
+                            save_evaluation_state(
+                                db,
+                                from_number,
+                                state=session.evaluation_state,
+                                folio=reporte_id,
+                                client_id=client_id,
+                                channel_id=channel_id,
+                                transport=transport,
+                                visible_prompt=validation_message,
+                            )
                         
                         logger.critical(f"✅ [HSM+OK] Evaluación iniciada exitosamente para reporte {reporte_id}")
                         return JSONResponse(content={"status": True, "message": "Evaluación iniciada por OK citado"})
@@ -7325,8 +7461,13 @@ async def _process_whatsapp_request(request):
                         logger.error(f"Traceback: {traceback.format_exc()}")
                         try:
                             # Fallback mínimo
-                            validation_message = "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
-                            await send_chat2desk_message_direct(client_id, channel_id, validation_message, transport)
+                            validation_message = EVALUATION_RESOLUTION_PROMPT
+                            prompt_sent = await send_chat2desk_message_direct(
+                                client_id,
+                                channel_id,
+                                validation_message,
+                                transport,
+                            )
                             
                             # Configurar estado básico
                             if from_number not in user_sessions:
@@ -7346,6 +7487,9 @@ async def _process_whatsapp_request(request):
                                 client_id=client_id,
                                 channel_id=channel_id,
                                 transport=transport,
+                                visible_prompt=(
+                                    validation_message if prompt_sent else None
+                                ),
                             )
                             
                             return JSONResponse(content={"status": True, "message": "Evaluación iniciada (fallback)"})

@@ -25,6 +25,7 @@ class EvaluationStateTests(unittest.TestCase):
             folio="472988",
             client_id=123,
             channel_id=43906,
+            visible_prompt="¿Está de acuerdo con la resolución? Sí o No.",
             now=1000,
         )
 
@@ -34,6 +35,10 @@ class EvaluationStateTests(unittest.TestCase):
         self.assertEqual(state["folio"], "472988")
         self.assertEqual(state["client_id"], 123)
         self.assertEqual(state["channel_id"], 43906)
+        self.assertEqual(
+            state["visible_prompt"],
+            "¿Está de acuerdo con la resolución? Sí o No.",
+        )
 
     def test_completed_state_is_removed(self):
         save_evaluation_state(

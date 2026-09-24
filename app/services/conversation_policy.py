@@ -146,7 +146,10 @@ def evaluation_prompt_matches_state(
         return False
 
     if normalized_state in {"waiting_ok_click", "evaluacion_esperando_click_ok"}:
-        return "responde" in prompt and "ok" in prompt
+        return "ok" in prompt and any(
+            instruction in prompt
+            for instruction in ("responde", "escribe", "presiona")
+        )
     if normalized_state in {
         "waiting_resolution_response",
         "evaluacion_esperando_respuesta_resolucion",
@@ -161,6 +164,41 @@ def evaluation_prompt_matches_state(
     if normalized_state in {"waiting_reason", "evaluacion_esperando_motivo"}:
         return "motivo" in prompt and "resolucion" in prompt
     return False
+
+
+def evaluation_turn_matches_visible_prompt(
+    state: str | None,
+    last_outbound_message: str | None,
+    durable_visible_prompt: str | None,
+) -> bool:
+    """Match a survey turn against chat history or its durable sent prompt.
+
+    Some Chat2Desk messages are sent directly and are visible to the citizen
+    without being copied into SAM's ``Message`` history.  The durable prompt is
+    written only after that send succeeds, so it is safe evidence that the
+    citizen is answering the current survey rather than an abandoned state.
+    """
+    return evaluation_prompt_matches_state(
+        state,
+        last_outbound_message,
+    ) or evaluation_prompt_matches_state(
+        state,
+        durable_visible_prompt,
+    )
+
+
+def is_quoted_hsm_completion_ok(
+    original_message: str | None,
+    user_response: str | None,
+) -> bool:
+    """Identify the OK reply that opens a CIAC conclusion survey."""
+    original = str(original_message or "")
+    response = normalize_policy_text(user_response)
+    return bool(
+        response == "ok"
+        and "@hsm@" in original.casefold()
+        and "notifica_conclusion" in original.casefold()
+    )
 
 
 def should_preserve_evaluation_across_new_request(

@@ -52,8 +52,15 @@ def ensure_evaluation_state_storage(storage) -> bool:
                         client_id BIGINT,
                         channel_id BIGINT,
                         transport TEXT NOT NULL DEFAULT 'wa_direct',
+                        visible_prompt TEXT,
                         updated_at DOUBLE PRECISION NOT NULL
                     )
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    ALTER TABLE {EVALUATION_STATE_TABLE}
+                    ADD COLUMN IF NOT EXISTS visible_prompt TEXT
                     """
                 )
             conn.commit()
@@ -76,6 +83,7 @@ def save_evaluation_state(
     client_id=None,
     channel_id=None,
     transport: str = "wa_direct",
+    visible_prompt: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     key = normalize_phone_key(phone_number)
@@ -87,6 +95,7 @@ def save_evaluation_state(
         "client_id": None if client_id in (None, "") else int(client_id),
         "channel_id": None if channel_id in (None, "") else int(channel_id),
         "transport": str(transport or "wa_direct"),
+        "visible_prompt": str(visible_prompt or "").strip() or None,
         "updated_at": timestamp,
     }
     if not record["state"] or not record["folio"]:
@@ -105,14 +114,16 @@ def save_evaluation_state(
             cursor.execute(
                 f"""
                 INSERT INTO {EVALUATION_STATE_TABLE}
-                    (phone_number, state, folio, client_id, channel_id, transport, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (phone_number, state, folio, client_id, channel_id, transport,
+                     visible_prompt, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (phone_number) DO UPDATE SET
                     state = EXCLUDED.state,
                     folio = EXCLUDED.folio,
                     client_id = EXCLUDED.client_id,
                     channel_id = EXCLUDED.channel_id,
                     transport = EXCLUDED.transport,
+                    visible_prompt = EXCLUDED.visible_prompt,
                     updated_at = EXCLUDED.updated_at
                 """,
                 (
@@ -122,6 +133,7 @@ def save_evaluation_state(
                     record["client_id"],
                     record["channel_id"],
                     record["transport"],
+                    record["visible_prompt"],
                     timestamp,
                 ),
             )
@@ -154,7 +166,7 @@ def get_evaluation_state(
                 cursor.execute(
                     f"""
                     SELECT phone_number, state, folio, client_id, channel_id,
-                           transport, updated_at
+                           transport, visible_prompt, updated_at
                     FROM {EVALUATION_STATE_TABLE}
                     WHERE phone_number = %s AND updated_at >= %s
                     """,
@@ -170,7 +182,8 @@ def get_evaluation_state(
                     "client_id": row[3],
                     "channel_id": row[4],
                     "transport": str(row[5] or "wa_direct"),
-                    "updated_at": float(row[6]),
+                    "visible_prompt": str(row[6] or "").strip() or None,
+                    "updated_at": float(row[7]),
                 }
                 with _memory_lock:
                     _memory_states[key] = record.copy()

@@ -181,6 +181,7 @@ from app.services.report_submission_policy import (
     next_missing_report_field,
     reconcile_with_citizen_evidence,
     report_session_has_confirmed_intent,
+    resolve_trusted_reporter_name,
     resolve_unambiguous_catalog_category,
     select_citizen_report_description,
     sidewalk_sign_category_options,
@@ -2894,6 +2895,25 @@ def get_user_answer(from_number, question_number):
     return answer
 
 
+def persist_trusted_reporter_name(
+    from_number: str,
+    sender_name: str | None,
+) -> str:
+    """Make Chat2Desk metadata authoritative for CIAC's reporter name."""
+    trusted_name = resolve_trusted_reporter_name(sender_name)
+    create_or_update_report_session(from_number)
+    save_user_answer(from_number, "selection2", trusted_name)
+    with report_sessions_lock:
+        report_sessions[from_number]["trusted_reporter_name"] = trusted_name
+        report_sessions[from_number]["reporter_name_source"] = "chat2desk"
+    logger.critical(
+        "👤 [TRUSTED REPORTER] phone=%s name=%s source=chat2desk",
+        from_number,
+        trusted_name,
+    )
+    return trusted_name
+
+
 def capture_citizen_report_evidence(
     from_number: str,
     citizen_message: str,
@@ -3095,6 +3115,7 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             "No se puede crear un folio durante el takeover."
         )
 
+    session = report_sessions.get(yoga_number, {})
     if not has_confirmed_report_intent(yoga_number):
         logger.critical(
             "🚫 [REPORT INTENT BLOCK] save_client_selection2 blocked for %s",
@@ -3104,6 +3125,14 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             "VALIDATION_BLOCK: El ciudadano no ha confirmado que desea levantar "
             "un reporte. No se creó ningún folio."
         )
+
+    # The model does not own reporter identity. Chat2Desk metadata was stored
+    # when the inbound message entered the report flow; anonymous is the safe
+    # fallback for restored/legacy sessions that predate that marker.
+    selection2 = session.get("trusted_reporter_name") or "Anónimo"
+    if session.get("declared_emergency") is True:
+        # CIAC 964 is the direct C4 / immediate-attention inbox.
+        selection1 = "964"
 
     selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
         yoga_number,
@@ -3245,6 +3274,11 @@ async def save_client_selection2_guarded(
             "No debes crear ni modificar reportes mientras el takeover esté activo."
         )
 
+    session = report_sessions.get(yoga_number, {})
+    selection2 = session.get("trusted_reporter_name") or "Anónimo"
+    if session.get("declared_emergency") is True:
+        selection1 = "964"
+
     selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
         yoga_number,
         selection1,
@@ -3269,7 +3303,6 @@ async def save_client_selection2_guarded(
     emergency_codes = {"891", "892", "893", "894", "895", "896", "964"}
     normalized_type = normalized_submission["selection1"]
 
-    session = report_sessions.get(yoga_number, {})
     has_images = bool(images_list) or bool(session.get("images")) or bool(str(selection8 or "").strip())
     declared_emergency = session.get("declared_emergency") is True
 
@@ -5403,7 +5436,12 @@ async def process_and_save_report(from_number, location, images=None, descriptio
     # Images are optional once the citizen explicitly declined them. Keep the
     # guard only while the image question is still unanswered.
     session = report_sessions.get(from_number, {})
-    if not images and session.get("image_decision") != "no":
+    declared_emergency = session.get("declared_emergency") is True
+    if (
+        not images
+        and not declared_emergency
+        and session.get("image_decision") != "no"
+    ):
         return {
             'status': 'no_images',
             'message': (
@@ -7154,6 +7192,8 @@ async def _process_whatsapp_request(request):
             ),
             "",
         )
+        if has_confirmed_report_intent(from_number):
+            persist_trusted_reporter_name(from_number, sender_name)
         evaluation_turn_active = bool(
             durable_evaluation
             and evaluation_turn_matches_visible_prompt(
@@ -8456,9 +8496,21 @@ async def _process_whatsapp_request(request):
 
     if assistant_asked_if_emergency(last_outbound_message):
         emergency_answer = classify_emergency_response(body)
-        if emergency_answer is not None and has_confirmed_report_intent(from_number):
+        if emergency_answer is not None:
+            create_or_update_report_session(from_number)
             with report_sessions_lock:
                 report_sessions[from_number]["declared_emergency"] = emergency_answer
+            if emergency_answer is True:
+                # Asking for a patrol or describing an active emergency is
+                # itself authorization to open the C4 report. Do not force an
+                # additional "quiero levantar un reporte" confirmation.
+                confirm_report_intent(
+                    from_number,
+                    body,
+                    source="emergency_request",
+                )
+                save_user_answer(from_number, "selection1", "964")
+                persist_trusted_reporter_name(from_number, sender_name)
             logger.critical(
                 "🚨 [EMERGENCY FLAG] %s respondió emergencia=%s",
                 from_number,
@@ -8909,9 +8961,20 @@ async def _process_whatsapp_request(request):
             system_prompt += (
                 "\n\nESTADO CONFIRMADO: El ciudadano indicó que SÍ es una emergencia. "
                 "Indícale que debe comunicarse al C4 al 81 89 88 20 00. "
+                "Este flujo requiere únicamente una descripción breve y la dirección "
+                "completa (calle, número y colonia). Usa siempre el asunto 964 y el "
+                "nombre confiable ya proporcionado por Chat2Desk. En cuanto tengas esos "
+                "datos, llama inmediatamente a save_client_selection2. NO preguntes por "
+                "nombre, imagen, autorización ni confirmación adicional. "
                 "No transfieras automáticamente a operadores; sólo transfiere si solicita explícitamente "
                 "atención humana o si verificaste que no existe contexto para resolver otra consulta."
             )
+        trusted_reporter = resolve_trusted_reporter_name(sender_name)
+        system_prompt += (
+            "\n\nIDENTIDAD DEL REPORTANTE: selection2 debe ser exactamente "
+            f"{trusted_reporter!r}. Este valor proviene de Chat2Desk. Nunca preguntes "
+            "el nombre y nunca uses otro mensaje del ciudadano como selection2."
+        )
         system_prompt += (
             "\n\nPOLÍTICA DE TRANSFERENCIA: Sólo solicita transfer_to_group cuando el ciudadano pida "
             "explícitamente atención humana o cuando, después de intentar las herramientas y el contexto "
@@ -8973,6 +9036,8 @@ async def _process_whatsapp_request(request):
                 body,
                 previous_assistant_message=last_outbound_message,
             )
+            if has_confirmed_report_intent(from_number):
+                persist_trusted_reporter_name(from_number, sender_name)
         log_operational_decision_trace(
             from_number,
             "before_llm_generation",

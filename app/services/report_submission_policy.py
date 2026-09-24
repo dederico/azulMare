@@ -46,6 +46,10 @@ REPORT_INTENT_PHRASES = (
     "quiero levantar reporte",
     "necesito levantar un reporte",
     "reporte normal",
+    "necesito una patrulla",
+    "requiero una patrulla",
+    "manden una patrulla",
+    "envien una patrulla",
 )
 
 PROBLEM_SIGNAL_WORDS = (
@@ -72,6 +76,10 @@ PROBLEM_SIGNAL_WORDS = (
     "retirar",
     "recoger",
     "reparar",
+    "agresion",
+    "violencia",
+    "esta gritando",
+    "crisis psiquiatrica",
 )
 
 # Sólo se incluyen términos cuyo asunto es inequívoco. Si un texto contiene
@@ -250,6 +258,15 @@ def build_ciac_report_summary(
         problem,
         flags=re.IGNORECASE,
     ).strip(" .")
+    # Natural answers often begin with conversational fillers ("en que hay",
+    # "pues que..."). They are not part of the municipal report and otherwise
+    # produce awkward summaries such as "Se reporta en que hay...".
+    problem = re.sub(
+        r"^(?:(?:en|es)\s+que|pues(?:\s+que)?|que)\s+",
+        "",
+        problem,
+        flags=re.IGNORECASE,
+    ).strip(" .")
 
     normalized_problem = normalize_report_text(problem)
     if normalized_problem.startswith("se reporta"):
@@ -377,6 +394,15 @@ def normalize_reporter_name_input(value: str | None) -> str | None:
     return raw if is_valid_reporter_name(raw) else None
 
 
+def resolve_trusted_reporter_name(sender_name: str | None) -> str:
+    """Use Chat2Desk identity metadata, never a conversational field answer."""
+    raw = " ".join(str(sender_name or "").split()).strip()
+    if normalize_report_text(raw).startswith("[chat]") or raw.casefold().startswith("[chat]"):
+        return "Usuario Web"
+    trusted = normalize_reporter_name_input(sender_name)
+    return trusted or "Anónimo"
+
+
 def normalize_report_number_input(value: str | None) -> str | None:
     raw = " ".join(str(value or "").split()).strip()
     normalized = normalize_report_text(raw)
@@ -438,8 +464,10 @@ def extract_pending_report_answers(
         number = normalize_report_number_input(compact)
         return {field: number} if number is not None else {}
     if field == "selection2":
-        name = normalize_reporter_name_input(compact)
-        return {field: name} if name else {}
+        # Reporter identity is supplied by Chat2Desk metadata. Consuming the
+        # next citizen message here previously stored arbitrary report text as
+        # ``nombreReportante`` in CIAC.
+        return {}
     if field == "selection4":
         return {field: compact} if is_meaningful_report_description(compact) else {}
     if field == "selection7":
@@ -520,8 +548,9 @@ def extract_report_field_answer(
     if any(phrase in previous for phrase in ("en que colonia", "cual es la colonia", "nombre de la colonia")):
         return ("selection7", answer) if is_meaningful_report_description(answer) else None
     if asks_for_name:
-        name = normalize_reporter_name_input(answer)
-        return ("selection2", name) if name else None
+        # Legacy prompts may still be visible in an existing conversation, but
+        # their answer must never overwrite the trusted Chat2Desk identity.
+        return None
     if any(
         phrase in previous
         for phrase in (
@@ -531,6 +560,9 @@ def extract_report_field_answer(
             "que problema deseas reportar",
             "describe el problema",
             "explicame que deseas reportar",
+            "que esta ocurriendo",
+            "que esta pasando",
+            "describe brevemente la situacion",
         )
     ):
         return ("selection4", answer) if is_meaningful_report_description(answer) else None
@@ -570,6 +602,9 @@ def is_likely_report_description(
             "que problema deseas reportar",
             "describe el problema",
             "explicame que deseas reportar",
+            "que esta ocurriendo",
+            "que esta pasando",
+            "describe brevemente la situacion",
         )
     )
     return asked_for_problem
@@ -757,8 +792,6 @@ def next_missing_report_field(selections: dict[str, str], *, prompt: str | None 
         return "selection6", "¿Cuál es el número exterior? Si no existe o no lo conoces, indícame “sin número”."
     if normalize_report_text(selections.get("selection7")) in INVALID_REQUIRED_VALUES | {"0000"}:
         return "selection7", "¿En qué colonia se encuentra el problema?"
-    if not is_valid_reporter_name(selections.get("selection2")):
-        return "selection2", "Antes de crear el reporte, ¿me compartes tu nombre? También puedes indicar “Anónimo”."
     category = str(selections.get("selection1") or "").strip()
     if not category.isdigit() or category == "0":
         if sidewalk_sign_category_options(prompt, selections.get("selection4")):

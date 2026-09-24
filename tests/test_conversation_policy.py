@@ -406,6 +406,17 @@ class EmergencyClassificationTests(unittest.TestCase):
     def test_risk_answer(self):
         self.assertIs(classify_emergency_answer("Puede ocasionar un socavón"), True)
 
+    def test_patrol_request_is_emergency_intent(self):
+        self.assertIs(classify_emergency_answer("Necesito una patrulla"), True)
+
+    def test_active_psychiatric_crisis_is_emergency_intent(self):
+        self.assertIs(
+            classify_emergency_answer(
+                "Paciente psiquiátrico está teniendo una crisis psiquiátrica"
+            ),
+            True,
+        )
+
 
 class HumanControlPolicyTests(unittest.TestCase):
     def test_fresh_dialog_event_confirms_locally_pending_transfer(self):

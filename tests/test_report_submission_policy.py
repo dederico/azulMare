@@ -22,6 +22,7 @@ from app.services.report_submission_policy import (
     report_session_has_confirmed_intent,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
+    resolve_trusted_reporter_name,
     sanitize_report_description,
     select_citizen_report_description,
     validate_and_normalize_report_submission,
@@ -45,6 +46,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             )
         )
         self.assertTrue(establishes_report_intent("No funciona una luminaria"))
+        self.assertTrue(establishes_report_intent("Necesito una patrulla"))
         self.assertFalse(establishes_report_intent("Arreglo todo tipo de ropa"))
         self.assertFalse(establishes_report_intent("Recomendaciones para mi negocio"))
         self.assertFalse(establishes_report_intent("FIN"))
@@ -99,6 +101,29 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             "321, colonia Centro.",
         )
 
+    def test_ciac_summary_removes_conversational_leading_filler(self):
+        self.assertEqual(
+            build_ciac_report_summary(
+                "En que hay bastante basura por la escuela Lauro Aguirre",
+                "Lauro Aguirre",
+                "100",
+                "Centro",
+            ),
+            "Se reporta que hay bastante basura por la escuela Lauro Aguirre "
+            "en Lauro Aguirre 100, colonia Centro.",
+        )
+
+    def test_emergency_description_is_captured_after_situation_question(self):
+        self.assertEqual(
+            extract_report_field_answer(
+                "¿Qué está ocurriendo y en qué situación necesitas la patrulla?",
+                "Paciente psiquiátrico está teniendo una crisis y gritando",
+            ),
+            (
+                "selection4",
+                "Paciente psiquiátrico está teniendo una crisis y gritando",
+            ),
+        )
     def test_ciac_summary_omits_synthetic_zero_number(self):
         self.assertEqual(
             build_ciac_report_summary(
@@ -482,19 +507,29 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 self.assertEqual(normalize_reporter_name_input(answer), "Anónimo")
                 self.assertEqual(
                     extract_pending_report_answers("selection2", answer),
-                    {"selection2": "Anónimo"},
+                    {},
                 )
 
     def test_contextual_name_refusal_continues_as_anonymous(self):
         for answer in ("No", "No gracias", "Prefiero mantenerlo privado"):
             with self.subTest(answer=answer):
-                self.assertEqual(
+                self.assertIsNone(
                     extract_report_field_answer(
                         "Antes de crear el reporte, ¿me compartes tu nombre?",
                         answer,
-                    ),
-                    ("selection2", "Anónimo"),
+                    )
                 )
+
+    def test_reporter_name_comes_from_chat2desk_metadata(self):
+        self.assertEqual(
+            resolve_trusted_reporter_name("Daniela Escareño L."),
+            "Daniela Escareño L.",
+        )
+        self.assertEqual(resolve_trusted_reporter_name("Usuario"), "Anónimo")
+        self.assertEqual(
+            resolve_trusted_reporter_name("[chat] c33e236e6b6c5cb06593"),
+            "Usuario Web",
+        )
 
     def test_anonymous_name_leaves_only_the_next_missing_field(self):
         fields = {
@@ -517,7 +552,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertEqual(fallback_report_category_id(catalog), "486")
         self.assertEqual(fallback_report_category_id(""), "486")
 
-    def test_fin_asks_only_for_missing_name_then_catalog_clarification(self):
+    def test_fin_never_asks_name_and_goes_to_catalog_clarification(self):
         catalog = (
             "Valor: 1007, Tipo: Exhorto obstrucción de banqueta con objetos móviles\n"
             "Valor: 1008, Tipo: Obstrucción de banqueta con construcción fija"
@@ -530,8 +565,6 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             "selection6": "2513",
             "selection7": "Valle Oriente",
         }
-        self.assertEqual(next_missing_report_field(fields, prompt=catalog)[0], "selection2")
-        fields["selection2"] = "Gerardo Rodríguez"
         field, question = next_missing_report_field(fields, prompt=catalog)
         self.assertEqual(field, "selection1")
         self.assertIn("mover", question)

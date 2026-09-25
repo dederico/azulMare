@@ -57,6 +57,78 @@ class ReportIntakePolicyTests(unittest.TestCase):
             {"selection7": "Palo Blanco"},
         )
 
+    def test_explicit_colony_never_falls_through_to_street_catalog(self):
+        existing = {
+            "selection5": "Francisco Siller y Agustín Siller",
+            "selection7": "",
+        }
+
+        self.assertEqual(
+            extract_catalog_location(
+                "Col. General Lázaro Garza Ayala",
+                existing,
+            ),
+            {"selection7": "Lázaro Garza Ayala"},
+        )
+        self.assertEqual(
+            extract_catalog_location(
+                "Colonia General. Lazaro Garza Ayala",
+                existing,
+            ),
+            {"selection7": "Lázaro Garza Ayala"},
+        )
+
+    def test_requested_colony_uses_only_colony_catalog(self):
+        existing = {
+            "selection5": "Francisco Siller y Agustín Siller",
+            "selection7": "",
+        }
+
+        self.assertEqual(
+            extract_catalog_location(
+                "General Lázaro Garza Ayala",
+                existing,
+                expected_field="selection7",
+            ),
+            {"selection7": "Lázaro Garza Ayala"},
+        )
+        # Santa Catarina is also the name of a local street. When SAM asked
+        # for a colony it must not be accepted by crossing into that catalog.
+        self.assertEqual(
+            extract_catalog_location(
+                "Santa Catarina",
+                existing,
+                expected_field="selection7",
+            ),
+            {},
+        )
+
+    def test_requested_street_uses_only_street_catalog(self):
+        self.assertEqual(
+            extract_catalog_location(
+                "General Garcia Naranjo",
+                {},
+                expected_field="selection5",
+            ),
+            {"selection5": "General Francisco Naranjo"},
+        )
+
+    def test_full_address_splits_inline_colony_without_losing_landmark(self):
+        self.assertEqual(
+            extract_catalog_location(
+                "Francisco Siller y Agustín Siller Frente al parque hormiguitas "
+                "Col. General Lázaro Garza Ayala.",
+                {"selection5": "", "selection7": ""},
+                expected_field="selection5",
+            ),
+            {
+                "selection5": (
+                    "Francisco Siller y Agustín Siller Frente al parque hormiguitas"
+                ),
+                "selection7": "Lázaro Garza Ayala",
+            },
+        )
+
     def test_confirmation_requires_problem_street_colony_and_catalog(self):
         fields = {
             "selection1": "982",

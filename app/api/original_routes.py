@@ -7258,12 +7258,29 @@ async def _process_whatsapp_request(request):
                     )
 
             if not intake_turn_handled:
-                catalog_location = extract_catalog_location(body, existing_answers)
-                if catalog_location and has_confirmed_report_intent(from_number):
-                    contextual_location = extract_report_field_answer(
-                        last_outbound_message,
-                        body,
+                contextual_location = extract_report_field_answer(
+                    last_outbound_message,
+                    body,
+                )
+                pending_location_field = report_sessions.get(from_number, {}).get(
+                    "pending_finalization_field"
+                )
+                expected_location_field = (
+                    pending_location_field
+                    if pending_location_field in {"selection5", "selection7"}
+                    else (
+                        contextual_location[0]
+                        if contextual_location
+                        and contextual_location[0] in {"selection5", "selection7"}
+                        else None
                     )
+                )
+                catalog_location = extract_catalog_location(
+                    body,
+                    existing_answers,
+                    expected_field=expected_location_field,
+                )
+                if catalog_location and has_confirmed_report_intent(from_number):
                     catalog_field = next(iter(catalog_location))
                     location_was_requested = bool(
                         contextual_location

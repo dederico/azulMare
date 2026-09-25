@@ -36,6 +36,7 @@ from .implementations.get_licencia_chofer import get_licencia_chofer
 from .implementations.nearest_office import find_nearest_government_office
 from .implementations.get_circuitos_de_transporte import get_circuitos_de_transporte
 from .implementations.get_circuito_cetis import get_circuito_cetis
+from .implementations.get_catalogo_servicios_municipales import get_catalogo_servicios_municipales
 from .implementations.get_inah import get_inah
 from .implementations.get_jueces_auxiliares import get_jueces_auxiliares
 from .implementations.get_licencia_16 import get_licencia_16
@@ -114,6 +115,7 @@ registered_functions = [
     find_nearest_government_office,
     get_circuitos_de_transporte,
     get_circuito_cetis,
+    get_catalogo_servicios_municipales,
     get_inah,
     get_jueces_auxiliares,
     get_licencia_16,

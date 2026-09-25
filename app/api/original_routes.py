@@ -8991,6 +8991,15 @@ async def _process_whatsapp_request(request):
             "o salida y requisitos para abordar, llama a get_circuito_cetis(). Para otros circuitos "
             "de transporte utiliza get_circuitos_de_transporte()."
         )
+        system_prompt += (
+            "\n\nCONTACTOS DE SERVICIOS MUNICIPALES: Si el ciudadano pregunta qué área, teléfono, "
+            "extensión o canal atiende un servicio municipal, llama primero a "
+            "get_catalogo_servicios_municipales(servicio). Usa get_funcionarios() únicamente cuando "
+            "pregunte por una persona, funcionario, cargo o dependencia específica. Nunca deduzcas "
+            "la responsabilidad de un servicio desde el directorio. Si el catálogo no contiene un "
+            "contacto verificado, no sustituyas otro teléfono municipal: informa la limitación o "
+            "transfiere con reason_code='verified_no_context'."
+        )
         if initial_greeting_required:
             system_prompt += (
                 "\n\nSALUDO YA ENVIADO: El sistema ya envió el saludo institucional de esta "

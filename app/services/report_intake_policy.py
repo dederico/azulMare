@@ -78,6 +78,154 @@ def _unique_colony_typo_match(normalized: str) -> str | None:
     )
 
 
+def extract_initial_report_bundle(
+    message: str | None,
+    existing: dict[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Extract an explicitly labelled location from an initial report message.
+
+    Citizens commonly provide the problem and the complete address in one
+    message, before SAM has asked for any individual field.  This parser is
+    intentionally conservative: it only activates when the citizen introduces
+    the location explicitly (for example, ``Ubicado en`` or ``Dirección:``),
+    and it only accepts a neighborhood when it resolves uniquely against the
+    San Pedro catalog.
+
+    The first dictionary contains the values suitable for the report workflow.
+    The second preserves the citizen-authored fragments for auditability.
+    Existing report values are never overwritten.
+    """
+    existing = existing or {}
+    raw = " ".join(str(message or "").split()).strip()
+    if not raw:
+        return {}, {}
+
+    location_intro = re.search(
+        r"\b(?:"
+        r"ubicad[oa]s?\s+en|"
+        r"ubicaci[oó]n(?:\s+del\s+reporte)?\s*(?::|-)\s*|"
+        r"direcci[oó]n\s*(?::|-)\s*|"
+        r"se\s+encuentra(?:n)?\s+en"
+        r")\s*",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if not location_intro:
+        return {}, {}
+
+    original_description = raw[: location_intro.start()].strip(" ,.;:-")
+    raw_location = raw[location_intro.end() :].strip(" ,.;:-")
+    if not raw_location:
+        return {}, {}
+
+    description = re.sub(
+        r"^(?:(?:[¡!¿?]\s*)?(?:hola|buen\s+d[ií]a|buenas\s+tardes|"
+        r"buenas\s+noches)\b[\s,;:!¡¿?\-]*)+",
+        "",
+        original_description,
+        flags=re.IGNORECASE,
+    ).strip(" ,.;:-")
+    description = re.sub(
+        r"^(?:yo\s+)?(?:quiero|quisiera|necesito|deseo)\s+reportar"
+        r"(?:\s+que)?\s*",
+        "",
+        description,
+        flags=re.IGNORECASE,
+    ).strip(" ,.;:-")
+    description = re.sub(
+        r"^(?:yo\s+)?(?:quiero|quisiera|necesito|deseo)\s+"
+        r"(?:(?:levantar|hacer|realizar|generar)\s+)?(?:un\s+)?reporte"
+        r"(?:\s+(?:de|sobre|por))?\s*",
+        "",
+        description,
+        flags=re.IGNORECASE,
+    ).strip(" ,.;:-")
+
+    colony_match = re.search(
+        r"(?:^|,\s*|\s+)(?:colonia|col\.?|fraccionamiento|fracc\.?)\s+"
+        r"(.+?)\.?$",
+        raw_location,
+        flags=re.IGNORECASE,
+    )
+    raw_colony = colony_match.group(1).strip(" ,.;:-") if colony_match else ""
+    canonical_colony = ""
+    if raw_colony:
+        normalized_colony = _normalize(raw_colony)
+        canonical_colony = (
+            COLONY_INDEX.get(normalized_colony)
+            or _unique_colony_typo_match(normalized_colony)
+            or ""
+        )
+
+    address = (
+        raw_location[: colony_match.start()].strip(" ,.;:-")
+        if colony_match
+        else raw_location
+    )
+    raw_number = ""
+    normalized_number = ""
+    number_span = None
+    no_number_match = re.search(
+        r"(?<!\w)#?\s*(?:sin\s+n[uú]mero|sin\s+numeraci[oó]n|s\s*/\s*n|"
+        r"no\s+tiene\s+(?:n[uú]mero|numeraci[oó]n))(?!\w)",
+        address,
+        flags=re.IGNORECASE,
+    )
+    if no_number_match:
+        raw_number = no_number_match.group(0).strip()
+        normalized_number = "0000"
+        number_span = no_number_match.span()
+    else:
+        labelled_number = re.search(
+            r"(?<!\w)(?:#\s*|n[uú]m(?:ero)?\.?\s*(?::|#)?\s*|"
+            r"n[oº]\.?\s*)(\d{1,8})(?!\w)",
+            address,
+            flags=re.IGNORECASE,
+        )
+        if labelled_number:
+            raw_number = labelled_number.group(0).strip()
+            normalized_number = labelled_number.group(1)
+            number_span = labelled_number.span()
+        else:
+            natural_number = re.search(
+                r"\s(\d{1,8})(?=\s*(?:,|cruce\b|entre\b|esquina\b|"
+                r"frente\b|$))",
+                address,
+                flags=re.IGNORECASE,
+            )
+            if natural_number:
+                raw_number = natural_number.group(1)
+                normalized_number = natural_number.group(1)
+                number_span = natural_number.span(1)
+
+    street_reference = address
+    if number_span:
+        start, end = number_span
+        street_reference = f"{address[:start]} {address[end:]}"
+    street_reference = " ".join(street_reference.split()).strip(" ,.;:-#")
+    canonical_street = STREET_INDEX.get(_normalize(street_reference))
+    report_street = canonical_street or street_reference
+
+    normalized_fields: dict[str, str] = {}
+    if description and not str(existing.get("selection4") or "").strip():
+        normalized_fields["selection4"] = description
+    if report_street and not str(existing.get("selection5") or "").strip():
+        normalized_fields["selection5"] = report_street
+    if normalized_number and not str(existing.get("selection6") or "").strip():
+        normalized_fields["selection6"] = normalized_number
+    if canonical_colony and not str(existing.get("selection7") or "").strip():
+        normalized_fields["selection7"] = canonical_colony
+
+    original_fields = {
+        "message": raw,
+        "selection4": original_description,
+        "selection5": street_reference,
+        "selection6": raw_number,
+        "selection7": raw_colony,
+    }
+    return normalized_fields, original_fields
+
+
 def extract_catalog_location(
     message: str | None,
     existing: dict[str, str] | None = None,

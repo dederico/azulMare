@@ -192,6 +192,7 @@ from app.services.report_intake_policy import (
     build_intake_confirmation,
     classify_intake_confirmation,
     extract_catalog_location,
+    extract_initial_report_bundle,
     next_question_after_intake_confirmation,
     should_request_intake_confirmation,
 )
@@ -3013,10 +3014,34 @@ def reconcile_report_fields_with_citizen_evidence(
     citizen_description = get_user_answer(yoga_number, "selection4")
     conversation_turns: list[tuple[str, str]] = []
     session = user_sessions.get(yoga_number)
+    report_session = report_sessions.get(yoga_number, {})
+    original_bundle_message = " ".join(
+        str(
+            report_session.get("original_report_fields", {}).get("message")
+            or ""
+        ).split()
+    ).strip()
+    bundled_description = str(
+        report_session.get("normalized_report_fields", {}).get("selection4")
+        or ""
+    ).strip()
+
+    def grounded_description_content(content: str) -> str:
+        compact = " ".join(str(content or "").split()).strip()
+        if (
+            original_bundle_message
+            and bundled_description
+            and compact == original_bundle_message
+        ):
+            return bundled_description
+        return content
+
     if session and not durable_messages:
         for message in session.history.messages[-40:]:
             if isinstance(message, HumanMessage):
-                conversation_turns.append(("user", message.content))
+                conversation_turns.append(
+                    ("user", grounded_description_content(message.content))
+                )
             elif isinstance(message, AIMessage):
                 conversation_turns.append(("assistant", message.content))
     for message in list(durable_messages or [])[-40:]:
@@ -3030,7 +3055,14 @@ def reconcile_report_fields_with_citizen_evidence(
             else None
         )
         if turn:
-            conversation_turns.append((turn, content))
+            conversation_turns.append(
+                (
+                    turn,
+                    grounded_description_content(content)
+                    if turn == "user"
+                    else content,
+                )
+            )
 
     transcript_description = select_citizen_report_description(conversation_turns)
     if transcript_description:
@@ -3058,6 +3090,23 @@ def reconcile_report_fields_with_citizen_evidence(
             reconciled_description[:240],
         )
     return reconciled_category, reconciled_description
+
+
+def prefer_captured_report_location(
+    yoga_number: str,
+    selection5: str,
+    selection6: str,
+    selection7: str,
+) -> tuple[str, str, str]:
+    """Prefer citizen-grounded location state over model-proposed arguments."""
+    captured_street = get_user_answer(yoga_number, "selection5")
+    captured_number = get_user_answer(yoga_number, "selection6")
+    captured_colony = get_user_answer(yoga_number, "selection7")
+    return (
+        captured_street or selection5,
+        captured_number or selection6,
+        captured_colony or selection7,
+    )
 
 def build_report_state_snapshot(from_number: str) -> dict:
     session = report_sessions.get(from_number, {}) if from_number else {}
@@ -3138,6 +3187,12 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         yoga_number,
         selection1,
         selection4,
+    )
+    selection5, selection6, selection7 = prefer_captured_report_location(
+        yoga_number,
+        selection5,
+        selection6,
+        selection7,
     )
     normalized_submission, validation_error = validate_and_normalize_report_submission(
         selection1=selection1,
@@ -3283,6 +3338,12 @@ async def save_client_selection2_guarded(
         yoga_number,
         selection1,
         selection4,
+    )
+    selection5, selection6, selection7 = prefer_captured_report_location(
+        yoga_number,
+        selection5,
+        selection6,
+        selection7,
     )
     normalized_submission, validation_error = validate_and_normalize_report_submission(
         selection1=selection1,
@@ -7192,8 +7253,6 @@ async def _process_whatsapp_request(request):
             ),
             "",
         )
-        if has_confirmed_report_intent(from_number):
-            persist_trusted_reporter_name(from_number, sender_name)
         evaluation_turn_active = bool(
             durable_evaluation
             and evaluation_turn_matches_visible_prompt(
@@ -7214,6 +7273,48 @@ async def _process_whatsapp_request(request):
         intake_response_override = None
         intake_turn_handled = False
         captured_report_field = None
+        existing_before_intake = {
+            key: get_user_answer(from_number, key)
+            for key in (
+                "selection1", "selection2", "selection4",
+                "selection5", "selection6", "selection7",
+            )
+        }
+        if (
+            not out_of_scope_response
+            and not evaluation_turn_active
+            and not quoted_hsm_ok
+        ):
+            # Establish report intent before field extraction. Previously this
+            # happened immediately before the LLM call, after the deterministic
+            # intake block had already skipped the citizen's first message.
+            capture_citizen_report_evidence(
+                from_number,
+                body,
+                previous_assistant_message=last_outbound_message,
+            )
+            if has_confirmed_report_intent(from_number):
+                persist_trusted_reporter_name(from_number, sender_name)
+                bundled_fields, original_fields = extract_initial_report_bundle(
+                    body,
+                    existing_before_intake,
+                )
+                if bundled_fields:
+                    for selection_key, value in bundled_fields.items():
+                        save_user_answer(from_number, selection_key, value)
+                    with report_sessions_lock:
+                        session = report_sessions[from_number]
+                        session.setdefault("original_report_fields", {}).update(
+                            original_fields
+                        )
+                        session.setdefault("normalized_report_fields", {}).update(
+                            bundled_fields
+                        )
+                    logger.critical(
+                        "🧭 [INITIAL REPORT BUNDLE] phone=%s fields=%s",
+                        from_number,
+                        sorted(bundled_fields),
+                    )
         if (
             not out_of_scope_response
             and not evaluation_turn_active
@@ -9064,14 +9165,6 @@ async def _process_whatsapp_request(request):
             "Historial estructurado preparado para el modelo: %s mensajes previos",
             len(structured_history),
         )
-        if not out_of_scope_response:
-            capture_citizen_report_evidence(
-                from_number,
-                body,
-                previous_assistant_message=last_outbound_message,
-            )
-            if has_confirmed_report_intent(from_number):
-                persist_trusted_reporter_name(from_number, sender_name)
         log_operational_decision_trace(
             from_number,
             "before_llm_generation",

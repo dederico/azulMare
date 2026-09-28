@@ -4,12 +4,83 @@ from app.services.report_intake_policy import (
     build_intake_confirmation,
     classify_intake_confirmation,
     extract_catalog_location,
+    extract_initial_report_bundle,
     next_question_after_intake_confirmation,
     should_request_intake_confirmation,
+)
+from app.services.report_submission_policy import (
+    next_missing_report_detail_before_image,
 )
 
 
 class ReportIntakePolicyTests(unittest.TestCase):
+    def test_initial_complete_report_extracts_every_explicit_location_field(self):
+        message = (
+            "Hola! Quiero reportar maleza y basura vegetal abandonada en camellón "
+            "de lateral de Avenida Gomez Morín y solicitar su retiro. Ubicado en "
+            "Cruce de Lateral de Avenida Gomez Morín #sin numero cruce con Río "
+            "Paraná, Colonia del Valle Sector Norte."
+        )
+
+        normalized, original = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(
+            normalized,
+            {
+                "selection4": (
+                    "maleza y basura vegetal abandonada en camellón de lateral de "
+                    "Avenida Gomez Morín y solicitar su retiro"
+                ),
+                "selection5": (
+                    "Cruce de Lateral de Avenida Gomez Morín cruce con Río Paraná"
+                ),
+                "selection6": "0000",
+                "selection7": "Del Valle Sect Norte",
+            },
+        )
+        self.assertEqual(original["selection6"], "#sin numero")
+        self.assertEqual(original["selection7"], "del Valle Sector Norte")
+
+        report_fields = {
+            "selection1": "974",
+            "selection2": "Pacelli",
+            **normalized,
+        }
+        self.assertIsNone(next_missing_report_detail_before_image(report_fields))
+
+    def test_initial_bundle_never_overwrites_existing_report_values(self):
+        normalized, _ = extract_initial_report_bundle(
+            "Quiero reportar basura. Ubicado en Vasconcelos #123, Colonia Centro.",
+            {
+                "selection4": "Descripción previamente confirmada",
+                "selection5": "Calle previamente confirmada",
+                "selection6": "99",
+                "selection7": "Colonia previamente confirmada",
+            },
+        )
+
+        self.assertEqual(normalized, {})
+
+    def test_initial_bundle_requires_catalog_match_before_accepting_colony(self):
+        normalized, original = extract_initial_report_bundle(
+            "Quiero reportar basura. Ubicado en Avenida Siempre Viva #123, "
+            "Colonia Springfield.",
+            {},
+        )
+
+        self.assertNotIn("selection7", normalized)
+        self.assertEqual(normalized["selection6"], "123")
+        self.assertEqual(original["selection7"], "Springfield")
+
+    def test_initial_bundle_does_not_guess_without_explicit_location_marker(self):
+        self.assertEqual(
+            extract_initial_report_bundle(
+                "Quiero reportar basura en algún lugar de la colonia Centro.",
+                {},
+            ),
+            ({}, {}),
+        )
+
     def test_andres_fragments_use_official_catalogs(self):
         fields = {}
         fields.update(extract_catalog_location("General Francisco Naranjo", fields))

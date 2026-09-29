@@ -102,7 +102,7 @@ def extract_initial_report_bundle(
 
     location_intro = re.search(
         r"\b(?:"
-        r"ubicad[oa]s?\s+en|"
+        r"ubicad[oa]s?\s+(?:en|sobre\s+la\s+calle)|"
         r"ubicaci[oó]n(?:\s+del\s+reporte)?\s*(?::|-)\s*|"
         r"direcci[oó]n\s*(?::|-)\s*|"
         r"se\s+encuentra(?:n)?\s+en"

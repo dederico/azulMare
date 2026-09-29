@@ -32,7 +32,7 @@ class ReportDeduplicationManager:
         # Cache de hashes de contenido para detectar duplicados exactos
         self.content_hashes = {}  # {hash: {phone, folio, timestamp}}
         
-        # Protección post-reporte (bloquea nuevos reportes por 10 min)
+        # Protección post-reporte (bloquea reintentos idénticos por 10 min)
         self.post_report_protection = {}  # {phone: expiry_timestamp}
         
         logger.info("🛡️ [DEDUP] Sistema Anti-Duplicación inicializado")
@@ -46,6 +46,7 @@ class ReportDeduplicationManager:
             selection_data.get('selection1', ''),  # Tipo de reporte
             selection_data.get('selection4', ''),  # Descripción
             selection_data.get('selection5', ''),  # Calle
+            selection_data.get('selection6', ''),  # Número exterior
             selection_data.get('selection7', '')   # Colonia
         ]
         
@@ -71,18 +72,19 @@ class ReportDeduplicationManager:
         """
         with self.lock:
             current_time = time.time()
+            content_hash = self.generate_content_hash(phone_number, selection_data, images)
             
             # 1. VERIFICAR PROTECCIÓN POST-REPORTE
             if phone_number in self.post_report_protection:
                 if current_time < self.post_report_protection[phone_number]:
                     remaining = int(self.post_report_protection[phone_number] - current_time)
                     recent_report = self.recent_reports.get(phone_number)
-                    existing_folio = recent_report.get('folio') if recent_report else None
-                    return (
-                        False,
-                        f"Protección post-reporte activa ({remaining}s restantes)",
-                        existing_folio,
-                    )
+                    if recent_report and recent_report.get('hash') == content_hash:
+                        return (
+                            False,
+                            f"Contenido duplicado detectado; protección post-reporte activa ({remaining}s restantes)",
+                            recent_report.get('folio'),
+                        )
                 else:
                     # Protección expirada, limpiar
                     del self.post_report_protection[phone_number]
@@ -98,21 +100,24 @@ class ReportDeduplicationManager:
                     del self.creating_reports[phone_number]
                     logger.warning(f"🧹 [DEDUP] Proceso de creación colgado limpiado para {phone_number}")
             
-            # 3. VERIFICAR REPORTES RECIENTES POR TELÉFONO
+            # 3. VERIFICAR EL ÚLTIMO REPORTE DEL TELÉFONO POR CONTENIDO
             if phone_number in self.recent_reports:
                 report_info = self.recent_reports[phone_number]
                 elapsed = current_time - report_info['timestamp']
                 
                 if elapsed < 1800:  # 30 minutos
-                    return False, f"Reporte reciente encontrado ({int(elapsed/60)} min ago)", report_info['folio']
+                    if report_info.get('hash') == content_hash:
+                        return (
+                            False,
+                            f"Contenido duplicado detectado; reporte reciente ({int(elapsed/60)} min ago)",
+                            report_info['folio'],
+                        )
                 else:
                     # Reporte antiguo, limpiar
                     del self.recent_reports[phone_number]
                     logger.debug(f"🧹 [DEDUP] Reporte reciente expirado para {phone_number}")
             
             # 4. VERIFICAR DUPLICADOS POR CONTENIDO
-            content_hash = self.generate_content_hash(phone_number, selection_data, images)
-            
             if content_hash in self.content_hashes:
                 hash_info = self.content_hashes[content_hash]
                 elapsed = current_time - hash_info['timestamp']
@@ -148,11 +153,12 @@ class ReportDeduplicationManager:
             # Registrar reporte reciente
             self.recent_reports[phone_number] = {
                 'folio': clean_folio,
-                'timestamp': current_time
+                'timestamp': current_time,
+                'hash': self.generate_content_hash(phone_number, selection_data, images),
             }
             
             # Registrar hash de contenido
-            content_hash = self.generate_content_hash(phone_number, selection_data, images)
+            content_hash = self.recent_reports[phone_number]['hash']
             self.content_hashes[content_hash] = {
                 'phone': phone_number,
                 'folio': clean_folio,

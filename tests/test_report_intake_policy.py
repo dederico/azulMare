@@ -14,6 +14,53 @@ from app.services.report_submission_policy import (
 
 
 class ReportIntakePolicyTests(unittest.TestCase):
+    def test_initial_report_extracts_location_introduced_as_sobre_la_calle(self):
+        message = (
+            "Hola, quiero reportar un separador naranja de plástico del municipio "
+            "abandonado en la banqueta y se solicita su retiro, ubicado sobre la "
+            "calle Vía Salaria #217 entre calles Vía Arémula y Vía Savotino, "
+            "Colonia Fuentes del Valle."
+        )
+
+        normalized, original = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(
+            normalized,
+            {
+                "selection4": (
+                    "un separador naranja de plástico del municipio abandonado en "
+                    "la banqueta y se solicita su retiro"
+                ),
+                "selection5": (
+                    "Vía Salaria entre calles Vía Arémula y Vía Savotino"
+                ),
+                "selection6": "217",
+                "selection7": "Fuentes del Valle",
+            },
+        )
+        self.assertEqual(original["selection6"], "#217")
+
+    def test_declarative_service_request_extracts_complete_initial_bundle(self):
+        message = (
+            "Se solicita pintar cordón amarillo para evitar que se estacionen, "
+            "ubicado en Río San Lorenzo #212, Colonia Fuentes del Valle."
+        )
+
+        normalized, original = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(
+            normalized,
+            {
+                "selection4": (
+                    "Se solicita pintar cordón amarillo para evitar que se estacionen"
+                ),
+                "selection5": "Río San Lorenzo",
+                "selection6": "212",
+                "selection7": "Fuentes del Valle",
+            },
+        )
+        self.assertEqual(original["selection5"], "Río San Lorenzo")
+
     def test_initial_complete_report_extracts_every_explicit_location_field(self):
         message = (
             "Hola! Quiero reportar maleza y basura vegetal abandonada en camellón "

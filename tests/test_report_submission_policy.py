@@ -47,8 +47,29 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         )
         self.assertTrue(establishes_report_intent("No funciona una luminaria"))
         self.assertTrue(establishes_report_intent("Necesito una patrulla"))
+        self.assertTrue(
+            establishes_report_intent(
+                "Hola, se solicita pintar cordón amarillo en Río San Lorenzo"
+            )
+        )
+        self.assertTrue(
+            establishes_report_intent(
+                "Se solicita pintar cordón amarillo para evitar que se estacionen, "
+                "ubicado en Río San Lorenzo #212, Colonia Fuentes del Valle."
+            )
+        )
         self.assertFalse(establishes_report_intent("Arreglo todo tipo de ropa"))
         self.assertFalse(establishes_report_intent("Recomendaciones para mi negocio"))
+        self.assertFalse(
+            establishes_report_intent(
+                "¿Dónde puedo solicitar que pinten un cordón amarillo?"
+            )
+        )
+        self.assertFalse(
+            establishes_report_intent(
+                "Quiero información sobre la solicitud para pintar cordones amarillos"
+            )
+        )
         self.assertFalse(establishes_report_intent("FIN"))
         self.assertFalse(
             establishes_report_intent(
@@ -685,14 +706,10 @@ class SaveSelectionBoundaryTests(unittest.IsolatedAsyncioTestCase):
             side_effect=[httpx.ConnectTimeout("temporal"), response]
         )
 
-        def close_scheduled_coroutine(coroutine):
-            coroutine.close()
-            return MagicMock()
-
         with (
             patch("httpx.AsyncClient", return_value=client),
             patch("asyncio.sleep", new=AsyncMock()),
-            patch("asyncio.create_task", side_effect=close_scheduled_coroutine),
+            patch("asyncio.create_task") as create_task,
         ):
             result = await save_client_selection2(
                 yoga_number="5218111111111",
@@ -707,6 +724,7 @@ class SaveSelectionBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "Folio: 471999")
         self.assertEqual(client.post.await_count, 2)
+        create_task.assert_not_called()
         self.assertEqual(client.post.await_args.kwargs["json"]["asunto"], "984")
         self.assertEqual(
             client.post.await_args.kwargs["json"]["reporte"],

@@ -227,7 +227,13 @@ from app.services.report_completion import (
     ensure_report_completion_storage,
     get_recent_report_completion,
     is_delayed_pre_completion_event,
+    mark_report_completion_notified,
     record_report_completion,
+)
+from app.services.report_completion_delivery import (
+    build_report_completion_message,
+    get_pending_report_completion,
+    stage_report_completion_delivery,
 )
 from app.services.evaluation_state import (
     clear_evaluation_state,
@@ -236,6 +242,7 @@ from app.services.evaluation_state import (
     save_evaluation_state,
 )
 from app.services.media_payload import get_video_from_payload
+from app.services.outbound_delivery import post_json_with_retry
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 evaluated_reports = {}
@@ -1241,7 +1248,13 @@ async def send_chat2desk_message_direct(client_id, channel_id, text, transport="
                 }
             )
             
-        if response.status_code == 200:
+        direct_response_data = (
+            response.json() if response.status_code == 200 else {}
+        )
+        if (
+            response.status_code == 200
+            and direct_response_data.get("status") == "success"
+        ):
             persist_bot_outbound_marker(
                 LocalStorage(),
                 str(client_id),
@@ -3222,7 +3235,7 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         if existing_folio:
             existing_number = extract_confirmed_folio(f"Folio: {existing_folio}")
             if existing_number:
-                return f"Folio: {existing_number}"
+                return f"DUPLICATE_REPORT: {existing_number}"
             logger.error(
                 "El deduplicador devolvió un folio existente inválido para %s: %s",
                 yoga_number,
@@ -3262,7 +3275,27 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         confirmed_folio = extract_confirmed_folio(folio)
         if confirmed_folio:
             canonical_folio = f"Folio: {confirmed_folio}"
-            record_report_completion(db, yoga_number, confirmed_folio)
+            delivery_context = session.get("completion_delivery_context") or {}
+            completion = record_report_completion(
+                db,
+                yoga_number,
+                confirmed_folio,
+                notification_message=build_report_completion_message(
+                    confirmed_folio,
+                    len(images_list or []),
+                ),
+                request_id=delivery_context.get("request_id") or request_id,
+                origin_uid=delivery_context.get("origin_uid"),
+                origin_message_id=delivery_context.get("origin_message_id"),
+                client_id=delivery_context.get("client_id"),
+                channel_id=delivery_context.get("channel_id"),
+                transport=delivery_context.get("transport"),
+            )
+            if not completion.get("durable"):
+                logger.critical(
+                    "⚠️ [REPORT COMPLETION OUTBOX] folio=%s sólo quedó en memoria",
+                    confirmed_folio,
+                )
             # MARCAR COMO EXITOSO
             dedup_manager.mark_report_creation_success(
                 yoga_number, canonical_folio, selection_data, images_list
@@ -4291,6 +4324,27 @@ async def check_report_timeouts():
             with report_sessions_lock:
                 for number, session in list(report_sessions.items()):
                     try:
+                        if get_pending_report_completion(session):
+                            logger.warning(
+                                "⏸️ [TIMEOUT SKIP] %s tiene un folio confirmado pendiente de entrega",
+                                number,
+                            )
+                            continue
+                        durable_completion = get_recent_report_completion(
+                            timeout_storage,
+                            number,
+                            max_age_seconds=24 * 60 * 60,
+                        )
+                        if (
+                            durable_completion
+                            and durable_completion.get("notification_message")
+                            and not durable_completion.get("notified_at")
+                        ):
+                            logger.warning(
+                                "⏸️ [TIMEOUT SKIP] %s tiene outbox durable de folio pendiente",
+                                number,
+                            )
+                            continue
                         elapsed = (now - session["timestamp"]).total_seconds()
                         images_count = len(session.get("images", []))
                         
@@ -4361,9 +4415,21 @@ async def check_report_timeouts():
                         recent_report = has_recent_report(number, max_age_minutes=15)
                         if recent_report:
                             logger.critical(f"🚫 [DUPLICATE PREVENTION] {number} ya tiene reporte reciente: {recent_report['folio']}")
-                            
-                            # 🧹 LIMPIEZA INMEDIATA de duplicado detectado
-                            asyncio.create_task(complete_cleanup_after_report(number, 1))
+                            with report_sessions_lock:
+                                retry_images = list(
+                                    report_sessions.get(number, {}).get("images", [])
+                                )
+                            notified = await notify_user_timeout_flexible(
+                                number,
+                                recent_report["folio"],
+                                len(retry_images),
+                            )
+                            if notified:
+                                mark_report_completion_notified(
+                                    timeout_storage,
+                                    number,
+                                )
+                                asyncio.create_task(complete_cleanup_after_report(number, 1))
                             continue  # Saltar al siguiente número
                     except Exception as e:
                         logger.error(f"💥 [DUPLICATE CHECK ERROR] Error verificando duplicados para {number}: {str(e)}")
@@ -4426,35 +4492,38 @@ async def check_report_timeouts():
 
                             # 📤 Notificar al usuario
                             try:
-                                await notify_user_timeout_flexible(number, folio, len(images))
+                                notified = await notify_user_timeout_flexible(number, folio, len(images))
                             except Exception as e:
+                                notified = False
                                 logger.error(f"💥 [NOTIFICATION ERROR] Error notificando a {number}: {str(e)}")
                             
-                            # 🧹 LIMPIEZA COMPLETA INMEDIATA
-                            asyncio.create_task(complete_cleanup_after_report(number, 5))
+                            # El estado sólo se limpia cuando Chat2Desk confirma
+                            # que el ciudadano recibió el folio.
+                            if notified:
+                                mark_report_completion_notified(
+                                    timeout_storage,
+                                    number,
+                                )
+                                asyncio.create_task(complete_cleanup_after_report(number, 1))
+                            else:
+                                logger.error(
+                                    "📤 [TIMEOUT NOTICE PENDING] Se conserva el estado de %s",
+                                    number,
+                                )
                             
                             logger.critical(f"✅ [TIMEOUT COMPLETE] Proceso completo para {number}")
                         elif isinstance(folio, str) and folio.startswith("VALIDATION_BLOCK:"):
                             logger.warning(f"🚫 [TIMEOUT BLOCKED] Reporte automático bloqueado para {number}: {folio}")
-                            asyncio.create_task(complete_cleanup_after_report(number, 1))
                         else:
                             logger.error(f"💥 [FOLIO ERROR] Resultado inválido para {number}: {folio}")
-                            asyncio.create_task(complete_cleanup_after_report(number, 1))
                             
                     except Exception as e:
                         logger.error(f"💥 [SAVE ERROR] Error creando reporte para {number}: {str(e)}")
                         logger.error(f"💥 [SAVE ERROR] Traceback: {traceback.format_exc()}")
-                        # En caso de error, también hacer limpieza
-                        asyncio.create_task(complete_cleanup_after_report(number, 1))
                         
                 except Exception as e:
                     logger.error(f"💥 [PROCESSING ERROR] Error procesando timeout para {number}: {str(e)}")
                     logger.error(f"💥 [PROCESSING ERROR] Traceback: {traceback.format_exc()}")
-                    # Intentar limpieza incluso si hay error
-                    try:
-                        asyncio.create_task(complete_cleanup_after_report(number, 1))
-                    except Exception as cleanup_error:
-                        logger.error(f"💥 [CLEANUP ERROR] Error en limpieza para {number}: {str(cleanup_error)}")
                         
         except Exception as e:
             logger.error(f"💥 [TIMEOUT LOOP ERROR] Error crítico en check_report_timeouts: {str(e)}")
@@ -4581,18 +4650,31 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                     "text": message
                 }
                 
-                async with httpx.AsyncClient() as client:
-                    send_response = await client.post(
-                        "https://api.chat2desk.com.mx/v1/messages",
-                        json=message_data,
-                        headers=headers,
+                send_response = await post_json_with_retry(
+                    "https://api.chat2desk.com.mx/v1/messages",
+                    json=message_data,
+                    headers=headers,
+                )
+                send_data = (
+                    send_response.json() if send_response.status_code == 200 else {}
+                )
+                if (
+                    send_response.status_code == 200
+                    and send_data.get("status") == "success"
+                ):
+                    persist_bot_outbound_marker(
+                        storage,
+                        phone_number,
+                        send_response,
+                        "timeout_notice_flexible",
                     )
-                persist_bot_outbound_marker(storage, phone_number, send_response, "timeout_notice_flexible")
-                    
-                logger.critical(f"📤 [MENSAJE ENVIADO] '{message}' enviado a {phone_number}")
+                    logger.critical(f"📤 [MENSAJE ENVIADO] '{message}' enviado a {phone_number}")
+                    return True
+        return False
                     
     except Exception as e:
         logger.error(f"Error notificando timeout flexible: {str(e)}")
+        return False
 
 # Función auxiliar mejorada para notificación
 async def send_timeout_notification_with_real_data(phone_number, folio, image_count, sender_name, calle, colonia):
@@ -4887,6 +4969,31 @@ async def check_inactivity():
                     )
                     continue
 
+                local_report_session = report_sessions.get(number)
+                pending_completion = get_pending_report_completion(
+                    local_report_session
+                )
+                completion_outbox = get_recent_report_completion(
+                    db,
+                    number,
+                    max_age_seconds=24 * 60 * 60,
+                )
+                if pending_completion or (
+                    completion_outbox
+                    and completion_outbox.get("notification_message")
+                    and not completion_outbox.get("notified_at")
+                ):
+                    logger.critical(
+                        "⏸️ [INACTIVITY] Folio confirmado pendiente de entrega para %s; contexto conservado",
+                        number,
+                    )
+                    suspend_inactivity_until_new_inbound(
+                        number,
+                        claim_uid,
+                        storage=db,
+                    )
+                    continue
+
                 durable_evaluation = get_evaluation_state(db, number)
                 if durable_evaluation:
                     logger.critical(
@@ -4983,6 +5090,11 @@ async def check_inactivity():
                         headers=headers,
                     )
                     send_response.raise_for_status()
+                    inactivity_response = send_response.json()
+                    if inactivity_response.get("status") != "success":
+                        raise RuntimeError(
+                            "Chat2Desk no confirmó el cierre por inactividad"
+                        )
 
                 persist_bot_outbound_marker(
                     db,
@@ -5264,9 +5376,8 @@ async def save_client_selection2_with_auto_marking(yoga_number: str, selection1:
                 'timestamp': datetime.now().timestamp(),
                 'message_count': 0
             }
-            # 🆕 AGREGAR LIMPIEZA INMEDIATA (ESTO FALTABA)
-            logger.critical(f"🧹 [IMMEDIATE CLEANUP] Programando limpieza inmediata para {yoga_number}")
-            asyncio.create_task(complete_cleanup_after_report(yoga_number, 1))  # 1 segundo
+            # La limpieza ocurre únicamente después de confirmar la entrega
+            # del folio a Chat2Desk. CIAC exitoso no implica mensaje entregado.
         
         return folio
         
@@ -5350,20 +5461,159 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text, tran
             "text": text
         }
         
-        async with httpx.AsyncClient() as client:
-            response = await client.post(chat2desk_url, json=data, headers=headers)
+        response = await post_json_with_retry(
+            chat2desk_url,
+            json=data,
+            headers=headers,
+        )
             
-        if response.status_code == 200:
+        response_data = response.json() if response.status_code == 200 else {}
+        if response.status_code == 200 and response_data.get("status") == "success":
             remember_recent_bot_outbound_message(phone_number, text)
             persist_bot_outbound_marker(storage, phone_number, response, "send_chat2desk_message")
             logger.debug(f"Message sent successfully to Chat2Desk")
             return True
         else:
-            logger.error(f"Error sending message to Chat2Desk: {response.status_code}")
+            logger.error(
+                "Error sending message to Chat2Desk: status=%s body=%s",
+                response.status_code,
+                response.text[:300],
+            )
             return False
     except Exception as e:
         logger.error(f"Exception while sending Chat2Desk message: {str(e)}")
         return False
+
+
+async def deliver_pending_report_completion(
+    *,
+    storage,
+    from_number: str,
+    client_id,
+    channel_id,
+    transport: str,
+    uid,
+    message_id,
+    inbound_claim_token: str,
+) -> str | None:
+    """Deliver a confirmed folio before consuming any later citizen message."""
+
+    pending = get_pending_report_completion(report_sessions.get(from_number))
+    if not pending:
+        return None
+
+    origin_uid = str(pending.get("origin_uid") or uid)
+    origin_message_id = str(pending.get("origin_message_id") or message_id)
+    current_is_origin = origin_uid == str(uid)
+
+    # The provider delivery may have succeeded before a worker crashed during
+    # local cleanup. The durable marker prevents sending that folio twice.
+    if has_successful_delivery_marker_for_inbound_uid(storage, origin_uid):
+        logger.warning(
+            "📤 [REPORT COMPLETION RECOVERED] folio=%s ya tenía marker; no se reenvía",
+            pending["folio"],
+        )
+        mark_report_as_completed(from_number)
+        with report_sessions_lock:
+            report_sessions.pop(from_number, None)
+        user_answers.pop(from_number, None)
+        try:
+            mark_report_completion_notified(storage, from_number)
+        except Exception:
+            logger.exception(
+                "No se pudo marcar como notificado el folio %s",
+                pending["folio"],
+            )
+        try:
+            delete_report_state(storage, from_number)
+        except Exception:
+            logger.exception(
+                "No se pudo limpiar estado durable ya entregado para folio %s",
+                pending["folio"],
+            )
+        return "origin_delivered" if current_is_origin else "delivered_before_current"
+
+    sent = await send_chat2desk_message(
+        from_number,
+        pending.get("client_id", client_id),
+        pending.get("channel_id", channel_id),
+        pending["message"],
+        pending.get("transport", transport),
+    )
+    if not sent:
+        logger.error(
+            "📤 [REPORT COMPLETION PENDING] No se entregó folio=%s phone=%s",
+            pending["folio"],
+            from_number,
+        )
+        return None
+
+    try:
+        persist_successful_delivery_marker(
+            storage,
+            from_number,
+            origin_uid,
+            origin_message_id,
+        )
+    except Exception:
+        # Chat2Desk already accepted the message. Clear the pending state below
+        # so a local marker failure cannot duplicate the folio notification.
+        logger.exception(
+            "No se pudo registrar marker de entrega para folio %s",
+            pending["folio"],
+        )
+    try:
+        storage.Insert(
+            Message(
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                senderName="Assistant",
+                message=pending["message"],
+                number=from_number,
+                uid=f"success-report-{pending['request_id']}",
+                direction="outbound",
+                mtype="text",
+                source="whatsapp",
+            )
+        )
+        await manage_message_history(storage, from_number)
+    except Exception:
+        # Delivery was already confirmed by Chat2Desk. A local history failure
+        # must not resend the same folio to the citizen.
+        logger.exception(
+            "No se pudo registrar localmente la entrega del folio %s",
+            pending["folio"],
+        )
+
+    if current_is_origin:
+        mark_inbound_processing_delivered(
+            uid,
+            inbound_claim_token,
+            storage=storage,
+        )
+    mark_report_as_completed(from_number)
+    try:
+        mark_report_completion_notified(storage, from_number)
+    except Exception:
+        logger.exception(
+            "No se pudo marcar como notificado el folio %s",
+            pending["folio"],
+        )
+    with report_sessions_lock:
+        report_sessions.pop(from_number, None)
+    user_answers.pop(from_number, None)
+    try:
+        delete_report_state(storage, from_number)
+    except Exception:
+        logger.exception(
+            "No se pudo limpiar estado durable después de entregar folio %s",
+            pending["folio"],
+        )
+    logger.critical(
+        "📤 [REPORT COMPLETION DELIVERED] folio=%s phone=%s",
+        pending["folio"],
+        from_number,
+    )
+    return "origin_delivered" if current_is_origin else "delivered_before_current"
 
 # Modificar la función process_and_save_report para que también haga limpieza completa
 async def process_and_save_report_with_cleanup(from_number, location, images=None, descriptions=None):
@@ -5373,11 +5623,8 @@ async def process_and_save_report_with_cleanup(from_number, location, images=Non
     # Ejecutar la función original
     result = await process_and_save_report(from_number, location, images, descriptions)
     
-    # Si fue exitoso, hacer limpieza completa
-    if result['status'] == 'success':
-        logger.critical(f"🧹 [MANUAL SUCCESS] Programando limpieza completa para {from_number}")
-        asyncio.create_task(complete_cleanup_after_report(from_number, 10))
-    
+    # Delivery owns cleanup. A CIAC success is not enough: removing state here
+    # would lose a folio whose Chat2Desk notification is still pending.
     return result
 
 def should_ignore_message(message_text, message_type, from_number=None):
@@ -5484,16 +5731,6 @@ async def process_and_save_report(from_number, location, images=None, descriptio
     for i, img in enumerate(images):
         logger.debug(f"  Image {i+1}: {img[:50]}...")
     
-    # Check for recent report (deduplication)
-    recent_report = has_recent_report(from_number)
-    if recent_report:
-        logger.warning(f"Recent report found for {from_number}, folio: {recent_report['folio']}")
-        return {
-            'status': 'duplicate',
-            'message': f"Tu reporte ya fue creado recientemente (folio: {recent_report['folio']})",
-            'folio': recent_report['folio']
-        }
-    
     # Images are optional once the citizen explicitly declined them. Keep the
     # guard only while the image question is still unanswered.
     session = report_sessions.get(from_number, {})
@@ -5571,6 +5808,22 @@ async def process_and_save_report(from_number, location, images=None, descriptio
             raw_result=folio,
             current_time=current_time,
         )
+
+        if isinstance(folio, str) and folio.startswith("DUPLICATE_REPORT:"):
+            duplicate_folio = folio.replace("DUPLICATE_REPORT:", "", 1).strip()
+            logger.warning(
+                "Exact duplicate report suppressed for %s, folio: %s",
+                from_number,
+                duplicate_folio,
+            )
+            return {
+                'status': 'duplicate',
+                'message': (
+                    "Este mismo reporte ya fue registrado. "
+                    f"El folio existente es {duplicate_folio}."
+                ),
+                'folio': duplicate_folio,
+            }
 
         confirmed_folio = extract_confirmed_folio(folio)
         if confirmed_folio:
@@ -5706,7 +5959,7 @@ def _restore_durable_report_context(storage, payload):
 
 def _persist_durable_report_context(storage, phone_number):
     if not phone_number:
-        return
+        return False
     with report_sessions_lock:
         session = deepcopy(report_sessions.get(phone_number))
     answers = deepcopy(user_answers.get(phone_number, {}))
@@ -5715,7 +5968,7 @@ def _persist_durable_report_context(storage, phone_number):
             "conversation_epoch", 0
         )
     )
-    save_report_state(
+    return save_report_state(
         storage,
         phone_number,
         session,
@@ -7070,6 +7323,43 @@ async def _process_whatsapp_request(request):
                 content={"status": True, "message": "Mensaje ya reclamado por otra réplica"}
             )
 
+        pending_delivered_before_current = False
+
+        # CIAC may already have created the folio while the outbound provider
+        # timed out. Deliver that staged result before a session boundary or a
+        # new citizen message can erase/advance the report context.
+        if get_pending_report_completion(report_sessions.get(from_number)):
+            pending_delivery = await deliver_pending_report_completion(
+                storage=db,
+                from_number=from_number,
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+                uid=uid,
+                message_id=message_id,
+                inbound_claim_token=inbound_claim_token,
+            )
+            if pending_delivery == "origin_delivered":
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Folio pendiente entregado antes de continuar",
+                    }
+                )
+            if pending_delivery is None:
+                release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": "El folio está confirmado pero su notificación sigue pendiente",
+                    },
+                    status_code=503,
+                )
+            # The pending folio belonged to an older inbound and was delivered
+            # successfully.  Keep processing this new citizen message under
+            # its own claim instead of acknowledging it without an answer.
+            pending_delivered_before_current = True
+
         lifecycle_session_key = build_session_key(
             request_id,
             payload.get("dialog_id"),
@@ -7171,10 +7461,71 @@ async def _process_whatsapp_request(request):
         recent_completion = get_recent_report_completion(
             db,
             from_number,
-            max_age_seconds=180,
+            max_age_seconds=24 * 60 * 60,
         )
         if (
-            not durable_evaluation_answer
+            recent_completion
+            and not recent_completion.get("notified_at")
+            and recent_completion.get("notification_message")
+        ):
+            # The report-state snapshot may have failed after CIAC returned a
+            # folio. Rebuild the pending notification from the independent
+            # completion outbox instead of submitting the report again.
+            with report_sessions_lock:
+                recovery_session = report_sessions.setdefault(
+                    from_number,
+                    {"report_intent_confirmed": True},
+                )
+                recovery_session["report_intent_confirmed"] = True
+                stage_report_completion_delivery(
+                    recovery_session,
+                    folio=recent_completion["folio"],
+                    message=recent_completion["notification_message"],
+                    request_id=(recent_completion.get("request_id") or request_id),
+                    location="ubicación confirmada",
+                    image_count=0,
+                    origin_uid=(recent_completion.get("origin_uid") or str(uid)),
+                    origin_message_id=(
+                        recent_completion.get("origin_message_id")
+                        or str(message_id)
+                    ),
+                    client_id=(recent_completion.get("client_id") or client_id),
+                    channel_id=(recent_completion.get("channel_id") or channel_id),
+                    transport=(recent_completion.get("transport") or transport),
+                )
+            recovered_delivery = await deliver_pending_report_completion(
+                storage=db,
+                from_number=from_number,
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+                uid=uid,
+                message_id=message_id,
+                inbound_claim_token=inbound_claim_token,
+            )
+            if recovered_delivery == "origin_delivered":
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Folio recuperado y entregado",
+                        "folio": recent_completion["folio"],
+                    }
+                )
+            if recovered_delivery is None:
+                release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": "El folio confirmado sigue pendiente de entrega",
+                        "folio": recent_completion["folio"],
+                    },
+                    status_code=503,
+                )
+            pending_delivered_before_current = True
+
+        if (
+            not pending_delivered_before_current
+            and not durable_evaluation_answer
             and not quoted_hsm_ok
             and should_suppress_recent_post_folio_input(
                 recent_completion,
@@ -7841,22 +8192,6 @@ async def _process_whatsapp_request(request):
                                             if isinstance(office, dict):  # Verificar que office sea un diccionario
                                                 body += f"{i}. *{office.get('name', 'No disponible')}* - {office.get('distance', 'No disponible')} km\n"
                                                 body += f"   📍 {office.get('address', 'No disponible')}\n"
-                                    # IMPORTANTE: Enviar este mensaje directamente al usuario sin pasar por el LLM
-                                    # Guardar el mensaje en la BD
-                                    logger.debug(f"Guardando respuesta directa con información de oficina cercana: {body[:30]}...")
-                                    assistant_message = Message(
-                                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        senderName="Assistant",
-                                        message=body,
-                                        number=from_number,
-                                        uid=uid,
-                                        direction="outbound",
-                                        mtype="text",
-                                        source="whatsapp"
-                                    )
-                                    db.Insert(assistant_message)
-                                    await manage_message_history(db, from_number)
-                                    
                                     # Enviar mensaje directamente a través de Chat2Desk
                                     api_token = os.getenv("CHAT2DESK_API_TOKEN")
                                     chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
@@ -7879,21 +8214,45 @@ async def _process_whatsapp_request(request):
                                         from_number=from_number,
                                         message_id=message_id,
                                     )
-                                    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
-                                        direct_response = await http_client.post(chat2desk_url, json=data, headers=headers)
+                                    direct_response = await post_json_with_retry(
+                                        chat2desk_url,
+                                        json=data,
+                                        headers=headers,
+                                    )
                                     log_chat2desk_outbound_response(
                                         "nearest_office_direct",
                                         direct_response,
                                         from_number=from_number,
                                         message_id=message_id,
                                     )
-                                    if direct_response.status_code == 200:
+                                    direct_response_data = (
+                                        direct_response.json()
+                                        if direct_response.status_code == 200
+                                        else {}
+                                    )
+                                    if (
+                                        direct_response.status_code == 200
+                                        and direct_response_data.get("status") == "success"
+                                    ):
                                         persist_bot_outbound_marker(
                                             db,
                                             from_number,
                                             direct_response,
                                             "nearest_office_direct",
                                         )
+                                        db.Insert(
+                                            Message(
+                                                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                senderName="Assistant",
+                                                message=body,
+                                                number=from_number,
+                                                uid=uid,
+                                                direction="outbound",
+                                                mtype="text",
+                                                source="whatsapp",
+                                            )
+                                        )
+                                        await manage_message_history(db, from_number)
                                         logger.debug(f"Información de oficina cercana enviada exitosamente a Chat2Desk")
                                         # No continuar con el procesamiento normal del LLM
                                         return JSONResponse(content={"status": True, "message": "Respuesta directa enviada por Chat2Desk"})
@@ -8110,25 +8469,6 @@ async def _process_whatsapp_request(request):
                     
                     # Since this is an image-only message, we need to send our response right away
                     try:
-                        # Store the bot's response in the database and conversation history
-                        if from_number in user_sessions:
-                            conversation_history = user_sessions[from_number].history
-                            conversation_history.add_ai_message(body)
-                        
-                        # Create a message record
-                        assistant_message = Message(
-                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            senderName="Assistant",
-                            message=body,
-                            number=from_number,
-                            uid=uid,
-                            direction="outbound",
-                            mtype="text",
-                            source="whatsapp"
-                        )
-                        db.Insert(assistant_message)
-                        await manage_message_history(db, from_number)
-                        
                         # Send the response to Chat2Desk
                         api_token = os.getenv("CHAT2DESK_API_TOKEN")
                         chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
@@ -8151,8 +8491,11 @@ async def _process_whatsapp_request(request):
                             from_number=from_number,
                             message_id=message_id,
                         )
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
-                            response = await http_client.post(chat2desk_url, json=data, headers=headers)
+                        response = await post_json_with_retry(
+                            chat2desk_url,
+                            json=data,
+                            headers=headers,
+                        )
                         log_chat2desk_outbound_response(
                             "image_ack",
                             response,
@@ -8160,9 +8503,30 @@ async def _process_whatsapp_request(request):
                             message_id=message_id,
                         )
 
-                        if response.status_code == 200:
+                        response_data = (
+                            response.json() if response.status_code == 200 else {}
+                        )
+                        if (
+                            response.status_code == 200
+                            and response_data.get("status") == "success"
+                        ):
                             persist_bot_outbound_marker(db, from_number, response, "image_ack")
                             persist_successful_delivery_marker(db, from_number, uid, message_id)
+                            if from_number in user_sessions:
+                                user_sessions[from_number].history.add_ai_message(body)
+                            db.Insert(
+                                Message(
+                                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    senderName="Assistant",
+                                    message=body,
+                                    number=from_number,
+                                    uid=uid,
+                                    direction="outbound",
+                                    mtype="text",
+                                    source="whatsapp",
+                                )
+                            )
+                            await manage_message_history(db, from_number)
                             mark_inbound_processing_delivered(
                                 uid, inbound_claim_token, storage=db
                             )
@@ -8170,9 +8534,28 @@ async def _process_whatsapp_request(request):
                             return JSONResponse(content={"status": True, "message": "Respuesta de imagen enviada por Chat2Desk"})
                         else:
                             logger.error(f"Error al enviar respuesta de imagen a Chat2Desk: {response.status_code} - {response.text}")
+                            release_inbound_processing_claim(
+                                uid, inbound_claim_token, storage=db
+                            )
+                            return JSONResponse(
+                                content={
+                                    "status": False,
+                                    "error": "No se pudo confirmar la respuesta de imagen",
+                                },
+                                status_code=503,
+                            )
                     except Exception as e:
                         logger.error(f"Error al enviar respuesta de imagen: {str(e)}")
-                        return JSONResponse(content={"error": f"Error al enviar respuesta de imagen: {str(e)}"}, status_code=500)
+                        release_inbound_processing_claim(
+                            uid, inbound_claim_token, storage=db
+                        )
+                        return JSONResponse(
+                            content={
+                                "status": False,
+                                "error": "No se pudo entregar la respuesta de imagen",
+                            },
+                            status_code=503,
+                        )
                     
                 except httpx.HTTPError as e:
                     logger.error(f"Error al descargar la imagen: {str(e)}")
@@ -8313,8 +8696,10 @@ async def _process_whatsapp_request(request):
                     
                     logger.info(f"After deduplication: {len(unique_images)} of {len(images)} images remain")
                     
-                    # Use the location stored in the report session or the current message as fallback
-                    user_location = report_sessions[from_number]["location"] or body or "ubicación no especificada"
+                    # Never use workflow controls (FIN/Sí/No) as report data.
+                    # The canonical location is rebuilt from validated selections
+                    # immediately before submission.
+                    user_location = report_sessions[from_number]["location"] or ""
                     
                     # FIN no debe invocar CIAC con datos que ya sabemos que faltan.
                     # Las respuestas a esta pregunta reanudan el mismo intento,
@@ -8435,6 +8820,33 @@ async def _process_whatsapp_request(request):
                         report_sessions[from_number].pop(
                             "pending_finalization_prompted_at", None
                         )
+                        location_parts = [
+                            " ".join(
+                                part
+                                for part in (
+                                    str(selections["selection5"] or "").strip(),
+                                    str(selections["selection6"] or "").strip(),
+                                )
+                                if part
+                            ),
+                            (
+                                f"colonia {str(selections['selection7']).strip()}"
+                                if str(selections["selection7"] or "").strip()
+                                else ""
+                            ),
+                        ]
+                        user_location = ", ".join(
+                            part for part in location_parts if part
+                        ) or "ubicación no especificada"
+                        with report_sessions_lock:
+                            report_sessions[from_number]["completion_delivery_context"] = {
+                                "request_id": request_id,
+                                "origin_uid": str(uid),
+                                "origin_message_id": str(message_id),
+                                "client_id": client_id,
+                                "channel_id": channel_id,
+                                "transport": transport,
+                            }
                         result = await process_and_save_report(
                             from_number,
                             user_location,
@@ -8460,80 +8872,205 @@ async def _process_whatsapp_request(request):
                     # El reporte se creó exitosamente
                         folio = result['folio']
                         logger.info(f"Successfully created report with folio {folio} for request {request_id}")
-
-                        mark_report_as_completed(from_number)
-
-                        asyncio.create_task(delayed_cleanup_report_session(from_number, 30))
-
-                        # Limpiar la sesión de reporte después de finalizar
-                        if from_number in report_sessions:
-                            del report_sessions[from_number]
-                        # El folio confirmado termina también los campos
-                        # acumulados. Conservarlos permitía que un webhook
-                        # tardío reabriera el reporte recién creado.
-                        user_answers.pop(from_number, None)
-                        delete_report_state(db, from_number)
                                                 
                         # Importante: Construir un mensaje informativo que *NO* requiera acción adicional del usuario
-                        image_text = f"con {len(unique_images)} imágenes " if unique_images else ""
-                        body = f"Tu reporte ha sido generado con éxito. El número de folio para tu reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. Agradecemos mucho tu colaboración. Estamos para servirte"
+                        body = build_report_completion_message(
+                            folio,
+                            len(unique_images),
+                        )
                         
                         # Verificar que el mensaje no esté vacío 
                         if not body or len(body.strip()) == 0:
                             body = f"Tu reporte ha sido generado exitosamente. Agradecemos tu colaboración. Estamos para servirte."
 
-                        # Crear y guardar un mensaje de sistema explicando lo que ocurrió
-                        img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
-                        system_notification = Message(
-                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            senderName="System",
-                            message=f"[SISTEMA: Se generó el reporte con folio {folio} {img_count}de la ubicación '{user_location}'. El reporte ha sido enviado al sistema.]",
-                            number=from_number,
-                            uid=f"system-{request_id}",
-                            direction="system",
-                            mtype="text",
-                            source="whatsapp"
+                        stage_report_completion_delivery(
+                            report_sessions[from_number],
+                            folio=folio,
+                            message=body,
+                            request_id=request_id,
+                            location=user_location,
+                            image_count=len(unique_images),
+                            origin_uid=str(uid),
+                            origin_message_id=str(message_id),
+                            client_id=client_id,
+                            channel_id=channel_id,
+                            transport=transport,
                         )
-                        db.Insert(system_notification)
+                        # Persist before contacting Chat2Desk. If the process or
+                        # provider fails, the webhook retry (or next inbound)
+                        # will deliver the same confirmed folio without calling
+                        # CIAC a second time.
+                        try:
+                            pending_persisted = await asyncio.to_thread(
+                                _persist_durable_report_context,
+                                db,
+                                from_number,
+                            )
+                        except Exception:
+                            pending_persisted = False
+                            logger.exception(
+                                "No se pudo persistir el folio pendiente %s",
+                                folio,
+                            )
+                        if not pending_persisted:
+                            release_inbound_processing_claim(
+                                uid,
+                                inbound_claim_token,
+                                storage=db,
+                            )
+                            return JSONResponse(
+                                content={
+                                    "status": False,
+                                    "error": (
+                                        "Folio confirmado por CIAC; no fue posible "
+                                        "asegurar todavía su notificación"
+                                    ),
+                                    "folio": folio,
+                                },
+                                status_code=503,
+                            )
+
+                        # El registro de auditoría local no debe impedir que el
+                        # ciudadano reciba un folio ya confirmado y durable.
+                        try:
+                            img_count = f"que incluye {len(unique_images)} imágenes " if unique_images else ""
+                            db.Insert(
+                                Message(
+                                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    senderName="System",
+                                    message=f"[SISTEMA: Se generó el reporte con folio {folio} {img_count}de la ubicación '{user_location}'. El reporte ha sido enviado al sistema.]",
+                                    number=from_number,
+                                    uid=f"system-{request_id}",
+                                    direction="system",
+                                    mtype="text",
+                                    source="whatsapp",
+                                )
+                            )
+                        except Exception:
+                            logger.exception(
+                                "No se pudo guardar auditoría local del folio %s",
+                                folio,
+                            )
 
                     # IMPORTANTE: Ahora vamos a enviar este mensaje directamente a través de Chat2Desk
                     # para evitar que siga el flujo normal y cause una transferencia a humano
-                    try:
-                        # Guardar la respuesta en el historial y en la base de datos como mensaje del asistente
-                        assistant_message = Message(
-                            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            senderName="Assistant",
-                            message=body,
-                            number=from_number,
-                            uid=f"success-report-{request_id}",
-                            direction="outbound",
-                            mtype="text",
-                            source="whatsapp"
+                    if result['status'] == 'success':
+                        delivered = await deliver_pending_report_completion(
+                            storage=db,
+                            from_number=from_number,
+                            client_id=client_id,
+                            channel_id=channel_id,
+                            transport=transport,
+                            uid=uid,
+                            message_id=message_id,
+                            inbound_claim_token=inbound_claim_token,
                         )
-                        db.Insert(assistant_message)
-                        await manage_message_history(db, from_number)
-                        
-                        sent = await send_chat2desk_message(
-                            from_number,
-                            client_id,
-                            channel_id,
-                            body,
-                            transport,
+                        if not delivered:
+                            release_inbound_processing_claim(
+                                uid,
+                                inbound_claim_token,
+                                storage=db,
+                            )
+                            return JSONResponse(
+                                content={
+                                    "status": False,
+                                    "error": (
+                                        "Folio confirmado por CIAC; notificación "
+                                        "pendiente de reintento"
+                                    ),
+                                    "folio": folio,
+                                },
+                                status_code=503,
+                            )
+                        return JSONResponse(
+                            content={
+                                "status": True,
+                                "message": "Reporte creado y folio entregado",
+                                "folio": folio,
+                            }
                         )
 
-                        if sent:
-                            logger.debug(f"Mensaje de finalización enviado directamente a través de Chat2Desk")
-                        else:
-                            logger.error("Mensaje de finalización no enviado a Chat2Desk")
-                    except Exception as e:
-                        logger.error(f"Error al enviar mensaje de finalización directo: {str(e)}")
+                    sent = await send_chat2desk_message(
+                        from_number,
+                        client_id,
+                        channel_id,
+                        body,
+                        transport,
+                    )
+
+                    if sent:
+                        # Chat2Desk already accepted the message. Local audit
+                        # failures are best-effort and must never cause a resend.
+                        try:
+                            persist_successful_delivery_marker(
+                                db,
+                                from_number,
+                                uid,
+                                message_id,
+                            )
+                            mark_inbound_processing_delivered(
+                                uid,
+                                inbound_claim_token,
+                                storage=db,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "No se pudo registrar marker del resultado %s",
+                                result.get("status"),
+                            )
+                        if result["status"] == "duplicate":
+                            # An exact duplicate is a terminal outcome too.
+                            mark_report_as_completed(from_number)
+                            with report_sessions_lock:
+                                report_sessions.pop(from_number, None)
+                            user_answers.pop(from_number, None)
+                            try:
+                                delete_report_state(db, from_number)
+                            except Exception:
+                                logger.exception(
+                                    "No se pudo limpiar el estado del reporte duplicado %s",
+                                    result.get("folio"),
+                                )
+                        try:
+                            db.Insert(
+                                Message(
+                                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    senderName="Assistant",
+                                    message=body,
+                                    number=from_number,
+                                    uid=f"report-flow-{request_id}",
+                                    direction="outbound",
+                                    mtype="text",
+                                    source="whatsapp",
+                                )
+                            )
+                            await manage_message_history(db, from_number)
+                        except Exception:
+                            logger.exception(
+                                "Mensaje entregado pero no guardado en historial local"
+                            )
+                        logger.debug("Mensaje de finalización enviado directamente a Chat2Desk")
+                    else:
+                        logger.error("Mensaje de finalización no enviado a Chat2Desk")
+                        release_inbound_processing_claim(
+                            uid,
+                            inbound_claim_token,
+                            storage=db,
+                        )
+                        return JSONResponse(
+                            content={
+                                "status": False,
+                                "error": "No se pudo entregar la respuesta del flujo de reporte",
+                            },
+                            status_code=503,
+                        )
                     
                     # IMPORTANTE: Devolver un resultado sin mensaje de texto para evitar el procesamiento posterior
                     # Esto evitará que el sistema envíe otro mensaje o confunda el texto de respuesta como entrada
                     return {
                         'status': result.get('status', 'error'),
                         'message': "",  # Vacío para evitar procesamiento posterior
-                        'folio': folio
+                        'folio': result.get('folio')
                     }
 
                     
@@ -8866,19 +9403,6 @@ async def _process_whatsapp_request(request):
                 }
             )
 
-        assistant_message = Message(
-            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            senderName="Assistant",
-            message=response_content,
-            number=from_number,
-            uid=f"assistant-{datetime.now().timestamp()}",
-            direction="outbound",
-            mtype="text",
-            source="whatsapp"
-        )
-        db.Insert(assistant_message)
-        await manage_message_history(db, from_number)
-
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
         headers = {
@@ -8937,8 +9461,11 @@ async def _process_whatsapp_request(request):
             message_id=message_id,
         )
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
-                response = await http_client.post(chat2desk_url, json=data, headers=headers)
+            response = await post_json_with_retry(
+                chat2desk_url,
+                json=data,
+                headers=headers,
+            )
         except httpx.HTTPError as send_error:
             logger.error(
                 "Error enviando aviso de transferencia fallida a Chat2Desk para %s: %s",
@@ -8962,9 +9489,28 @@ async def _process_whatsapp_request(request):
             message_id=message_id,
         )
 
-        if response.status_code == 200:
+        transfer_response_data = (
+            response.json() if response.status_code == 200 else {}
+        )
+        if (
+            response.status_code == 200
+            and transfer_response_data.get("status") == "success"
+        ):
             persist_bot_outbound_marker(db, from_number, response, "explicit_transfer_response")
             persist_successful_delivery_marker(db, from_number, uid, message_id)
+            db.Insert(
+                Message(
+                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    senderName="Assistant",
+                    message=response_content,
+                    number=from_number,
+                    uid=f"assistant-{uid}",
+                    direction="outbound",
+                    mtype="text",
+                    source="whatsapp",
+                )
+            )
+            await manage_message_history(db, from_number)
             mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
             logger.debug("Respuesta enviada exitosamente a Chat2Desk")
             return JSONResponse(
@@ -9350,28 +9896,6 @@ async def _process_whatsapp_request(request):
         )
         transfer_guard_context.pop(str(message_id), None)
 
-        if (
-            has_confirmed_report_intent(from_number)
-            and assistant_asked_for_optional_image(response_content)
-        ):
-            with report_sessions_lock:
-                report_sessions[from_number]["image_prompted"] = True
-                report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
-            logger.critical(f"🖼️ [IMAGE PROMPTED] Pregunta de imagen registrada para {from_number}")
-        
-        # Guardar la respuesta en el historial y en la base de datos
-        conversation_history.add_ai_message(response_content)
-        assistant_message = Message(
-            time=current_datetime,
-            senderName="Assistant",
-            message=response_content,
-            number=from_number,
-            uid=uid,
-            direction="outbound",
-            mtype="text",
-            source="whatsapp"
-        )
-
         # ============================================================================
         # 🎯 AUTO-GUARDAR INFORMACIÓN DETECTADA EN LA CONVERSACIÓN
         # ============================================================================
@@ -9511,10 +10035,6 @@ async def _process_whatsapp_request(request):
     # ============================================================================
     # FIN DEL CÓDIGO DE AUTO-DETECCIÓN
     # ============================================================================
-
-        logger.debug(f"Guardando respuesta del asistente en BD: {response_content[:30]}...")
-        db.Insert(assistant_message)
-        await manage_message_history(db, from_number)
 
     except Exception as e:
         error_type = type(e).__name__
@@ -9670,8 +10190,11 @@ async def _process_whatsapp_request(request):
             message_id=message_id,
         )
         # Envío robusto con manejo de errores específicos
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
-            response = await http_client.post(chat2desk_url, json=data, headers=headers)
+        response = await post_json_with_retry(
+            chat2desk_url,
+            json=data,
+            headers=headers,
+        )
         log_chat2desk_outbound_response(
             "whatsapp_main",
             response,
@@ -9684,6 +10207,33 @@ async def _process_whatsapp_request(request):
             if response_data.get("status") == "success":
                 persist_bot_outbound_marker(db, from_number, response, "whatsapp_main")
                 persist_successful_delivery_marker(db, from_number, uid, message_id)
+                if (
+                    has_confirmed_report_intent(from_number)
+                    and assistant_asked_for_optional_image(response_content)
+                ):
+                    with report_sessions_lock:
+                        report_sessions[from_number]["image_prompted"] = True
+                        report_sessions[from_number]["timestamp"] = datetime.now(
+                            pytz.timezone('America/Mexico_City')
+                        )
+                    logger.critical(
+                        "🖼️ [IMAGE PROMPTED] Pregunta de imagen entregada para %s",
+                        from_number,
+                    )
+                conversation_history.add_ai_message(response_content)
+                db.Insert(
+                    Message(
+                        time=current_datetime,
+                        senderName="Assistant",
+                        message=response_content,
+                        number=from_number,
+                        uid=uid,
+                        direction="outbound",
+                        mtype="text",
+                        source="whatsapp",
+                    )
+                )
+                await manage_message_history(db, from_number)
                 mark_inbound_processing_delivered(uid, inbound_claim_token, storage=db)
                 logger.debug(f"Respuesta enviada exitosamente a Chat2Desk")
                 content = {"status": True, "message": "Respuesta enviada por Chat2Desk"}

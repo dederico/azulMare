@@ -50,10 +50,32 @@ def ensure_report_completion_storage(storage) -> bool:
                         phone_number TEXT PRIMARY KEY,
                         folio TEXT NOT NULL,
                         completed_at DOUBLE PRECISION NOT NULL,
-                        updated_at DOUBLE PRECISION NOT NULL
+                        updated_at DOUBLE PRECISION NOT NULL,
+                        notification_message TEXT,
+                        request_id TEXT,
+                        origin_uid TEXT,
+                        origin_message_id TEXT,
+                        client_id TEXT,
+                        channel_id TEXT,
+                        transport TEXT,
+                        notified_at DOUBLE PRECISION
                     )
                     """
                 )
+                for column, definition in (
+                    ("notification_message", "TEXT"),
+                    ("request_id", "TEXT"),
+                    ("origin_uid", "TEXT"),
+                    ("origin_message_id", "TEXT"),
+                    ("client_id", "TEXT"),
+                    ("channel_id", "TEXT"),
+                    ("transport", "TEXT"),
+                    ("notified_at", "DOUBLE PRECISION"),
+                ):
+                    cursor.execute(
+                        f"ALTER TABLE {REPORT_COMPLETION_TABLE} "
+                        f"ADD COLUMN IF NOT EXISTS {column} {definition}"
+                    )
             conn.commit()
             _schema_ready = True
             return True
@@ -71,6 +93,13 @@ def record_report_completion(
     folio: str,
     *,
     now: float | None = None,
+    notification_message: str | None = None,
+    request_id: str | None = None,
+    origin_uid: str | None = None,
+    origin_message_id: str | None = None,
+    client_id: str | int | None = None,
+    channel_id: str | int | None = None,
+    transport: str | None = None,
 ) -> dict[str, Any]:
     key = normalize_phone_key(phone_number)
     timestamp = float(now if now is not None else time.time())
@@ -78,6 +107,15 @@ def record_report_completion(
         "phone_number": key,
         "folio": str(folio).strip(),
         "completed_at": timestamp,
+        "notification_message": notification_message,
+        "request_id": request_id,
+        "origin_uid": origin_uid,
+        "origin_message_id": origin_message_id,
+        "client_id": None if client_id is None else str(client_id),
+        "channel_id": None if channel_id is None else str(channel_id),
+        "transport": transport,
+        "notified_at": None,
+        "durable": False,
     }
     with _memory_lock:
         _memory_completions[key] = completion.copy()
@@ -92,16 +130,36 @@ def record_report_completion(
             cursor.execute(
                 f"""
                 INSERT INTO {REPORT_COMPLETION_TABLE}
-                    (phone_number, folio, completed_at, updated_at)
-                VALUES (%s, %s, %s, %s)
+                    (phone_number, folio, completed_at, updated_at,
+                     notification_message, request_id, origin_uid,
+                     origin_message_id, client_id, channel_id, transport,
+                     notified_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
                 ON CONFLICT (phone_number) DO UPDATE SET
                     folio = EXCLUDED.folio,
                     completed_at = EXCLUDED.completed_at,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at,
+                    notification_message = EXCLUDED.notification_message,
+                    request_id = EXCLUDED.request_id,
+                    origin_uid = EXCLUDED.origin_uid,
+                    origin_message_id = EXCLUDED.origin_message_id,
+                    client_id = EXCLUDED.client_id,
+                    channel_id = EXCLUDED.channel_id,
+                    transport = EXCLUDED.transport,
+                    notified_at = NULL
                 """,
-                (key, completion["folio"], timestamp, timestamp),
+                (
+                    key, completion["folio"], timestamp, timestamp,
+                    notification_message, request_id, origin_uid,
+                    origin_message_id,
+                    completion["client_id"], completion["channel_id"],
+                    transport,
+                ),
             )
         conn.commit()
+        completion["durable"] = True
+        with _memory_lock:
+            _memory_completions[key] = completion.copy()
     except Exception as error:
         logger.error("No se pudo persistir folio para %s: %s", key, error)
     finally:
@@ -128,7 +186,10 @@ def get_recent_report_completion(
             with conn.cursor() as cursor:
                 cursor.execute(
                     f"""
-                    SELECT phone_number, folio, completed_at
+                    SELECT phone_number, folio, completed_at,
+                           notification_message, request_id, origin_uid,
+                           origin_message_id, client_id, channel_id, transport,
+                           notified_at
                     FROM {REPORT_COMPLETION_TABLE}
                     WHERE phone_number = %s AND completed_at >= %s
                     """,
@@ -140,6 +201,15 @@ def get_recent_report_completion(
                     "phone_number": str(row[0]),
                     "folio": str(row[1]),
                     "completed_at": float(row[2]),
+                    "notification_message": row[3],
+                    "request_id": row[4],
+                    "origin_uid": row[5],
+                    "origin_message_id": row[6],
+                    "client_id": row[7],
+                    "channel_id": row[8],
+                    "transport": row[9],
+                    "notified_at": row[10],
+                    "durable": True,
                 }
                 with _memory_lock:
                     _memory_completions[key] = completion.copy()
@@ -155,6 +225,42 @@ def get_recent_report_completion(
         if completion and float(completion.get("completed_at") or 0) >= cutoff:
             return completion.copy()
     return None
+
+
+def mark_report_completion_notified(
+    storage,
+    phone_number: str,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Mark the latest confirmed folio as delivered to the citizen."""
+    key = normalize_phone_key(phone_number)
+    timestamp = float(now if now is not None else time.time())
+    with _memory_lock:
+        completion = _memory_completions.get(key)
+        if completion:
+            completion["notified_at"] = timestamp
+
+    if storage is None or not ensure_report_completion_storage(storage):
+        return completion is not None
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE {REPORT_COMPLETION_TABLE}
+                SET notified_at = %s, updated_at = %s
+                WHERE phone_number = %s
+                """,
+                (timestamp, timestamp, key),
+            )
+            changed = cursor.rowcount == 1
+        conn.commit()
+        return changed
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def is_delayed_pre_completion_event(

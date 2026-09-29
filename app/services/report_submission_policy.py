@@ -82,6 +82,17 @@ PROBLEM_SIGNAL_WORDS = (
     "crisis psiquiatrica",
 )
 
+# Declarative service requests are report evidence even when citizens omit the
+# word "reporte". Keep the action list deliberately narrow so informational
+# mentions of a municipal service do not activate report mode.
+DECLARATIVE_REPORT_REQUEST_PATTERN = re.compile(
+    r"^(?:(?:hola|buen\s+d[ií]a|buenas\s+tardes|buenas\s+noches)"
+    r"[\s,;:!¡¿?\-]*)?"
+    r"(?:se\s+solicita|solicito|solicitamos)\s+"
+    r"(?:que\s+)?(?:pintar|retirar|recoger|reparar|atender|limpiar|podar)\b",
+    flags=re.IGNORECASE,
+)
+
 # Sólo se incluyen términos cuyo asunto es inequívoco. Si un texto contiene
 # términos de asuntos distintos, la política no intenta adivinar la categoría.
 HIGH_CONFIDENCE_REPORT_CATEGORIES = {
@@ -620,6 +631,8 @@ def establishes_report_intent(
     if raw.endswith("?"):
         return False
     if is_explicit_report_intent(raw):
+        return True
+    if DECLARATIVE_REPORT_REQUEST_PATTERN.search(raw):
         return True
     return is_likely_report_description(raw)
 

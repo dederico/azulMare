@@ -9,7 +9,13 @@ PENDING_COMPLETION_KEY = "pending_completion_delivery"
 
 
 def build_report_completion_message(folio: str, image_count: int = 0) -> str:
-    image_text = f"con {int(image_count)} imágenes " if image_count else ""
+    count = int(image_count)
+    if count == 1:
+        image_text = "con 1 imagen "
+    elif count > 1:
+        image_text = f"con {count} imágenes "
+    else:
+        image_text = ""
     return (
         "Tu reporte ha sido generado con éxito. El número de folio para tu "
         f"reporte es {folio}. Tu reporte {image_text}ha sido enviado al sistema. "

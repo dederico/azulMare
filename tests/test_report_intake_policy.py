@@ -10,10 +10,129 @@ from app.services.report_intake_policy import (
 )
 from app.services.report_submission_policy import (
     next_missing_report_detail_before_image,
+    normalize_report_number_input,
 )
+from app.services.conversation_policy import classify_emergency_answer
 
 
 class ReportIntakePolicyTests(unittest.TestCase):
+    def test_pacelli_report_on_puente_miravalle_extracts_complete_bundle(self):
+        message = (
+            "Hola! Quiero reportar un poste vial y un señalamiento marcando "
+            "límites de San Pedro y Monterrey sobre Puente Miravalle vandalizados "
+            "con graffiti y calcomanías y se solicita su limpieza. Ubicado sobre "
+            "Puente Miravalle (sentido Sur a Norte) en Calzada Mauricio Fernandez "
+            "Garza #sin numero, Colonia Fuentes del Valle."
+        )
+
+        normalized, _ = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(normalized["selection6"], "0000")
+        self.assertEqual(normalized["selection7"], "Fuentes del Valle")
+        self.assertIn("Puente Miravalle", normalized["selection5"])
+        self.assertIn("Calzada Mauricio Fernandez Garza", normalized["selection5"])
+
+    def test_pacelli_report_on_rio_manzanares_strips_emergency_suffix(self):
+        message = (
+            "Hola! Quiero reportar una puerta de un registro electrico en la "
+            "banqueta llena de graffiti y se solicita su limpieza. Ubicada sobre "
+            "Rio Manzanares #sin número entre Plaza 401 y Sports World, Colonia "
+            "del Valle. No es una emergencia."
+        )
+
+        normalized, original = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(normalized["selection6"], "0000")
+        self.assertEqual(normalized["selection7"], "Del Valle")
+        self.assertEqual(original["selection7"], "del Valle")
+        self.assertNotIn("emergencia", normalized["selection5"].casefold())
+
+    def test_pacelli_direct_avenue_address_extracts_without_ubicado_marker(self):
+        message = (
+            "Hola! Quiero reportar pintura vial borrada, balizas caídas y topes "
+            "movidos para delimitar carril en Avenida Humberto Lobo #sin numero "
+            "entre Avenida Morones Prieto y calle Manuel Santos, Colonia del Valle "
+            "y se solicita su reparación para mejorar flujo y seguridad vial. "
+            "No es una emergencia."
+        )
+
+        normalized, _ = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(normalized["selection6"], "0000")
+        self.assertEqual(normalized["selection7"], "Del Valle")
+        self.assertIn("Avenida Humberto Lobo", normalized["selection5"])
+        self.assertIn("Avenida Morones Prieto", normalized["selection5"])
+
+    def test_pacelli_crossing_report_keeps_colony_before_emergency_suffix(self):
+        message = (
+            "Hola! quiero reportar un señalamiento vial vandalizado con graffiti "
+            "y calcomanía y se solicita su reparación. Ubicado en cruce de Rio "
+            "Bravo Sur sin numero con Rio Elba, Colonia del Valle. No es una "
+            "emergencia."
+        )
+
+        normalized, _ = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(normalized["selection6"], "0000")
+        self.assertEqual(normalized["selection7"], "Del Valle")
+        self.assertEqual(
+            normalized["selection5"],
+            "cruce de Rio Bravo Sur con Rio Elba",
+        )
+
+    def test_active_emergency_extracts_citizen_current_street_as_reference(self):
+        message = (
+            "Me están siguiendo y me están aventando el carro; "
+            "estoy en Humberto Lobo"
+        )
+
+        normalized, _ = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(
+            normalized,
+            {
+                "selection4": (
+                    "Me están siguiendo y me están aventando el carro"
+                ),
+                "selection5": "Humberto Lobo",
+            },
+        )
+
+    def test_pacelli_four_message_sequence_preserves_complete_initial_report(self):
+        messages = (
+            "Hola! Quiero reportar maleza y basura vegetal abandonada en camellón "
+            "de lateral de Avenida Gomez Morín y solicitar su retiro. Ubicado en "
+            "Cruce de Lateral de Avenida Gomez Morín #sin numero cruce con Río "
+            "Paraná, Colonia del Valle Sector Norte.",
+            "no es una emergencia.",
+            "Ubicado en Cruce de Lateral de Avenida Gomez Morín #sin numero cruce "
+            "con Río Paraná, Colonia del Valle Sector Norte.",
+            "sin numero",
+        )
+
+        fields, original = extract_initial_report_bundle(messages[0], {})
+        declared_emergency = classify_emergency_answer(messages[1])
+        repeated_fields, _ = extract_initial_report_bundle(messages[2], fields)
+        fields.update(repeated_fields)
+        fields["selection6"] = normalize_report_number_input(messages[3])
+
+        self.assertEqual(
+            fields,
+            {
+                "selection4": (
+                    "maleza y basura vegetal abandonada en camellón de lateral de "
+                    "Avenida Gomez Morín y solicitar su retiro"
+                ),
+                "selection5": (
+                    "Cruce de Lateral de Avenida Gomez Morín cruce con Río Paraná"
+                ),
+                "selection6": "0000",
+                "selection7": "Del Valle Sect Norte",
+            },
+        )
+        self.assertEqual(original["selection6"], "#sin numero")
+        self.assertIs(declared_emergency, False)
+
     def test_initial_report_extracts_location_introduced_as_sobre_la_calle(self):
         message = (
             "Hola, quiero reportar un separador naranja de plástico del municipio "

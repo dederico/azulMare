@@ -100,21 +100,35 @@ def extract_initial_report_bundle(
     if not raw:
         return {}, {}
 
+    # Emergency declarations describe the workflow, not the neighborhood.  If
+    # they trail a complete address (a very common one-message report), remove
+    # them before splitting the location so ``Colonia del Valle`` does not turn
+    # into ``del Valle. No es una emergencia``.
+    location_source = re.sub(
+        r"(?:[.;,]\s*)?no\s+es\s+(?:una\s+)?emergencia[.!?]*\s*$",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    ).strip()
+
     location_intro = re.search(
         r"\b(?:"
-        r"ubicad[oa]s?\s+(?:en|sobre\s+la\s+calle)|"
+        r"ubicad[oa]s?\s+(?:en|sobre(?:\s+la\s+calle)?)|"
         r"ubicaci[oó]n(?:\s+del\s+reporte)?\s*(?::|-)\s*|"
         r"direcci[oó]n\s*(?::|-)\s*|"
-        r"se\s+encuentra(?:n)?\s+en"
+        r"se\s+encuentra(?:n)?\s+en|"
+        r"(?:estoy|estamos|me\s+encuentro|nos\s+encontramos)\s+en|"
+        r"en\s+(?=(?:avenida|av\.?|calzada|calle|r[ií]o|v[ií]a|"
+        r"boulevard|carretera|cruce)\b)"
         r")\s*",
-        raw,
+        location_source,
         flags=re.IGNORECASE,
     )
     if not location_intro:
         return {}, {}
 
-    original_description = raw[: location_intro.start()].strip(" ,.;:-")
-    raw_location = raw[location_intro.end() :].strip(" ,.;:-")
+    original_description = location_source[: location_intro.start()].strip(" ,.;:-")
+    raw_location = location_source[location_intro.end() :].strip(" ,.;:-")
     if not raw_location:
         return {}, {}
 
@@ -143,7 +157,7 @@ def extract_initial_report_bundle(
 
     colony_match = re.search(
         r"(?:^|,\s*|\s+)(?:colonia|col\.?|fraccionamiento|fracc\.?)\s+"
-        r"(.+?)\.?$",
+        r"(.+?)(?=(?:\s+y\s+se\s+solicita\b|[.;]|$))",
         raw_location,
         flags=re.IGNORECASE,
     )
@@ -162,6 +176,15 @@ def extract_initial_report_bundle(
         if colony_match
         else raw_location
     )
+    trailing_request = ""
+    if colony_match:
+        trailing_request = raw_location[colony_match.end() :].strip(" ,.;:-")
+        if trailing_request and re.match(
+            r"^y\s+se\s+solicita\b",
+            trailing_request,
+            flags=re.IGNORECASE,
+        ):
+            description = f"{description} {trailing_request}".strip()
     raw_number = ""
     normalized_number = ""
     number_span = None

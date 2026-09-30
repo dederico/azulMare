@@ -847,6 +847,118 @@ def classify_emergency_answer(body: str | None) -> bool | None:
     return None
 
 
+def _effective_emergency_clause(normalized: str) -> tuple[str, bool]:
+    """Drop a negated emergency signal while preserving a contrasting danger."""
+    negated_emergency_patterns = (
+        r"\b(?:ya\s+)?no\s+me\s+(?:estan\s+)?sig(?:uen|uiendo)\b",
+        r"\b(?:ya\s+)?no\s+me\s+(?:estan\s+)?persig(?:uen|uiendo)\b",
+        r"\b(?:ya\s+)?no\s+me\s+(?:estan\s+)?amenaz(?:an|ando)\b",
+        r"\b(?:ya\s+)?no\s+me\s+(?:estan\s+)?atac(?:an|ando)\b",
+        r"\b(?:ya\s+)?no\s+me\s+(?:estan\s+)?(?:avientan|aventando)\s+el\s+carro\b",
+        r"\bno\s+(?:esta|estan)\s+agrediendo\b",
+        r"\bno\s+hay\s+(?:una\s+)?agresion\b",
+        r"\bno\s+(?:existe|hay)\s+(?:una\s+)?crisis\s+psiquiatrica\b",
+        r"\bno\s+(?:necesito|requiero)\s+(?:una\s+|a\s+la\s+)?(?:patrulla|policia)\b",
+        r"\bno\s+(?:manden|envien)\s+(?:una\s+|a\s+la\s+)?(?:patrulla|policia)\b",
+        r"\bno\s+existe\s+riesgo\s+inmediato\b",
+    )
+    negated_signal = any(
+        re.search(pattern, normalized) for pattern in negated_emergency_patterns
+    )
+    if negated_signal:
+        if " pero " not in normalized:
+            return "", True
+        # Ignore the negated/ended incident and inspect only what the citizen
+        # says is still happening after the contrast.
+        return normalized.split(" pero ", 1)[1], True
+    return normalized, False
+
+
+def is_active_danger_statement(body: str | None) -> bool:
+    """Return whether the citizen describes concrete danger happening now."""
+    normalized, _ = _effective_emergency_clause(normalize_policy_text(body))
+    if not normalized:
+        return False
+    active_danger_markers = (
+        "me estan siguiendo",
+        "me siguen",
+        "me estan persiguiendo",
+        "me persiguen",
+        "me estan aventando el carro",
+        "me avientan el carro",
+        "me estan atacando",
+        "me atacan",
+        "me estan amenazando",
+        "me amenazan",
+        "hay una agresion",
+        "esta agrediendo",
+        "crisis psiquiatrica",
+        "riesgo inmediato",
+    )
+    return any(marker in normalized for marker in active_danger_markers)
+
+
+def classify_emergency_declaration(
+    body: str | None,
+    *,
+    prompted: bool,
+) -> bool | None:
+    """Classify an emergency answer or an unsolicited active-danger statement.
+
+    Short acknowledgements such as ``si`` are authoritative only when SAM just
+    asked the emergency question.  Outside that context we accept explicit
+    declarations and concrete active-danger language, while leaving
+    informational questions untouched.
+    """
+    raw_body = str(body or "").strip()
+    normalized = normalize_policy_text(raw_body)
+    if not normalized:
+        return None
+
+    classified = classify_emergency_answer(raw_body)
+    effective_normalized, negated_signal = _effective_emergency_clause(normalized)
+    if prompted:
+        if classified is False:
+            return False
+        if negated_signal:
+            if not effective_normalized:
+                return None
+            return classify_emergency_answer(effective_normalized)
+        return classified
+
+    if "?" in raw_body or "¿" in raw_body:
+        return None
+
+    if classified is False and (
+        "emergencia" in normalized or "riesgo" in normalized
+    ):
+        return False
+
+    if negated_signal:
+        if not effective_normalized:
+            return None
+        normalized = effective_normalized
+
+    explicit_emergency_markers = (
+        "es una emergencia",
+        "si es emergencia",
+        "emergencia porque",
+        "emergencia ya que",
+        "necesito una patrulla",
+        "requiero una patrulla",
+        "manden una patrulla",
+        "envien una patrulla",
+        "necesito a la policia",
+    )
+    if (
+        any(marker in normalized for marker in explicit_emergency_markers)
+        or is_active_danger_statement(raw_body)
+    ):
+        return True
+
+    return None
+
+
 def is_emergency_related(body: str | None) -> bool:
     normalized = normalize_policy_text(body)
     emergency_markers = (

@@ -9,6 +9,7 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    classify_emergency_declaration,
     classify_optional_image_answer,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
@@ -19,6 +20,7 @@ from app.services.conversation_policy import (
     greeting_display_name,
     inactivity_snapshot_is_still_stale,
     is_explicit_report_finalization_token,
+    is_active_danger_statement,
     is_contextual_handoff_request,
     is_bot_return_message,
     is_human_takeover_message,
@@ -415,6 +417,112 @@ class EmergencyClassificationTests(unittest.TestCase):
                 "Paciente psiquiátrico está teniendo una crisis psiquiátrica"
             ),
             True,
+        )
+
+    def test_explicit_negative_declaration_is_recognized_without_prompt(self):
+        self.assertIs(
+            classify_emergency_declaration(
+                "Quiero reportar una luminaria. No es una emergencia.",
+                prompted=False,
+            ),
+            False,
+        )
+
+    def test_active_danger_is_recognized_without_prompt(self):
+        self.assertIs(
+            classify_emergency_declaration(
+                "Me están siguiendo y me están aventando el carro",
+                prompted=False,
+            ),
+            True,
+        )
+        self.assertTrue(
+            is_active_danger_statement(
+                "Me están siguiendo y me están aventando el carro"
+            )
+        )
+        self.assertFalse(is_active_danger_statement("Necesito una patrulla"))
+        self.assertFalse(
+            is_active_danger_statement("No me están siguiendo ni amenazando")
+        )
+        for ended_danger in (
+            "No me están siguiendo",
+            "Ya no me están persiguiendo",
+            "No me están atacando",
+            "No hay una agresión",
+        ):
+            with self.subTest(ended_danger=ended_danger):
+                self.assertFalse(is_active_danger_statement(ended_danger))
+                self.assertIsNone(
+                    classify_emergency_declaration(
+                        ended_danger,
+                        prompted=False,
+                    )
+                )
+        for negated_with_other_issue in (
+            "No me están siguiendo, pero quiero reportar un carro sospechoso",
+            "Ya no me persiguen, pero necesito orientación",
+            "No hay una agresión, pero están discutiendo fuerte",
+        ):
+            with self.subTest(negated_with_other_issue=negated_with_other_issue):
+                self.assertFalse(
+                    is_active_danger_statement(negated_with_other_issue)
+                )
+        for negated_signal in (
+            "No necesito una patrulla",
+            "No requiero una patrulla",
+            "No manden una patrulla",
+            "No necesito a la policía",
+            "No me están aventando el carro",
+            "No está agrediendo a nadie",
+            "No existe una crisis psiquiátrica",
+        ):
+            with self.subTest(negated_signal=negated_signal):
+                self.assertIsNone(
+                    classify_emergency_declaration(
+                        negated_signal,
+                        prompted=False,
+                    )
+                )
+        self.assertTrue(
+            is_active_danger_statement("No me siguen pero sí me atacan")
+        )
+        self.assertIs(
+            classify_emergency_declaration(
+                "No necesito una patrulla, pero me están atacando",
+                prompted=False,
+            ),
+            True,
+        )
+
+    def test_informational_emergency_question_is_not_a_declaration(self):
+        self.assertIsNone(
+            classify_emergency_declaration(
+                "¿Qué debo hacer si es una emergencia?",
+                prompted=False,
+            )
+        )
+
+    def test_potential_municipal_risk_does_not_auto_activate_c4(self):
+        for message in (
+            "Hay riesgo de que caiga un árbol",
+            "La alcantarilla está tapada y puede inundarse",
+            "Puede ocasionar un socavón si no lo reparan",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNone(
+                    classify_emergency_declaration(message, prompted=False)
+                )
+
+    def test_prompted_short_answer_uses_existing_classifier(self):
+        self.assertIs(
+            classify_emergency_declaration("sí", prompted=True),
+            True,
+        )
+
+    def test_unprompted_short_no_does_not_decide_emergency_state(self):
+        self.assertIsNone(
+            classify_emergency_declaration("No", prompted=False)
         )
 
 

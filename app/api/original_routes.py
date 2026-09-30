@@ -133,6 +133,7 @@ from app.services.conversation_policy import (
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
+    classify_emergency_declaration,
     classify_optional_image_answer,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
@@ -141,6 +142,7 @@ from app.services.conversation_policy import (
     event_precedes_context_boundary,
     evaluation_turn_matches_visible_prompt,
     inactivity_snapshot_is_still_stale,
+    is_active_danger_statement,
     is_explicit_report_finalization_token,
     is_bot_return_message,
     is_contextual_handoff_request,
@@ -166,6 +168,8 @@ from app.services.conversation_policy import (
 from app.services.report_submission_policy import (
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
+    deduplicate_report_media,
+    determine_report_progress,
     establishes_report_intent,
     extract_pending_report_answers,
     extract_report_field_answer,
@@ -3214,6 +3218,7 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         selection5=selection5,
         selection6=selection6,
         selection7=selection7,
+        declared_emergency=session.get("declared_emergency") is True,
     )
     if validation_error:
         logger.warning(
@@ -3385,6 +3390,7 @@ async def save_client_selection2_guarded(
         selection5=selection5,
         selection6=selection6,
         selection7=selection7,
+        declared_emergency=session.get("declared_emergency") is True,
     )
     if validation_error:
         logger.warning(
@@ -3797,13 +3803,22 @@ def is_recent_persisted_bot_outbound_echo(db, phone_number: str | None, text: st
 def build_return_to_sam_greeting(
     sender_name: str,
     transport: str = "wa_direct",
+    *,
+    ask_emergency: bool = True,
 ) -> str:
     clean_name = greeting_display_name(sender_name, transport)
-    personalized_hello = (
-        f"Hola {clean_name}, ¿en qué podemos ayudarte? ¿Es una emergencia?"
-        if clean_name
-        else "Hola, ¿en qué podemos ayudarte? ¿Es una emergencia?"
-    )
+    if ask_emergency:
+        personalized_hello = (
+            f"Hola {clean_name}, ¿en qué podemos ayudarte? ¿Es una emergencia?"
+            if clean_name
+            else "Hola, ¿en qué podemos ayudarte? ¿Es una emergencia?"
+        )
+    else:
+        personalized_hello = (
+            f"Hola {clean_name}, atenderé la información que compartiste."
+            if clean_name
+            else "Hola, atenderé la información que compartiste."
+        )
     return (
         "Consulta nuestro aviso de privacidad: https://bit.ly/4hd3eLy\n\n"
         "¡Bienvenido! Soy SAM, tu asistente virtual de Atención Ciudadana de SPGG. "
@@ -3941,8 +3956,14 @@ async def send_claimed_session_greeting(
     client_id,
     channel_id,
     transport,
+    *,
+    ask_emergency: bool = True,
 ) -> bool:
-    greeting_message = build_return_to_sam_greeting(sender_name, transport)
+    greeting_message = build_return_to_sam_greeting(
+        sender_name,
+        transport,
+        ask_emergency=ask_emergency,
+    )
     greeting_uid = f"assistant-initial-greeting-{uid}"
     if not has_persisted_whatsapp_message_uid(db, greeting_uid):
         db.Insert(
@@ -4633,15 +4654,10 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 client_id = response_data["data"][0]["id"]
                 
                 folio_clean = folio.replace("Folio: ", "") if folio.startswith("Folio: ") else folio
-                
-                if image_count > 0:
-                    message = "🚀 ¡Tu reporte ya está listo!\n"
-                    message += f"✅ Folio: *{folio_clean}*\n"
-                    message += "📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."
-                else:
-                    message = "🚀 ¡Tu reporte ya está listo!\n"
-                    message += f"✅ Folio: *{folio_clean}*\n"
-                    message += "📌 Debido a la inactividad, hemos generado tu folio automáticamente para que puedas continuar reportando, estamos para servirte."
+                message = build_report_completion_message(
+                    folio_clean,
+                    image_count,
+                )
                 
                 message_data = {
                     "client_id": client_id,
@@ -7624,6 +7640,7 @@ async def _process_whatsapp_request(request):
         intake_response_override = None
         intake_turn_handled = False
         captured_report_field = None
+        auto_finalize_emergency = False
         existing_before_intake = {
             key: get_user_answer(from_number, key)
             for key in (
@@ -7644,6 +7661,53 @@ async def _process_whatsapp_request(request):
                 body,
                 previous_assistant_message=last_outbound_message,
             )
+            emergency_answer = classify_emergency_declaration(
+                body,
+                prompted=assistant_asked_if_emergency(last_outbound_message),
+            )
+            if emergency_answer is True:
+                # An active emergency is itself report authorization. Persist
+                # it before extracting fields so this turn cannot fall back to
+                # the ordinary LLM-driven report wizard.
+                confirm_report_intent(
+                    from_number,
+                    body,
+                    source="emergency_request",
+                )
+                create_or_update_report_session(from_number)
+                save_user_answer(from_number, "selection1", "964")
+                persist_trusted_reporter_name(from_number, sender_name)
+                with report_sessions_lock:
+                    report_sessions[from_number]["declared_emergency"] = True
+                # The same sentence that established active danger is also
+                # citizen-authored report evidence. Capture it again now that
+                # report intent exists so SAM does not ask what happened twice.
+                capture_citizen_report_evidence(
+                    from_number,
+                    body,
+                    previous_assistant_message=last_outbound_message,
+                )
+                if (
+                    is_active_danger_statement(body)
+                    and not get_user_answer(from_number, "selection4")
+                ):
+                    save_user_answer(from_number, "selection4", body.strip())
+                save_user_answer(from_number, "selection1", "964")
+            elif (
+                emergency_answer is False
+                and has_confirmed_report_intent(from_number)
+            ):
+                create_or_update_report_session(from_number)
+                with report_sessions_lock:
+                    report_sessions[from_number]["declared_emergency"] = False
+
+            if emergency_answer is not None:
+                logger.critical(
+                    "🚨 [EMERGENCY DECLARATION] %s emergencia=%s prompted=%s",
+                    from_number,
+                    emergency_answer,
+                    assistant_asked_if_emergency(last_outbound_message),
+                )
             if has_confirmed_report_intent(from_number):
                 persist_trusted_reporter_name(from_number, sender_name)
                 bundled_fields, original_fields = extract_initial_report_bundle(
@@ -7856,6 +7920,57 @@ async def _process_whatsapp_request(request):
                         from_number,
                         category,
                     )
+
+            if not intake_turn_handled:
+                active_report_session = report_sessions.get(from_number, {})
+                current_answers = {
+                    key: get_user_answer(from_number, key)
+                    for key in (
+                        "selection1", "selection2", "selection4",
+                        "selection5", "selection6", "selection7",
+                    )
+                }
+                progress = determine_report_progress(
+                    current_answers,
+                    declared_emergency=active_report_session.get(
+                        "declared_emergency"
+                    ),
+                    image_prompted=bool(
+                        active_report_session.get("image_prompted")
+                    ),
+                    image_decision=active_report_session.get("image_decision"),
+                    has_images=bool(active_report_session.get("images")),
+                    prompt=config.get("prompt") or system_message,
+                )
+                if progress.action == "await_emergency_answer":
+                    intake_response_override = progress.response
+                elif progress.action == "ask_field":
+                    intake_response_override = progress.response
+                    with report_sessions_lock:
+                        active_report_session["pending_finalization_field"] = (
+                            progress.field
+                        )
+                        active_report_session[
+                            "pending_finalization_prompted_at"
+                        ] = datetime.now().timestamp()
+                elif progress.action == "ask_image":
+                    intake_response_override = progress.response
+                    with report_sessions_lock:
+                        active_report_session.pop(
+                            "pending_finalization_field", None
+                        )
+                elif progress.action == "submit_emergency":
+                    auto_finalize_emergency = True
+                    with report_sessions_lock:
+                        active_report_session.pop(
+                            "pending_finalization_field", None
+                        )
+                logger.critical(
+                    "🧭 [REPORT PROGRESS] phone=%s action=%s field=%s",
+                    from_number,
+                    progress.action,
+                    progress.field,
+                )
         elif evaluation_turn_active:
             logger.debug(
                 "Captura de reporte omitida para %s: evaluación pendiente del folio %s",
@@ -8682,17 +8797,9 @@ async def _process_whatsapp_request(request):
                                 images.append(foto)
                                 descriptions.append("Imagen adicional")  # Descripción genérica
                     
-                    # Deduplicate images to ensure no duplicates
-                    unique_images = []
-                    unique_descriptions = []
-                    img_set = set()
-                    
-                    for i, img in enumerate(images):
-                        if img not in img_set:
-                            img_set.add(img)
-                            unique_images.append(img)
-                            if i < len(descriptions):
-                                unique_descriptions.append(descriptions[i])
+                    unique_images, unique_descriptions = (
+                        deduplicate_report_media(images, descriptions)
+                    )
                     
                     logger.info(f"After deduplication: {len(unique_images)} of {len(images)} images remain")
                     
@@ -8764,6 +8871,10 @@ async def _process_whatsapp_request(request):
                     missing_field = next_missing_report_field(
                         selections,
                         prompt=config.get("prompt") or system_message,
+                        declared_emergency=(
+                            report_sessions[from_number].get("declared_emergency")
+                            is True
+                        ),
                     )
                     if missing_field:
                         field_key, question = missing_field
@@ -9149,29 +9260,6 @@ async def _process_whatsapp_request(request):
                     decision,
                 )
 
-    if assistant_asked_if_emergency(last_outbound_message):
-        emergency_answer = classify_emergency_response(body)
-        if emergency_answer is not None:
-            create_or_update_report_session(from_number)
-            with report_sessions_lock:
-                report_sessions[from_number]["declared_emergency"] = emergency_answer
-            if emergency_answer is True:
-                # Asking for a patrol or describing an active emergency is
-                # itself authorization to open the C4 report. Do not force an
-                # additional "quiero levantar un reporte" confirmation.
-                confirm_report_intent(
-                    from_number,
-                    body,
-                    source="emergency_request",
-                )
-                save_user_answer(from_number, "selection1", "964")
-                persist_trusted_reporter_name(from_number, sender_name)
-            logger.critical(
-                "🚨 [EMERGENCY FLAG] %s respondió emergencia=%s",
-                from_number,
-                emergency_answer,
-            )
-
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         senderName=sender_name,
@@ -9194,7 +9282,10 @@ async def _process_whatsapp_request(request):
     # contenido del primer mensaje. Si el ciudadano sólo saludó, el saludo
     # completa el turno; si ya hizo una solicitud, SAM la procesa enseguida.
     if initial_greeting_required:
-        greeting_message = build_return_to_sam_greeting(sender_name, transport)
+        emergency_state_known = (
+            report_sessions.get(from_number, {}).get("declared_emergency")
+            is not None
+        )
         logger.critical(
             "👋 [INITIAL SESSION GREETING] Enviando saludo institucional para %s uid=%s",
             from_number,
@@ -9210,11 +9301,15 @@ async def _process_whatsapp_request(request):
                 client_id,
                 channel_id,
                 transport,
+                ask_emergency=not emergency_state_known,
             )
             if not sent:
                 raise RuntimeError("Chat2Desk no confirmó el saludo institucional")
 
-            if is_simple_greeting(body) or is_explicit_report_intent(body):
+            if is_simple_greeting(body) or (
+                has_confirmed_report_intent(from_number)
+                and not emergency_state_known
+            ):
                 persist_successful_delivery_marker(db, from_number, uid, message_id)
                 mark_inbound_processing_delivered(
                     uid,
@@ -9248,6 +9343,158 @@ async def _process_whatsapp_request(request):
                 content={"status": False, "error": "No se pudo enviar saludo institucional"},
                 status_code=500,
             )
+
+    if auto_finalize_emergency:
+        selections = {
+            key: get_user_answer(from_number, key)
+            for key in (
+                "selection1", "selection2", "selection4",
+                "selection5", "selection6", "selection7",
+            )
+        }
+        location_parts = [
+            " ".join(
+                part
+                for part in (
+                    str(selections["selection5"] or "").strip(),
+                    str(selections["selection6"] or "").strip(),
+                )
+                if part
+            ),
+            (
+                f"colonia {str(selections['selection7']).strip()}"
+                if str(selections["selection7"] or "").strip()
+                else ""
+            ),
+        ]
+        user_location = ", ".join(
+            part for part in location_parts if part
+        ) or "referencia no especificada"
+        emergency_request_id = str(
+            request_id or f"{from_number}-{uid}"
+        )
+        with report_sessions_lock:
+            report_sessions[from_number]["completion_delivery_context"] = {
+                "request_id": emergency_request_id,
+                "origin_uid": str(uid),
+                "origin_message_id": str(message_id),
+                "client_id": client_id,
+                "channel_id": channel_id,
+                "transport": transport,
+            }
+
+        logger.critical(
+            "🚨 [EMERGENCY AUTO-SUBMIT] phone=%s location=%s",
+            from_number,
+            user_location,
+        )
+        emergency_images, emergency_descriptions = deduplicate_report_media(
+            report_sessions[from_number].get("images"),
+            report_sessions[from_number].get("image_descriptions"),
+        )
+        result = await process_and_save_report(
+            from_number,
+            user_location,
+            emergency_images,
+            emergency_descriptions,
+        )
+        terminal_status = result.get("status")
+        if terminal_status in {"success", "duplicate"}:
+            folio = result["folio"]
+            completion_message = (
+                build_report_completion_message(
+                    folio,
+                    len(emergency_images),
+                )
+                if terminal_status == "success"
+                else result["message"]
+            )
+            stage_report_completion_delivery(
+                report_sessions[from_number],
+                folio=folio,
+                message=completion_message,
+                request_id=emergency_request_id,
+                location=user_location,
+                image_count=len(emergency_images),
+                origin_uid=str(uid),
+                origin_message_id=str(message_id),
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+            )
+            try:
+                pending_persisted = await asyncio.to_thread(
+                    _persist_durable_report_context,
+                    db,
+                    from_number,
+                )
+            except Exception:
+                pending_persisted = False
+                logger.exception(
+                    "No se pudo persistir el folio de emergencia %s",
+                    folio,
+                )
+            if not pending_persisted:
+                release_inbound_processing_claim(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": (
+                            "Folio de emergencia confirmado; su "
+                            "notificación sigue pendiente"
+                        ),
+                        "folio": folio,
+                    },
+                    status_code=503,
+                )
+
+            delivered = await deliver_pending_report_completion(
+                storage=db,
+                from_number=from_number,
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+                uid=uid,
+                message_id=message_id,
+                inbound_claim_token=inbound_claim_token,
+            )
+            if not delivered:
+                release_inbound_processing_claim(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": (
+                            "Folio de emergencia confirmado; "
+                            "notificación pendiente de reintento"
+                        ),
+                        "folio": folio,
+                    },
+                    status_code=503,
+                )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": (
+                        "Reporte de emergencia creado y folio entregado"
+                        if terminal_status == "success"
+                        else "Reporte duplicado reconocido y folio existente entregado"
+                    ),
+                    "folio": folio,
+                }
+            )
+
+        intake_response_override = result.get("message") or (
+            "No fue posible crear el reporte de emergencia en este momento. "
+            "Conservé tus datos para volver a intentarlo."
+        )
 
     direct_handoff_request = is_explicit_human_handoff_request(body)
     contextual_handoff_request = is_contextual_handoff_request(
@@ -9621,18 +9868,6 @@ async def _process_whatsapp_request(request):
                 "\n\nESTADO CONFIRMADO: El ciudadano ya indicó que NO es una emergencia. "
                 "No vuelvas a preguntarle si es una emergencia y continúa atendiendo su solicitud."
             )
-        elif emergency_state is True:
-            system_prompt += (
-                "\n\nESTADO CONFIRMADO: El ciudadano indicó que SÍ es una emergencia. "
-                "Indícale que debe comunicarse al C4 al 81 89 88 20 00. "
-                "Este flujo requiere únicamente una descripción breve y la dirección "
-                "completa (calle, número y colonia). Usa siempre el asunto 964 y el "
-                "nombre confiable ya proporcionado por Chat2Desk. En cuanto tengas esos "
-                "datos, llama inmediatamente a save_client_selection2. NO preguntes por "
-                "nombre, imagen, autorización ni confirmación adicional. "
-                "No transfieras automáticamente a operadores; sólo transfiere si solicita explícitamente "
-                "atención humana o si verificaste que no existe contexto para resolver otra consulta."
-            )
         trusted_reporter = resolve_trusted_reporter_name(sender_name)
         system_prompt += (
             "\n\nIDENTIDAD DEL REPORTANTE: selection2 debe ser exactamente "
@@ -9851,6 +10086,10 @@ async def _process_whatsapp_request(request):
             missing_before_image = next_missing_report_detail_before_image(
                 report_values,
                 prompt=config.get("prompt") or system_message,
+                declared_emergency=(
+                    report_sessions.get(from_number, {}).get("declared_emergency")
+                    is True
+                ),
             )
             if missing_before_image:
                 original_response = response_content

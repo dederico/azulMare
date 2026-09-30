@@ -9,11 +9,19 @@ from app.services.report_state import _json_safe
 
 
 class ReportCompletionDeliveryTests(unittest.TestCase):
+    def test_completion_without_images_uses_one_canonical_folio_message(self):
+        self.assertEqual(
+            build_report_completion_message("474570"),
+            "Tu reporte ha sido generado con éxito. El número de folio para tu "
+            "reporte es 474570. Tu reporte ha sido enviado al sistema. "
+            "Agradecemos mucho tu colaboración. Estamos para servirte",
+        )
+
     def test_completion_message_includes_confirmed_folio_and_image_count(self):
         self.assertEqual(
             build_report_completion_message("474580", 1),
             "Tu reporte ha sido generado con éxito. El número de folio para tu "
-            "reporte es 474580. Tu reporte con 1 imágenes ha sido enviado al "
+            "reporte es 474580. Tu reporte con 1 imagen ha sido enviado al "
             "sistema. Agradecemos mucho tu colaboración. Estamos para servirte",
         )
 

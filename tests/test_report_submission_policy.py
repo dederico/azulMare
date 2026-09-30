@@ -26,12 +26,91 @@ from app.services.report_submission_policy import (
     sanitize_report_description,
     select_citizen_report_description,
     validate_and_normalize_report_submission,
+    determine_report_progress,
+    deduplicate_report_media,
     validation_error_to_user_message,
 )
 from app.services.functions.implementations.save_selection2 import save_client_selection2
 
 
 class ReportSubmissionPolicyTests(unittest.TestCase):
+    def valid_fields(self):
+        return {
+            "selection1": "984",
+            "selection2": "Ana Pérez",
+            "selection4": "Hay un bache profundo que obstruye el carril derecho",
+            "selection5": "Vasconcelos",
+            "selection6": "321",
+            "selection7": "Centro",
+        }
+
+    def test_emergency_media_deduplication_preserves_matching_descriptions(self):
+        images, descriptions = deduplicate_report_media(
+            ["photo-a", "photo-a", "photo-b"],
+            ["Frente", "Duplicada", "Costado"],
+        )
+
+        self.assertEqual(images, ["photo-a", "photo-b"])
+        self.assertEqual(descriptions, ["Frente", "Costado"])
+
+    def test_complete_non_emergency_moves_to_optional_image_without_llm(self):
+        decision = determine_report_progress(
+            self.valid_fields(),
+            declared_emergency=False,
+            image_prompted=False,
+            image_decision=None,
+            has_images=False,
+        )
+
+        self.assertEqual(decision.action, "ask_image")
+        self.assertIn("imagen", decision.response)
+
+    def test_unknown_emergency_state_requests_it_deterministically(self):
+        decision = determine_report_progress(
+            self.valid_fields(),
+            declared_emergency=None,
+            image_prompted=False,
+            image_decision=None,
+            has_images=False,
+        )
+
+        self.assertEqual(decision.action, "await_emergency_answer")
+        self.assertIn("emergencia", decision.response)
+
+    def test_non_emergency_asks_only_the_actual_missing_field(self):
+        fields = self.valid_fields()
+        fields["selection7"] = ""
+
+        decision = determine_report_progress(
+            fields,
+            declared_emergency=False,
+            image_prompted=False,
+            image_decision=None,
+            has_images=False,
+        )
+
+        self.assertEqual(decision.action, "ask_field")
+        self.assertEqual(decision.field, "selection7")
+
+    def test_complete_emergency_is_ready_for_deterministic_submission(self):
+        fields = self.valid_fields()
+        fields.update(
+            selection1="964",
+            selection5="Humberto Lobo cerca de Calzada",
+            selection6="",
+            selection7="",
+        )
+
+        decision = determine_report_progress(
+            fields,
+            declared_emergency=True,
+            image_prompted=False,
+            image_decision=None,
+            has_images=False,
+        )
+
+        self.assertEqual(decision.action, "submit_emergency")
+
     def test_only_citizen_report_evidence_activates_report_mode(self):
         self.assertTrue(establishes_report_intent("Quiero reportar un bache"))
         self.assertTrue(establishes_report_intent("Reporte normal"))
@@ -563,6 +642,69 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         }
 
         self.assertIsNone(next_missing_report_field(fields))
+
+    def test_emergency_requires_only_description_and_freeform_address(self):
+        fields = {
+            "selection1": "964",
+            "selection2": "Daniela Escareño L.",
+            "selection4": (
+                "Paciente psiquiátrico está teniendo una crisis y gritando; "
+                "existen antecedentes de agresión verbal y física"
+            ),
+            "selection5": "Titanio 407, colonia San Pedro 400",
+            "selection6": "",
+            "selection7": "",
+        }
+
+        self.assertIsNone(
+            next_missing_report_field(fields, declared_emergency=True)
+        )
+
+    def test_emergency_submission_defaults_number_and_allows_missing_colony(self):
+        values, error = validate_and_normalize_report_submission(
+            selection1="964",
+            selection2="Daniela Escareño L.",
+            selection4=(
+                "Paciente psiquiátrico está teniendo una crisis y gritando; "
+                "existen antecedentes de agresión verbal y física"
+            ),
+            selection5="Titanio 407, colonia San Pedro 400",
+            selection6="",
+            selection7="",
+            declared_emergency=True,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(values["selection6"], "0000")
+        self.assertEqual(values["selection7"], "")
+
+    def test_declared_emergency_cannot_be_reclassified_as_regular_service(self):
+        values, error = validate_and_normalize_report_submission(
+            selection1="979",
+            selection2="Ana Pérez",
+            selection4=(
+                "Me están persiguiendo junto a un árbol que está por caer"
+            ),
+            selection5="Humberto Lobo cerca de Calzada",
+            selection6="",
+            selection7="",
+            declared_emergency=True,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(values["selection1"], "964")
+
+    def test_regular_report_still_requires_number_and_colony(self):
+        fields = {
+            "selection1": "984",
+            "selection2": "Ana Pérez",
+            "selection4": "Hay un bache profundo que obstruye el carril derecho",
+            "selection5": "Vasconcelos",
+            "selection6": "",
+            "selection7": "",
+        }
+
+        self.assertEqual(next_missing_report_field(fields)[0], "selection6")
 
     def test_unknown_subject_uses_general_ciac_catalog_entry(self):
         catalog = (

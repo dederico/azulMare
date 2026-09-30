@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from dataclasses import dataclass
 
 
 INVALID_REQUIRED_VALUES = {
@@ -144,6 +145,36 @@ HIGH_CONFIDENCE_REPORT_CATEGORIES = {
 # con certeza a un asunto especializado. CIAC conserva la explicación original
 # y puede reasignar internamente el reporte.
 UNCLASSIFIED_REPORT_CATEGORY_ID = "486"
+
+
+@dataclass(frozen=True)
+class ReportProgressDecision:
+    action: str
+    field: str | None = None
+    response: str | None = None
+
+
+def deduplicate_report_media(
+    images: list[str] | None,
+    descriptions: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    """Deduplicate media without breaking image/description alignment."""
+    unique_images: list[str] = []
+    unique_descriptions: list[str] = []
+    seen: set[str] = set()
+    description_values = list(descriptions or [])
+    for index, raw_image in enumerate(images or []):
+        image = str(raw_image or "").strip()
+        if not image or image in seen:
+            continue
+        seen.add(image)
+        unique_images.append(image)
+        unique_descriptions.append(
+            str(description_values[index] or "Imagen adicional").strip()
+            if index < len(description_values)
+            else "Imagen adicional"
+        )
+    return unique_images, unique_descriptions
 
 
 def normalize_report_text(value: str | None) -> str:
@@ -795,16 +826,27 @@ def classify_sidewalk_sign_answer(
     return None
 
 
-def next_missing_report_field(selections: dict[str, str], *, prompt: str | None = None) -> tuple[str, str] | None:
+def next_missing_report_field(
+    selections: dict[str, str],
+    *,
+    prompt: str | None = None,
+    declared_emergency: bool = False,
+) -> tuple[str, str] | None:
     """Ask only for an absent fact; never discard facts already supplied."""
     if not is_meaningful_report_description(selections.get("selection4")):
         return "selection4", "¿Qué problema deseas reportar? Descríbelo brevemente."
     if normalize_report_text(selections.get("selection5")) in INVALID_REQUIRED_VALUES:
-        return "selection5", "¿En qué calle se encuentra el problema?"
-    if normalize_report_number_input(selections.get("selection6")) is None:
-        return "selection6", "¿Cuál es el número exterior? Si no existe o no lo conoces, indícame “sin número”."
-    if normalize_report_text(selections.get("selection7")) in INVALID_REQUIRED_VALUES | {"0000"}:
-        return "selection7", "¿En qué colonia se encuentra el problema?"
+        question = (
+            "¿En qué calle, cruce o referencia se encuentra la emergencia?"
+            if declared_emergency
+            else "¿En qué calle se encuentra el problema?"
+        )
+        return "selection5", question
+    if not declared_emergency:
+        if normalize_report_number_input(selections.get("selection6")) is None:
+            return "selection6", "¿Cuál es el número exterior? Si no existe o no lo conoces, indícame “sin número”."
+        if normalize_report_text(selections.get("selection7")) in INVALID_REQUIRED_VALUES | {"0000"}:
+            return "selection7", "¿En qué colonia se encuentra el problema?"
     category = str(selections.get("selection1") or "").strip()
     if not category.isdigit() or category == "0":
         if sidewalk_sign_category_options(prompt, selections.get("selection4")):
@@ -820,14 +862,64 @@ def next_missing_report_detail_before_image(
     selections: dict[str, str],
     *,
     prompt: str | None = None,
+    declared_emergency: bool = False,
 ) -> tuple[str, str] | None:
     """Return only report facts that must precede the optional-image question."""
-    missing = next_missing_report_field(selections, prompt=prompt)
+    missing = next_missing_report_field(
+        selections,
+        prompt=prompt,
+        declared_emergency=declared_emergency,
+    )
     if missing and missing[0] in {
         "selection4", "selection5", "selection6", "selection7",
     }:
         return missing
     return None
+
+
+def determine_report_progress(
+    selections: dict[str, str],
+    *,
+    declared_emergency: bool | None,
+    image_prompted: bool,
+    image_decision: str | None,
+    has_images: bool,
+    prompt: str | None = None,
+) -> ReportProgressDecision:
+    """Choose the next report transition from authoritative stored fields.
+
+    The model may phrase ordinary conversation, but it must not decide whether
+    a field already exists.  This keeps a complete one-message report from
+    falling back into repeated street/number/neighborhood questions.
+    """
+    if declared_emergency is None:
+        return ReportProgressDecision(
+            "await_emergency_answer",
+            response="¿Esta situación representa una emergencia?",
+        )
+
+    missing = next_missing_report_field(
+        selections,
+        prompt=prompt,
+        declared_emergency=declared_emergency,
+    )
+    if missing:
+        field, response = missing
+        return ReportProgressDecision("ask_field", field, response)
+
+    if declared_emergency:
+        return ReportProgressDecision("submit_emergency")
+
+    if not has_images and not image_prompted and image_decision is None:
+        return ReportProgressDecision(
+            "ask_image",
+            response=(
+                "No se han adjuntado imágenes al reporte. ¿Deseas agregar una "
+                "imagen para complementar tu reporte? La imagen es opcional."
+            ),
+        )
+
+    return ReportProgressDecision("continue")
 
 
 def select_citizen_report_description(
@@ -924,6 +1016,7 @@ def validate_and_normalize_report_submission(
     selection5: str | None,
     selection6: str | None,
     selection7: str | None,
+    declared_emergency: bool = False,
 ) -> tuple[dict[str, str] | None, str | None]:
     values = {
         "selection1": " ".join(str(selection1 or "").split()).strip(),
@@ -934,6 +1027,12 @@ def validate_and_normalize_report_submission(
         "selection6": " ".join(str(selection6 or "").split()).strip(),
         "selection7": " ".join(str(selection7 or "").split()).strip(),
     }
+
+    emergency_submission = bool(
+        declared_emergency or values["selection1"] == "964"
+    )
+    if declared_emergency:
+        values["selection1"] = "964"
 
     if not values["selection1"].isdigit() or values["selection1"] == "0":
         return None, "debes identificar un ID de asunto numérico y válido"
@@ -952,21 +1051,27 @@ def validate_and_normalize_report_submission(
         return None, "debes obtener una calle válida"
 
     normalized_number = normalize_report_number_input(values["selection6"])
-    if normalized_number is None:
+    if normalized_number is None and emergency_submission:
+        normalized_number = "0000"
+    elif normalized_number is None:
         return None, (
             "debes obtener un número exterior numérico; usa 0000 únicamente cuando "
             "el ciudadano confirme que no existe o no lo conoce"
         )
     values["selection6"] = normalized_number
 
-    if normalize_report_text(values["selection7"]) in INVALID_REQUIRED_VALUES | {"0000"}:
+    if (
+        not emergency_submission
+        and normalize_report_text(values["selection7"])
+        in INVALID_REQUIRED_VALUES | {"0000"}
+    ):
         return None, "debes obtener una colonia válida"
 
     # Si la explicación sólo puede corresponder a un asunto conocido, reparar el
     # ID es más útil y seguro que negar el reporte. Los textos ambiguos no se
     # autoclasifican y conservan la selección realizada por el modelo.
     inferred_category = infer_high_confidence_report_category(values["selection4"])
-    if inferred_category:
+    if inferred_category and not emergency_submission:
         values["selection1"] = inferred_category
 
     return values, None

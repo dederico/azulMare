@@ -126,6 +126,46 @@ class OpenAIServiceReasoningTests(unittest.IsolatedAsyncioTestCase):
             second_input,
         )
 
+    async def test_required_tool_is_forced_only_on_first_round(self):
+        async def decide(decision: str):
+            """Registra una decisión.
+
+            decision (string): Decisión cerrada.
+            """
+            return decision
+
+        service = OpenAIService(
+            config={},
+            api_key="test-key",
+            function_manager=FunctionManager([decide]),
+            system="Prueba",
+            required_tool_name="decide",
+        )
+        function_call = {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "decide",
+            "arguments": '{"decision":"yes"}',
+            "status": "completed",
+        }
+        service._create_response_with_local_retry = AsyncMock(
+            side_effect=[
+                SimpleNamespace(output=[function_call], output_text=""),
+                SimpleNamespace(output=[], output_text="Listo"),
+            ]
+        )
+
+        result = [part async for part in service.generate_response("Es riesgo")]
+
+        self.assertEqual(result, ["Listo"])
+        calls = service._create_response_with_local_retry.await_args_list
+        self.assertEqual(
+            calls[0].kwargs["tool_choice"],
+            {"type": "function", "name": "decide"},
+        )
+        self.assertEqual(calls[1].kwargs["tool_choice"], "auto")
+
     async def test_context_summary_uses_responses_without_tools(self):
         service = self.build_service()
         service.add_to_conversation("user", "Necesito reportar un bache")

@@ -167,6 +167,7 @@ from app.services.conversation_policy import (
     should_suppress_repeated_report_question,
     return_greeting_covers_current_inbound,
     resolve_high_confidence_out_of_scope_response,
+    validate_structured_emergency_decision,
     validate_structured_optional_image_decision,
 )
 from app.services.report_submission_policy import (
@@ -6618,13 +6619,6 @@ async def _process_whatsapp_request(request):
     db = LocalStorage()
     args = request.query_params
     config = {conf.name: conf.getval() for conf in db.GetAll(Config)}
-    whatsapp_functions = [
-        save_client_selection2_guarded if func.__name__ == "save_client_selection2"
-        else transfer_to_group_guarded if func.__name__ == "transfer_to_group"
-        else func
-        for func in registered_functions
-    ]
-    function_manager = FunctionManager(whatsapp_functions)
     client = OpenAI(
         api_key=os.getenv("OPENAI_API_KEY"),
         timeout=OPENAI_HTTP_TIMEOUT,
@@ -7800,6 +7794,7 @@ async def _process_whatsapp_request(request):
         intake_turn_handled = False
         captured_report_field = None
         auto_finalize_emergency = False
+        semantic_emergency_resolution_needed = False
         existing_before_intake = {
             key: get_user_answer(from_number, key)
             for key in (
@@ -8117,7 +8112,18 @@ async def _process_whatsapp_request(request):
                     prompt=catalog_prompt,
                 )
                 if progress.action == "await_emergency_answer":
-                    intake_response_override = progress.response
+                    semantic_emergency_resolution_needed = bool(
+                        emergency_answer is None
+                        and (
+                            str(pending_intake_question or "").strip().casefold()
+                            == "emergency"
+                            or assistant_asked_if_emergency(
+                                last_outbound_message
+                            )
+                        )
+                    )
+                    if not semantic_emergency_resolution_needed:
+                        intake_response_override = progress.response
                     with report_sessions_lock:
                         active_report_session[
                             "pending_intake_question"
@@ -10102,6 +10108,117 @@ async def _process_whatsapp_request(request):
                 "sesión. Responde directamente a la solicitud del ciudadano sin repetir el "
                 "aviso de privacidad ni el mensaje de bienvenida."
             )
+        required_tool_name = None
+        whatsapp_functions = [
+            save_client_selection2_guarded
+            if func.__name__ == "save_client_selection2"
+            else transfer_to_group_guarded
+            if func.__name__ == "transfer_to_group"
+            else func
+            for func in registered_functions
+        ]
+        if semantic_emergency_resolution_needed:
+            async def record_emergency_decision(decision: str):
+                """Interpreta y registra la respuesta contextual a la pregunta de emergencia antes de continuar.
+
+                decision (string): Usa exclusivamente "yes" si el ciudadano confirma una emergencia o riesgo que requiere atención urgente, y "no" si la niega. Decide por el significado de toda su respuesta y la conversación, no por coincidencia literal.
+                """
+                structured_decision = validate_structured_emergency_decision(
+                    decision
+                )
+                if structured_decision is None:
+                    return (
+                        "VALIDATION_BLOCK: decision debe ser exactamente "
+                        "'yes' o 'no'."
+                    )
+
+                active_session = report_sessions.get(from_number, {})
+                if (
+                    not has_confirmed_report_intent(from_number)
+                    or active_session.get("pending_intake_question")
+                    != "emergency"
+                ):
+                    return (
+                        "VALIDATION_BLOCK: No hay una pregunta de emergencia "
+                        "pendiente para este reporte."
+                    )
+
+                is_emergency = structured_decision == "yes"
+                with report_sessions_lock:
+                    active_session["declared_emergency"] = is_emergency
+                    active_session.pop("pending_intake_question", None)
+                if is_emergency:
+                    save_user_answer(from_number, "selection1", "964")
+
+                current_answers = {
+                    key: get_user_answer(from_number, key)
+                    for key in (
+                        "selection1", "selection2", "selection4",
+                        "selection5", "selection6", "selection7",
+                    )
+                }
+                if is_emergency:
+                    current_answers["selection1"] = "964"
+                progress_after_decision = determine_report_progress(
+                    current_answers,
+                    declared_emergency=is_emergency,
+                    image_prompted=bool(active_session.get("image_prompted")),
+                    image_decision=active_session.get("image_decision"),
+                    has_images=bool(active_session.get("images")),
+                    prompt=config.get("prompt") or system_message,
+                )
+                logger.critical(
+                    "🚨 [EMERGENCY DECISION STRUCTURED] phone=%s decision=%s "
+                    "next_action=%s",
+                    from_number,
+                    structured_decision,
+                    progress_after_decision.action,
+                )
+
+                if progress_after_decision.action == "submit_emergency":
+                    images = list(active_session.get("images") or [])
+                    descriptions = list(
+                        active_session.get("image_descriptions") or []
+                    )
+                    return await save_client_selection2_guarded(
+                        yoga_number=from_number,
+                        selection1="964",
+                        selection2=current_answers.get("selection2") or "Anónimo",
+                        selection3="",
+                        selection4=current_answers.get("selection4") or "",
+                        selection5=current_answers.get("selection5") or "",
+                        selection6=current_answers.get("selection6") or "0000",
+                        selection7=current_answers.get("selection7") or "",
+                        selection8=images[0] if images else "",
+                        images_list=images,
+                        descriptions_list=descriptions,
+                    )
+
+                return json.dumps(
+                    {
+                        "emergency_decision_recorded": structured_decision,
+                        "next_action": progress_after_decision.action,
+                        "next_question": progress_after_decision.response,
+                        "instruction": (
+                            "No vuelvas a preguntar si es emergencia. "
+                            "Continúa con next_question."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            record_emergency_decision.__name__ = "record_emergency_decision"
+            whatsapp_functions.append(record_emergency_decision)
+            required_tool_name = "record_emergency_decision"
+            system_prompt += (
+                "\n\nDECISIÓN SEMÁNTICA DE EMERGENCIA PENDIENTE: La última "
+                "pregunta visible fue si esta situación representa una emergencia. "
+                "Interpreta la respuesta completa del ciudadano en su contexto y "
+                "llama obligatoriamente a record_emergency_decision con 'yes' o "
+                "'no'. No repitas la pregunta ni exijas que responda una palabra exacta."
+            )
+
+        function_manager = FunctionManager(whatsapp_functions)
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:
         #     system_prompt += "\n\nINSTRUCCIÓN IMPORTANTE: NO crees ningún reporte ni menciones folios en tu respuesta. El usuario debe decir EXPLÍCITAMENTE 'Crear reporte' para que se genere. No inventes folios ni digas que has creado un reporte a menos que yo te confirme que el reporte ya fue generado."
@@ -10110,7 +10227,8 @@ async def _process_whatsapp_request(request):
             config=config,
             api_key=os.getenv("OPENAI_API_KEY"),
             system=system_prompt,
-            function_manager=function_manager
+            function_manager=function_manager,
+            required_tool_name=required_tool_name,
         )
         
         # Alternative DeepSeek service

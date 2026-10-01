@@ -42,6 +42,7 @@ from app.services.conversation_policy import (
     should_send_initial_greeting,
     should_suppress_recent_post_folio_input,
     should_suppress_repeated_report_question,
+    validate_structured_emergency_decision,
     validate_structured_optional_image_decision,
 )
 
@@ -401,6 +402,15 @@ class PublicPhoneValidationTests(unittest.TestCase):
 
 
 class EmergencyClassificationTests(unittest.TestCase):
+    def test_structured_emergency_decision_accepts_only_closed_values(self):
+        self.assertEqual(validate_structured_emergency_decision("yes"), "yes")
+        self.assertEqual(validate_structured_emergency_decision("NO"), "no")
+        self.assertIsNone(
+            validate_structured_emergency_decision(
+                "sí representa un riesgo para los automovilistas"
+            )
+        )
+
     def test_pending_emergency_question_is_authoritative_over_prompt_wording(self):
         self.assertIs(
             classify_emergency_turn(

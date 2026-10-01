@@ -44,7 +44,8 @@ class OpenAIService(LLMService):
         config,
         api_key: str | None,
         function_manager: FunctionManager,
-        system: str = ""
+        system: str = "",
+        required_tool_name: str | None = None,
     ):
         self.config = config
         self.client = openai.AsyncClient(
@@ -59,6 +60,14 @@ class OpenAIService(LLMService):
             func.__name__: func
             for func in self.function_manager.registered_functions
         }
+        if (
+            required_tool_name
+            and required_tool_name not in self.registered_functions_by_name
+        ):
+            raise ValueError(
+                f"Required tool '{required_tool_name}' is not registered."
+            )
+        self.required_tool_name = required_tool_name
         self.pending_tool_calls: dict[int, dict[str, Any]] = {}
         # Per-request evidence from official read-only knowledge functions.
         # The outbound policy uses it to preserve departmental phone numbers
@@ -547,7 +556,14 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
                     input=response_input,
                     reasoning={"effort": self._reasoning_effort()},
                     tools=tools_payload,
-                    tool_choice="auto",
+                    tool_choice=(
+                        {
+                            "type": "function",
+                            "name": self.required_tool_name,
+                        }
+                        if tool_round == 0 and self.required_tool_name
+                        else "auto"
+                    ),
                     parallel_tool_calls=False,
                     store=False,
                     include=["reasoning.encrypted_content"],

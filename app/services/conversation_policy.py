@@ -101,6 +101,12 @@ def validate_structured_optional_image_decision(value: str | None) -> str | None
     return normalized if normalized in {"yes", "no"} else None
 
 
+def validate_structured_emergency_decision(value: str | None) -> str | None:
+    """Accept only the closed emergency decision produced by the model."""
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in {"yes", "no"} else None
+
+
 def assistant_asked_for_optional_image(message: str | None) -> bool:
     """Recognize both the current optional prompt and the legacy image guard."""
     normalized = " ".join(str(message or "").casefold().split())

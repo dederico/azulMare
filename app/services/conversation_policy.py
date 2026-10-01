@@ -793,6 +793,25 @@ def should_send_initial_greeting(
     return history_available and not has_prior_conversation_history
 
 
+def assistant_asked_if_emergency(message: str | None) -> bool:
+    """Legacy recovery for sessions created before pending-question state existed."""
+    raw_message = str(message or "")
+    if "?" not in raw_message and "¿" not in raw_message:
+        return False
+    normalized = normalize_policy_text(raw_message)
+    if not normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "es una emergencia",
+            "representa una emergencia",
+            "considerarias una emergencia",
+            "consideras que es una emergencia",
+        )
+    )
+
+
 def classify_emergency_answer(body: str | None) -> bool | None:
     """Classify natural Spanish answers to the bot's emergency question."""
     normalized = normalize_policy_text(body)
@@ -920,6 +939,15 @@ def classify_emergency_declaration(
     if prompted:
         if classified is False:
             return False
+        if re.match(r"^no\s*,?\s*pero\b", normalized):
+            contrasting_clause = re.split(
+                r"^no\s*,?\s*pero\s+",
+                normalized,
+                maxsplit=1,
+            )[-1]
+            if is_active_danger_statement(contrasting_clause):
+                return True
+            return False
         if negated_signal:
             if not effective_normalized:
                 return None
@@ -957,6 +985,25 @@ def classify_emergency_declaration(
         return True
 
     return None
+
+
+def classify_emergency_turn(
+    body: str | None,
+    *,
+    pending_question: str | None,
+    last_assistant_message: str | None = None,
+) -> bool | None:
+    """Resolve one emergency turn from explicit workflow state.
+
+    Prompt wording is only a migration fallback for conversations that began
+    before ``pending_question`` was persisted. New turns must rely on state so
+    copy changes cannot reopen or loop the emergency question.
+    """
+    prompted = (
+        str(pending_question or "").strip().casefold() == "emergency"
+        or assistant_asked_if_emergency(last_assistant_message)
+    )
+    return classify_emergency_declaration(body, prompted=prompted)
 
 
 def is_emergency_related(body: str | None) -> bool:

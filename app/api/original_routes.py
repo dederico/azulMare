@@ -129,11 +129,12 @@ from app.services.conversation_lifecycle import (
 )
 from app.services.conversation_policy import (
     apply_widget_empty_response_fallback,
+    assistant_asked_if_emergency,
     assistant_asked_for_optional_image,
     automatic_report_timeouts_enabled,
     authorize_transfer,
     classify_emergency_answer,
-    classify_emergency_declaration,
+    classify_emergency_turn,
     classify_optional_image_answer,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
@@ -2614,21 +2615,6 @@ def confirm_report_intent(
         source,
         normalized[:240],
     )
-
-
-def assistant_asked_if_emergency(message: str) -> bool:
-    if not message:
-        return False
-
-    normalized = message.lower()
-    patterns = [
-        "es una emergencia",
-        "esto lo considerarías una emergencia",
-        "esto lo considerarias una emergencia",
-        "consideras que es una emergencia",
-        "considerarías que es una emergencia",
-    ]
-    return any(pattern in normalized for pattern in patterns)
 
 
 def classify_emergency_response(body: str) -> bool | None:
@@ -7661,9 +7647,14 @@ async def _process_whatsapp_request(request):
                 body,
                 previous_assistant_message=last_outbound_message,
             )
-            emergency_answer = classify_emergency_declaration(
+            active_report_session = report_sessions.get(from_number, {})
+            pending_intake_question = active_report_session.get(
+                "pending_intake_question"
+            )
+            emergency_answer = classify_emergency_turn(
                 body,
-                prompted=assistant_asked_if_emergency(last_outbound_message),
+                pending_question=pending_intake_question,
+                last_assistant_message=last_outbound_message,
             )
             if emergency_answer is True:
                 # An active emergency is itself report authorization. Persist
@@ -7702,10 +7693,17 @@ async def _process_whatsapp_request(request):
                     report_sessions[from_number]["declared_emergency"] = False
 
             if emergency_answer is not None:
+                with report_sessions_lock:
+                    report_sessions.get(from_number, {}).pop(
+                        "pending_intake_question",
+                        None,
+                    )
                 logger.critical(
-                    "🚨 [EMERGENCY DECLARATION] %s emergencia=%s prompted=%s",
+                    "🚨 [EMERGENCY DECLARATION] %s emergencia=%s "
+                    "pending_question=%s legacy_prompted=%s",
                     from_number,
                     emergency_answer,
+                    pending_intake_question,
                     assistant_asked_if_emergency(last_outbound_message),
                 )
             if has_confirmed_report_intent(from_number):
@@ -7944,9 +7942,17 @@ async def _process_whatsapp_request(request):
                 )
                 if progress.action == "await_emergency_answer":
                     intake_response_override = progress.response
+                    with report_sessions_lock:
+                        active_report_session[
+                            "pending_intake_question"
+                        ] = "emergency"
                 elif progress.action == "ask_field":
                     intake_response_override = progress.response
                     with report_sessions_lock:
+                        active_report_session.pop(
+                            "pending_intake_question",
+                            None,
+                        )
                         active_report_session["pending_finalization_field"] = (
                             progress.field
                         )
@@ -7957,11 +7963,19 @@ async def _process_whatsapp_request(request):
                     intake_response_override = progress.response
                     with report_sessions_lock:
                         active_report_session.pop(
+                            "pending_intake_question",
+                            None,
+                        )
+                        active_report_session.pop(
                             "pending_finalization_field", None
                         )
                 elif progress.action == "submit_emergency":
                     auto_finalize_emergency = True
                     with report_sessions_lock:
+                        active_report_session.pop(
+                            "pending_intake_question",
+                            None,
+                        )
                         active_report_session.pop(
                             "pending_finalization_field", None
                         )

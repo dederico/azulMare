@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from app.services.conversation_policy import (
+    assistant_asked_if_emergency,
     assistant_asked_for_optional_image,
     WIDGET_EMPTY_RESPONSE_FALLBACK,
     OUT_OF_SCOPE_REDIRECT,
@@ -10,6 +11,7 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     classify_emergency_declaration,
+    classify_emergency_turn,
     classify_optional_image_answer,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
@@ -399,6 +401,53 @@ class PublicPhoneValidationTests(unittest.TestCase):
 
 
 class EmergencyClassificationTests(unittest.TestCase):
+    def test_pending_emergency_question_is_authoritative_over_prompt_wording(self):
+        self.assertIs(
+            classify_emergency_turn(
+                "No",
+                pending_question="emergency",
+                last_assistant_message="Texto del prompt que podría cambiar mañana",
+            ),
+            False,
+        )
+
+    def test_current_emergency_prompt_marks_short_no_as_prompted_answer(self):
+        prompt = "¿Esta situación representa una emergencia?"
+
+        self.assertTrue(assistant_asked_if_emergency(prompt))
+        self.assertIs(
+            classify_emergency_declaration(
+                "No",
+                prompted=assistant_asked_if_emergency(prompt),
+            ),
+            False,
+        )
+
+    def test_emergency_statement_is_not_mistaken_for_a_pending_question(self):
+        self.assertFalse(
+            assistant_asked_if_emergency(
+                "Entendido, no es una emergencia. Continuemos con la ubicación."
+            )
+        )
+
+    def test_prompted_no_with_non_emergency_detail_stays_negative(self):
+        self.assertIs(
+            classify_emergency_declaration(
+                "No, pero tiene una bugambilia grande colgando sobre el poste",
+                prompted=True,
+            ),
+            False,
+        )
+
+    def test_prompted_no_but_active_attack_remains_emergency(self):
+        self.assertIs(
+            classify_emergency_declaration(
+                "No, pero me están atacando",
+                prompted=True,
+            ),
+            True,
+        )
+
     def test_natural_negative_answer(self):
         self.assertIs(classify_emergency_answer("No es una emergencia"), False)
 

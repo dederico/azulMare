@@ -3,6 +3,7 @@ import hashlib
 import httpx
 import requests
 import json
+import time
 import html
 from datetime import datetime
 import traceback
@@ -98,6 +99,7 @@ from app.services.monitoring.operational_audit import (
     list_operational_audit_reports,
     generate_operational_audit_snapshot,
 )
+from app.services.runtime_health import collect_runtime_health
 from app.services.conversation_control import (
     activate_human_control,
     consume_human_control,
@@ -6111,12 +6113,27 @@ async def process_chat2desk_webhook_jobs():
         logger.critical("📥 [WEBHOOK WORKER] worker=%s iniciado", worker_number)
         while True:
             job = None
+            processing_started_at = None
+            queue_seconds = None
+            received_at = None
+            transport = "unknown"
+            phone_number = "unknown"
             try:
                 storage = LocalStorage()
                 job = await asyncio.to_thread(claim_webhook_job, storage)
                 if not job:
                     await asyncio.sleep(0.2)
                     continue
+
+                processing_started_at = time.monotonic()
+                payload = job["payload"]
+                transport = str(payload.get("transport") or "wa_direct").strip().casefold()
+                received_at = float(
+                    payload.get("_sam_webhook_received_at")
+                    or job.get("created_at")
+                    or time.time()
+                )
+                queue_seconds = max(0.0, time.time() - received_at)
 
                 phone_number = await asyncio.to_thread(
                     _restore_durable_report_context,
@@ -6148,6 +6165,19 @@ async def process_chat2desk_webhook_jobs():
                     job["id"],
                     job["claim_token"],
                 )
+                processing_seconds = time.monotonic() - processing_started_at
+                logger.info(
+                    "⏱️ [WEBHOOK LATENCY] transport=%s event_key=%s phone=%s "
+                    "queue_seconds=%.3f processing_seconds=%.3f total_seconds=%.3f "
+                    "status=success attempts=%s",
+                    transport,
+                    job["event_key"],
+                    phone_number,
+                    queue_seconds,
+                    processing_seconds,
+                    max(0.0, time.time() - received_at),
+                    job["attempts"],
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -6158,6 +6188,19 @@ async def process_chat2desk_webhook_jobs():
                     error,
                 )
                 if job:
+                    if processing_started_at is not None and received_at is not None:
+                        logger.warning(
+                            "⏱️ [WEBHOOK LATENCY] transport=%s event_key=%s phone=%s "
+                            "queue_seconds=%.3f processing_seconds=%.3f total_seconds=%.3f "
+                            "status=failure attempts=%s",
+                            transport,
+                            job["event_key"],
+                            phone_number,
+                            queue_seconds or 0.0,
+                            time.monotonic() - processing_started_at,
+                            max(0.0, time.time() - received_at),
+                            job["attempts"],
+                        )
                     try:
                         await asyncio.to_thread(
                             fail_webhook_job,
@@ -10809,43 +10852,12 @@ async def report_status_update(request: Request):
         )
 @router.get("/health")
 async def health():
-    import psutil, ping3
-    ls = LocalStorage()
-    configs = ls.GetAll(Config)
-    configs = { c.name: c.value for c in configs }
-
-    domains = json.loads(configs.get("PingDomains")) if 'PingDomains' in configs else []
-    domains.extend([
-        { "name": "AWS", "domain": 'ec2.amazonaws.com'},
-        { "name": "Google", "domain": 'google.com'},
-        { "name": "Twilio", "domain": "chunderw-gll.twilio.com"}
-    ])
-
-    try:
-        temperatures = psutil.sensors_temperatures()
-        if temperatures:
-            temperature = temperatures['coretemp'][0].current
-        else:
-            temperature = False
-    except (AttributeError, KeyError):
-        temperature = False
-    
-    pings = []
-    for domain in domains:
-        ping = ping3.ping(domain["domain"])
-        ping = int(ping * 1000) if ping is not None else False
-        pings.append({ "domain": domain["domain"], "ping": ping, "name": domain["name"] })
-
-    metrics = {
-        'deployment_sha': DEPLOYMENT_SHA,
-        'processor': psutil.cpu_percent(interval=1),
-        'memory': psutil.virtual_memory().percent,
-        'storage': psutil.disk_usage('/').percent,
-        'temperature': temperature,
-        'ping': pings
-    }
-    
-    return metrics
+    return await asyncio.to_thread(
+        collect_runtime_health,
+        DEPLOYMENT_SHA,
+        storage_factory=LocalStorage,
+        config_model=Config,
+    )
 
 
 # ===============================================
@@ -11067,7 +11079,7 @@ async def dedup_status_phone(phone_number: str):
 @router.get("/admin/operational-audit/latest")
 async def operational_audit_latest():
     try:
-        report = read_latest_operational_audit_report()
+        report = await asyncio.to_thread(read_latest_operational_audit_report)
         if not report:
             return JSONResponse(
                 content={
@@ -11094,7 +11106,10 @@ async def operational_audit_latest():
 async def operational_audit_reports(limit: int = 20):
     try:
         safe_limit = max(1, min(limit, 100))
-        reports = list_operational_audit_reports(limit=safe_limit)
+        reports = await asyncio.to_thread(
+            list_operational_audit_reports,
+            limit=safe_limit,
+        )
         return {
             "status": "success",
             "count": len(reports),
@@ -11118,7 +11133,8 @@ async def operational_audit_live(hours: int = 24, phone: str | None = None):
                 content={"status": "error", "message": "Filtro phone inválido"},
                 status_code=400,
             )
-        report = generate_operational_audit_snapshot(
+        report = await asyncio.to_thread(
+            generate_operational_audit_snapshot,
             window_hours=hours,
             phone_number=phone_filter,
         )

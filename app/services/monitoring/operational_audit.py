@@ -59,10 +59,30 @@ LOG_PATTERNS = {
         "[STALE OPERATOR OUTBOX]",
         "[NONAUTHORITATIVE OUTBOX]",
     ],
+    "webhook_latency": ["[WEBHOOK LATENCY]"],
+    "openai_flow_latency": ["[OPENAI FLOW LATENCY]"],
 }
 
-PHONE_PATTERN = re.compile(r"(?:from_number=|for |from )(?P<phone>52\d{10,13})")
+PHONE_PATTERN = re.compile(
+    r"(?:phone=|from_number=|for |from )(?P<phone>52\d{10,13})"
+)
 UID_PATTERN = re.compile(r"uid=(?P<uid>[A-Za-z0-9._:-]+)")
+WEBHOOK_LATENCY_PATTERN = re.compile(
+    r"\[WEBHOOK LATENCY\]\s+"
+    r"transport=(?P<transport>\S+).*?"
+    r"queue_seconds=(?P<queue>\d+(?:\.\d+)?).*?"
+    r"processing_seconds=(?P<processing>\d+(?:\.\d+)?).*?"
+    r"total_seconds=(?P<total>\d+(?:\.\d+)?).*?"
+    r"status=(?P<status>\S+)"
+)
+OPENAI_FLOW_LATENCY_PATTERN = re.compile(
+    r"\[OPENAI FLOW LATENCY\]\s+"
+    r"model=(?P<model>\S+)\s+"
+    r"total_seconds=(?P<total>\d+(?:\.\d+)?)\s+"
+    r"tool_rounds=(?P<rounds>\d+)\s+"
+    r"tool_calls=(?P<calls>\d+)\s+"
+    r"status=(?P<status>\S+)"
+)
 
 
 def _connect(storage: LocalStorage):
@@ -80,6 +100,94 @@ def _safe_int(value) -> int:
         return int(value or 0)
     except Exception:
         return 0
+
+
+def _percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * weight, 3)
+
+
+def _latency_bucket(samples: list[dict]) -> dict:
+    result = {
+        "count": len(samples),
+        "status_counts": dict(Counter(sample["status"] for sample in samples)),
+    }
+    for metric in ("queue_seconds", "processing_seconds", "total_seconds"):
+        values = [float(sample[metric]) for sample in samples]
+        result[metric] = {
+            "p50": _percentile(values, 0.50),
+            "p95": _percentile(values, 0.95),
+            "p99": _percentile(values, 0.99),
+            "max": round(max(values), 3) if values else None,
+        }
+    return result
+
+
+def _summarize_webhook_latency(lines: list[str]) -> dict:
+    samples = []
+    by_transport: dict[str, list[dict]] = {}
+    for line in lines:
+        match = WEBHOOK_LATENCY_PATTERN.search(line)
+        if not match:
+            continue
+        sample = {
+            "transport": match.group("transport"),
+            "queue_seconds": float(match.group("queue")),
+            "processing_seconds": float(match.group("processing")),
+            "total_seconds": float(match.group("total")),
+            "status": match.group("status"),
+        }
+        samples.append(sample)
+        by_transport.setdefault(sample["transport"], []).append(sample)
+
+    return {
+        "all": _latency_bucket(samples),
+        "by_transport": {
+            transport: _latency_bucket(transport_samples)
+            for transport, transport_samples in sorted(by_transport.items())
+        },
+    }
+
+
+def _summarize_openai_flow_latency(lines: list[str]) -> dict:
+    samples = []
+    for line in lines:
+        match = OPENAI_FLOW_LATENCY_PATTERN.search(line)
+        if not match:
+            continue
+        samples.append(
+            {
+                "total_seconds": float(match.group("total")),
+                "tool_rounds": int(match.group("rounds")),
+                "tool_calls": int(match.group("calls")),
+                "status": match.group("status"),
+            }
+        )
+    totals = [sample["total_seconds"] for sample in samples]
+    return {
+        "count": len(samples),
+        "status_counts": dict(Counter(sample["status"] for sample in samples)),
+        "total_seconds": {
+            "p50": _percentile(totals, 0.50),
+            "p95": _percentile(totals, 0.95),
+            "p99": _percentile(totals, 0.99),
+            "max": round(max(totals), 3) if totals else None,
+        },
+        "max_tool_rounds": max(
+            (sample["tool_rounds"] for sample in samples),
+            default=0,
+        ),
+        "max_tool_calls": max(
+            (sample["tool_calls"] for sample in samples),
+            default=0,
+        ),
+    }
 
 
 def _load_db_metrics(
@@ -306,6 +414,8 @@ def _read_recent_log_signals(phone_number: str | None = None) -> dict:
         "samples": {key: [] for key in LOG_PATTERNS},
         "error_lines": [],
         "phone_lines": [],
+        "webhook_latency": _summarize_webhook_latency([]),
+        "openai_flow_latency": _summarize_openai_flow_latency([]),
     }
 
     if os.environ.get("LOG_TO_FILE", "").lower() != "true":
@@ -324,6 +434,7 @@ def _read_recent_log_signals(phone_number: str | None = None) -> dict:
     readable_paths = rotated_paths + ([log_path] if log_path.exists() else [])
 
     if not readable_paths:
+        result["webhook_latency"] = _summarize_webhook_latency([])
         return result
 
     try:
@@ -376,6 +487,8 @@ def _read_recent_log_signals(phone_number: str | None = None) -> dict:
 
     result["behavior"] = behavior
     result["raw_lines"] = lines
+    result["webhook_latency"] = _summarize_webhook_latency(lines)
+    result["openai_flow_latency"] = _summarize_openai_flow_latency(lines)
     return result
 
 
@@ -603,6 +716,29 @@ def _build_findings(metrics: dict, log_signals: dict, window_hours: int) -> list
             f"ALERTA: se recuperaron {log_signals['counts'].get('widget_empty_response', 0)} respuestas vacías del widget mediante una respuesta segura."
         )
 
+    widget_latency = (
+        (log_signals.get("webhook_latency") or {})
+        .get("by_transport", {})
+        .get("widget", {})
+    )
+    widget_total_p95 = (widget_latency.get("total_seconds") or {}).get("p95")
+    widget_queue_p95 = (widget_latency.get("queue_seconds") or {}).get("p95")
+    if widget_total_p95 is not None and widget_total_p95 > 10:
+        findings.append(
+            f"ALERTA: latencia p95 del widget={widget_total_p95:.3f}s; supera el objetivo de 10s."
+        )
+    if widget_queue_p95 is not None and widget_queue_p95 > 2:
+        findings.append(
+            f"ALERTA: espera p95 en cola del widget={widget_queue_p95:.3f}s; revisar saturacion de workers."
+        )
+
+    openai_latency = log_signals.get("openai_flow_latency") or {}
+    openai_total_p95 = (openai_latency.get("total_seconds") or {}).get("p95")
+    if openai_total_p95 is not None and openai_total_p95 > 10:
+        findings.append(
+            f"ALERTA: latencia p95 del flujo OpenAI={openai_total_p95:.3f}s; revisar rondas de tools y modelo."
+        )
+
     if log_signals["counts"].get("report_payload_validation", 0) > 0:
         findings.append(
             "ALERTA: se bloquearon "
@@ -721,6 +857,45 @@ def _render_report(
     lines.append(f"- outbound: {_safe_int(metrics.get('message_totals', {}).get('outbound'))}")
     lines.append(f"- system: {_safe_int(metrics.get('message_totals', {}).get('system'))}")
     lines.append(f"- unique_numbers: {_safe_int(metrics.get('unique_numbers'))}")
+
+    lines.append("")
+    lines.append("LATENCIA WEBHOOK (MUESTRA RECIENTE DE LOGS)")
+    latency_by_transport = (
+        (log_signals.get("webhook_latency") or {}).get("by_transport") or {}
+    )
+    if latency_by_transport:
+        for transport, latency in latency_by_transport.items():
+            lines.append(
+                f"- {transport}: count={latency.get('count', 0)} "
+                f"status={latency.get('status_counts', {})}"
+            )
+            for metric in ("queue_seconds", "processing_seconds", "total_seconds"):
+                values = latency.get(metric) or {}
+                lines.append(
+                    f"  {metric}: p50={values.get('p50')}s "
+                    f"p95={values.get('p95')}s p99={values.get('p99')}s "
+                    f"max={values.get('max')}s"
+                )
+    else:
+        lines.append("- sin muestras; estarán disponibles tras desplegar la instrumentación")
+
+    lines.append("")
+    lines.append("LATENCIA OPENAI (MUESTRA RECIENTE DE LOGS)")
+    openai_latency = log_signals.get("openai_flow_latency") or {}
+    if openai_latency.get("count"):
+        values = openai_latency.get("total_seconds") or {}
+        lines.append(
+            f"- count={openai_latency.get('count')} "
+            f"status={openai_latency.get('status_counts', {})} "
+            f"p50={values.get('p50')}s p95={values.get('p95')}s "
+            f"p99={values.get('p99')}s max={values.get('max')}s"
+        )
+        lines.append(
+            f"- max_tool_rounds={openai_latency.get('max_tool_rounds')} "
+            f"max_tool_calls={openai_latency.get('max_tool_calls')}"
+        )
+    else:
+        lines.append("- sin muestras; estarán disponibles tras desplegar la instrumentación")
 
     lines.append("")
     lines.append("TOP NUMBERS")
@@ -941,7 +1116,7 @@ async def operational_audit_scheduler():
 
     while True:
         try:
-            report_path = generate_operational_audit_report()
+            report_path = await asyncio.to_thread(generate_operational_audit_report)
             logger.info("[AUDIT] Resumen operativo actualizado: %s", report_path)
         except Exception as exc:
             logger.exception("[AUDIT] Error generando reporte operativo: %s", exc)

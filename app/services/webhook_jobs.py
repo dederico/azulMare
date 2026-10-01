@@ -191,7 +191,8 @@ def claim_webhook_job(storage, *, stale_after_seconds: float = 300) -> dict[str,
                 FROM candidate
                 WHERE jobs.id = candidate.id
                 RETURNING jobs.id, jobs.event_key, jobs.payload,
-                          jobs.query_params, jobs.attempts, jobs.claim_token
+                          jobs.query_params, jobs.attempts, jobs.claim_token,
+                          jobs.created_at
                 """,
                 (
                     timestamp,
@@ -213,6 +214,7 @@ def claim_webhook_job(storage, *, stale_after_seconds: float = 300) -> dict[str,
             "query_params": row[3] or {},
             "attempts": int(row[4]),
             "claim_token": row[5],
+            "created_at": float(row[6]),
         }
     finally:
         if conn is not None:

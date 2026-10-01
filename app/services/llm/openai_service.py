@@ -517,6 +517,9 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         return outputs
 
     async def _generate_response_via_responses(self) -> str:
+        flow_started_at = time.monotonic()
+        completed_tool_rounds = 0
+        total_tool_calls = 0
         model = DEFAULT_OPENAI_MODEL
         tools_payload = self._responses_tools_payload()
         self._log_tools_payload(
@@ -536,38 +539,59 @@ Proporciona un resumen breve pero completo que capture los puntos principales de
         instructions, response_input = self._responses_instructions_and_input()
         max_tool_rounds = int(self.config.get("max_tool_rounds", 8))
 
-        for tool_round in range(max_tool_rounds + 1):
-            response = await self._create_response_with_local_retry(
-                model=model,
-                instructions=instructions,
-                input=response_input,
-                reasoning={"effort": self._reasoning_effort()},
-                tools=tools_payload,
-                tool_choice="auto",
-                parallel_tool_calls=False,
-                store=False,
-                include=["reasoning.encrypted_content"],
-            )
-            calls = self._response_function_calls(response)
-            if not calls:
-                full_message = self._response_output_text(response)
-                logger.critical(
-                    "🧠 [LLM TRACE] responses_final tool_rounds=%s response=%s",
-                    tool_round,
-                    self._preview_text(full_message),
+        try:
+            for tool_round in range(max_tool_rounds + 1):
+                response = await self._create_response_with_local_retry(
+                    model=model,
+                    instructions=instructions,
+                    input=response_input,
+                    reasoning={"effort": self._reasoning_effort()},
+                    tools=tools_payload,
+                    tool_choice="auto",
+                    parallel_tool_calls=False,
+                    store=False,
+                    include=["reasoning.encrypted_content"],
                 )
-                return full_message
+                calls = self._response_function_calls(response)
+                if not calls:
+                    full_message = self._response_output_text(response)
+                    logger.critical(
+                        "🧠 [LLM TRACE] responses_final tool_rounds=%s response=%s",
+                        tool_round,
+                        self._preview_text(full_message),
+                    )
+                    logger.info(
+                        "⏱️ [OPENAI FLOW LATENCY] model=%s total_seconds=%.3f "
+                        "tool_rounds=%s tool_calls=%s status=success",
+                        model,
+                        time.monotonic() - flow_started_at,
+                        completed_tool_rounds,
+                        total_tool_calls,
+                    )
+                    return full_message
 
-            if tool_round >= max_tool_rounds:
-                raise RuntimeError(
-                    f"Se excedió el máximo de {max_tool_rounds} rondas de tools."
+                total_tool_calls += len(calls)
+                if tool_round >= max_tool_rounds:
+                    raise RuntimeError(
+                        f"Se excedió el máximo de {max_tool_rounds} rondas de tools."
+                    )
+
+                response_input.extend(
+                    self._serialize_response_item(item)
+                    for item in (self._item_value(response, "output", []) or [])
                 )
-
-            response_input.extend(
-                self._serialize_response_item(item)
-                for item in (self._item_value(response, "output", []) or [])
+                response_input.extend(await self._execute_response_tool_calls(calls))
+                completed_tool_rounds += 1
+        except Exception:
+            logger.warning(
+                "⏱️ [OPENAI FLOW LATENCY] model=%s total_seconds=%.3f "
+                "tool_rounds=%s tool_calls=%s status=failure",
+                model,
+                time.monotonic() - flow_started_at,
+                completed_tool_rounds,
+                total_tool_calls,
             )
-            response_input.extend(await self._execute_response_tool_calls(calls))
+            raise
 
         raise RuntimeError("Responses API terminó sin producir una respuesta")
 

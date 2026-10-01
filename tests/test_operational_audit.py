@@ -9,10 +9,80 @@ from unittest.mock import patch
 database_stub = types.ModuleType("app.util.database")
 database_stub.LocalStorage = object
 with patch.dict(sys.modules, {"app.util.database": database_stub}):
-    from app.services.monitoring.operational_audit import _read_recent_log_signals
+    from app.services.monitoring.operational_audit import (
+        _read_recent_log_signals,
+        _summarize_openai_flow_latency,
+        _summarize_webhook_latency,
+    )
 
 
 class OperationalAuditSignalTests(unittest.TestCase):
+    def test_openai_flow_latency_includes_tool_rounds(self):
+        summary = _summarize_openai_flow_latency(
+            [
+                "INFO [OPENAI FLOW LATENCY] model=gpt-test total_seconds=2.000 "
+                "tool_rounds=0 tool_calls=0 status=success",
+                "INFO [OPENAI FLOW LATENCY] model=gpt-test total_seconds=12.000 "
+                "tool_rounds=3 tool_calls=4 status=success",
+            ]
+        )
+
+        self.assertEqual(summary["count"], 2)
+        self.assertEqual(summary["total_seconds"]["p95"], 11.5)
+        self.assertEqual(summary["max_tool_rounds"], 3)
+        self.assertEqual(summary["max_tool_calls"], 4)
+
+    def test_webhook_latency_is_aggregated_by_transport(self):
+        lines = [
+            "INFO [WEBHOOK LATENCY] transport=widget event_key=a "
+            "queue_seconds=1.000 processing_seconds=4.000 total_seconds=5.000 "
+            "status=success attempts=1",
+            "INFO [WEBHOOK LATENCY] transport=widget event_key=b "
+            "queue_seconds=3.000 processing_seconds=8.000 total_seconds=11.000 "
+            "status=success attempts=1",
+            "INFO [WEBHOOK LATENCY] transport=wa_direct event_key=c "
+            "queue_seconds=0.500 processing_seconds=2.000 total_seconds=2.500 "
+            "status=failure attempts=2",
+        ]
+
+        summary = _summarize_webhook_latency(lines)
+
+        self.assertEqual(summary["all"]["count"], 3)
+        self.assertEqual(summary["by_transport"]["widget"]["count"], 2)
+        self.assertEqual(
+            summary["by_transport"]["widget"]["total_seconds"]["p50"],
+            8.0,
+        )
+        self.assertEqual(
+            summary["by_transport"]["widget"]["total_seconds"]["p95"],
+            10.7,
+        )
+        self.assertEqual(
+            summary["by_transport"]["wa_direct"]["status_counts"]["failure"],
+            1,
+        )
+
+    def test_log_reader_exposes_webhook_latency_summary(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write(
+                "INFO [WEBHOOK LATENCY] transport=widget event_key=a "
+                "queue_seconds=1.000 processing_seconds=4.000 total_seconds=5.000 "
+                "status=success attempts=1\n"
+            )
+            handle.flush()
+            with patch.dict(
+                os.environ,
+                {"LOG_TO_FILE": "true", "LOG_FILE": handle.name},
+                clear=False,
+            ):
+                signals = _read_recent_log_signals()
+
+        self.assertEqual(signals["counts"]["webhook_latency"], 1)
+        self.assertEqual(
+            signals["webhook_latency"]["by_transport"]["widget"]["total_seconds"]["p95"],
+            5.0,
+        )
+
     def test_generic_connect_timeout_is_not_mislabeled_as_openai(self):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
             handle.write("2026-09-08 - DEBUG - connect_tcp.failed exception=ConnectTimeout()\n")

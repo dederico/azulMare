@@ -241,6 +241,23 @@ def normalize_report_text(value: str | None) -> str:
     return " ".join(text.casefold().split())
 
 
+def extract_citizen_reply_text(value: str | None) -> str:
+    """Remove Chat2Desk's quoted assistant block from a citizen reply.
+
+    Chat2Desk serializes some WhatsApp replies as ``« assistant text » reply``.
+    The quoted block is conversation context, not citizen-authored evidence.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    quoted_reply = re.fullmatch(
+        r"\s*«.*?»\s*(.+?)\s*",
+        raw,
+        flags=re.DOTALL,
+    )
+    return quoted_reply.group(1).strip() if quoted_reply else raw
+
+
 def sanitize_report_description(value: str | None) -> str:
     """Remove known SAM operational prose from a CIAC explanation.
 
@@ -250,7 +267,7 @@ def sanitize_report_description(value: str | None) -> str:
     problem wording while removing only the exact operational templates that
     SAM generated.
     """
-    text = " ".join(str(value or "").split()).strip()
+    text = " ".join(extract_citizen_reply_text(value).split()).strip()
     if not text:
         return ""
 
@@ -281,7 +298,7 @@ def build_ciac_report_summary(
     number: str | None,
     neighborhood: str | None,
     *,
-    max_length: int = 750,
+    max_length: int = 400,
 ) -> str:
     """Build the concise municipal summary sent only in CIAC's report field.
 
@@ -346,7 +363,33 @@ def build_ciac_report_summary(
         clauses.append(clause)
         normalized_clauses.append(normalized)
 
-    problem = ". ".join(clauses).strip(" .")
+    # ``selection4`` can contain several citizen turns from legacy sessions.
+    # CIAC needs a concise explanation, not that accumulated transcript. Keep
+    # only the strongest concrete problem statement; the structured address is
+    # appended independently below.
+    def clause_score(item: tuple[int, str]) -> tuple[int, int]:
+        index, clause = item
+        normalized = normalize_report_text(clause)
+        score = min(len(normalized), 180)
+        if any(
+            re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", normalized)
+            for keyword in HIGH_CONFIDENCE_REPORT_CATEGORIES
+        ):
+            score += 140
+        if any(signal in normalized for signal in PROBLEM_SIGNAL_WORDS):
+            score += 80
+        # Answers such as "No, los carros..." explain a workflow question but
+        # are weaker than the citizen's direct statement of the problem. Do not
+        # penalize concrete negatives such as "no hay" or "no funciona".
+        if re.match(r"^(?:si|no)[,;:]\s+", normalized) and not normalized.startswith(
+            ("no hay ", "no funciona ", "no sirve ", "no existe ")
+        ):
+            score -= 160
+        # Prefer the earliest equally useful statement; it is normally the
+        # citizen's initial, complete description.
+        return score, -index
+
+    problem = max(enumerate(clauses), key=clause_score)[1].strip(" .") if clauses else ""
     if not problem:
         problem = cleaned.strip(" .")
     # A generic location tail adds no problem detail and would otherwise yield
@@ -688,12 +731,32 @@ def is_likely_report_description(
         return False
     if is_report_intent_only(value):
         return False
+
+    # A problem keyword inside an answer to a structured workflow question
+    # does not turn that answer into the report description. The requested
+    # field owns the turn; selection4 must not become a transcript accumulator.
+    previous = normalize_report_text(previous_assistant_message)
+    asked_for_structured_non_problem_field = any(
+        phrase in previous
+        for phrase in (
+            "cual es la calle",
+            "en que calle",
+            "numero exterior",
+            "cual es el numero",
+            "en que colonia",
+            "cual es la colonia",
+            "deseas agregar una imagen",
+            "quieres agregar una imagen",
+            "cual es tu nombre",
+        )
+    )
+    if asked_for_structured_non_problem_field:
+        return False
     if infer_high_confidence_report_category(value):
         return True
     if any(signal in normalized for signal in PROBLEM_SIGNAL_WORDS):
         return True
 
-    previous = normalize_report_text(previous_assistant_message)
     asked_for_problem = any(
         phrase in previous
         for phrase in (

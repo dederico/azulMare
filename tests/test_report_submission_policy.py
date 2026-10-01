@@ -9,6 +9,7 @@ from app.services.report_submission_policy import (
     contains_complete_report_phrase,
     establishes_report_intent,
     extract_pending_report_answers,
+    extract_citizen_reply_text,
     extract_report_field_answer,
     fallback_report_category_id,
     infer_high_confidence_report_category,
@@ -213,6 +214,40 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             "321, colonia Centro.",
         )
 
+    def test_ciac_summary_uses_one_key_statement_instead_of_accumulated_chat(self):
+        accumulated = (
+            "« Entiendo que los troncos y ramas quedaron en la calle y la "
+            "banqueta. ¿Hay algún riesgo inmediato o no es una emergencia? » "
+            "No, los carros las han arrojado hacia los lados, pero creo alguien "
+            "tiene que recogerlas. Buenas tardes! El domingo vinieron los de la "
+            "CFE a cortar unas ramas de arboles afuera de mi casa y dejaron lleno "
+            "de troncos y ramas tiradas. Las ramas. En la calle, banqueta"
+        )
+
+        self.assertEqual(
+            build_ciac_report_summary(
+                accumulated,
+                "San José",
+                "0000",
+                "Residencial Santa Barbara",
+            ),
+            "Se reporta que el domingo vinieron los de la CFE a cortar unas ramas "
+            "de arboles afuera de mi casa y dejaron lleno de troncos y ramas "
+            "tiradas en San José, colonia Residencial Santa Barbara.",
+        )
+
+    def test_ciac_summary_preserves_concrete_negative_problem(self):
+        self.assertEqual(
+            build_ciac_report_summary(
+                "No hay luminarias en la calle. No, ya revisé dos veces",
+                "Vasconcelos",
+                "321",
+                "Centro",
+            ),
+            "Se reporta que no hay luminarias en Vasconcelos 321, "
+            "colonia Centro.",
+        )
+
     def test_ciac_summary_removes_conversational_leading_filler(self):
         self.assertEqual(
             build_ciac_report_summary(
@@ -384,6 +419,51 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertEqual(
             description,
             "Hay un bache frente a mi casa. Cada día se hace más profundo",
+        )
+
+    def test_chat2desk_quote_is_context_not_citizen_description(self):
+        message = (
+            "« Entiendo que las ramas quedaron en la calle. "
+            "¿Hay algún riesgo inmediato? »\n"
+            "No, los carros las han arrojado hacia los lados"
+        )
+
+        self.assertEqual(
+            extract_citizen_reply_text(message),
+            "No, los carros las han arrojado hacia los lados",
+        )
+        self.assertEqual(
+            sanitize_report_description(message),
+            "No, los carros las han arrojado hacia los lados",
+        )
+
+    def test_structured_field_answer_does_not_expand_description(self):
+        self.assertFalse(
+            is_likely_report_description(
+                "Las ramas",
+                previous_assistant_message=(
+                    "¿Cuál es el número exterior? Si no existe, indica sin número."
+                ),
+            )
+        )
+
+    def test_best_problem_turn_excludes_later_workflow_answers(self):
+        description = select_citizen_report_description(
+            [
+                (
+                    "user",
+                    "El domingo la CFE cortó árboles y dejó troncos y ramas tiradas",
+                ),
+                ("assistant", "¿Cuál es el número exterior?"),
+                ("user", "Las ramas"),
+                ("assistant", "¿En qué colonia se encuentra el problema?"),
+                ("user", "Residencial Santa Bárbara"),
+            ]
+        )
+
+        self.assertEqual(
+            description,
+            "El domingo la CFE cortó árboles y dejó troncos y ramas tiradas",
         )
 
     def test_generic_legacy_description_is_replaced_by_citizen_message(self):

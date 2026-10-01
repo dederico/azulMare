@@ -178,6 +178,7 @@ from app.services.report_submission_policy import (
     establishes_report_intent,
     extract_pending_report_answers,
     extract_report_field_answer,
+    extract_citizen_reply_text,
     fallback_report_category_id,
     infer_high_confidence_report_category,
     infer_unsolicited_report_answers,
@@ -2931,6 +2932,7 @@ def capture_citizen_report_evidence(
     previous_assistant_message: str | None = None,
 ) -> None:
     """Persist grounded report evidence without treating workflow answers as facts."""
+    citizen_message = extract_citizen_reply_text(citizen_message)
     inferred_code = infer_high_confidence_report_category(citizen_message)
     establishes_intent = establishes_report_intent(citizen_message)
     if not has_confirmed_report_intent(from_number) and not establishes_intent:
@@ -3076,10 +3078,10 @@ def reconcile_report_fields_with_citizen_evidence(
 
     transcript_description = select_citizen_report_description(conversation_turns)
     if transcript_description:
-        citizen_description = merge_citizen_report_description(
-            citizen_description,
-            transcript_description,
-        )
+        # selection4 is one faithful problem statement, not a transcript. Pick
+        # the strongest citizen-authored turn instead of concatenating every
+        # later workflow answer onto the description sent to CIAC.
+        citizen_description = transcript_description
 
     if not is_meaningful_report_description(citizen_description):
         citizen_description = selection4

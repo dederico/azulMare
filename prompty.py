@@ -114,7 +114,7 @@ CAMPOS PARA save_client_selection2:
 - selection1: Valor numérico del tipo de reporte
 - selection2: Copia exacta de {customer_name}; nunca uses otro mensaje del ciudadano como nombre
 - selection3: "" (siempre cadena vacía)
-- selection4: Hechos concretos del problema, sin saludos, frases de intención, repeticiones ni ubicación; la calle, número y colonia van únicamente en selection5, selection6 y selection7
+- selection4: Una sola oración breve y fiel que resuma el problema clave, sin saludos, frases de intención, preguntas o respuestas operativas, repeticiones ni ubicación. No acumules el historial de la conversación. La calle, número y colonia van únicamente en selection5, selection6 y selection7
 - selection5: Calle, cruce o referencia proporcionada
 - selection6: Número proporcionado; si no existe, no lo conoce o es una emergencia sin número, usar "0000"
 - selection7: Colonia proporcionada; es obligatoria únicamente en reportes NO-emergencia. En emergencia puede ser "", pero NUNCA debe ser "0000"

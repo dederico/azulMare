@@ -13,6 +13,7 @@ from app.services.conversation_policy import (
     classify_emergency_declaration,
     classify_emergency_turn,
     classify_optional_image_answer,
+    classify_handoff_signal,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
@@ -42,6 +43,8 @@ from app.services.conversation_policy import (
     should_send_initial_greeting,
     should_suppress_recent_post_folio_input,
     should_suppress_repeated_report_question,
+    should_resolve_handoff_semantically,
+    validate_structured_handoff_decision,
     validate_structured_emergency_decision,
     validate_structured_optional_image_decision,
 )
@@ -1115,6 +1118,67 @@ class TransferAuthorizationTests(unittest.TestCase):
                 "¿Deseas agregar una imagen al reporte?",
             )
         )
+
+    def test_standalone_human_control_words_are_complete_requests(self):
+        for message in (
+            "AGENTE",
+            "Representante",
+            "humano",
+            "asesor",
+            "operador",
+            "ejecutivo",
+            "TRANSFERENCIA",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(classify_handoff_signal(message, ""), "yes")
+
+    def test_structural_human_request_does_not_depend_on_an_exact_phrase(self):
+        for message in (
+            "Quiero que me atienda una persona",
+            "¿Me comunican con un asesor por favor?",
+            "Necesito hablar con alguien de Atención Ciudadana",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(classify_handoff_signal(message, ""), "yes")
+
+    def test_contextual_rejection_is_a_deterministic_no(self):
+        previous = "¿Deseas que te comunique con un agente humano?"
+        for message in ("No", "No gracias", "Mejor no"):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    classify_handoff_signal(message, previous),
+                    "no",
+                )
+
+    def test_free_language_is_delegated_to_semantic_decision(self):
+        message = "POR QUE NO LO PONEN EN STAND BY O RESPONDE UN HUMANO"
+        self.assertEqual(classify_handoff_signal(message, ""), "unclear")
+        self.assertTrue(should_resolve_handoff_semantically(message, ""))
+
+    def test_contextual_free_language_is_delegated_without_exact_confirmation(self):
+        previous = "Puedo comunicarte con un agente de Atención Ciudadana."
+        message = "Eso estaría mucho mejor, gracias"
+        self.assertEqual(
+            classify_handoff_signal(message, previous),
+            "unclear",
+        )
+        self.assertTrue(
+            should_resolve_handoff_semantically(message, previous)
+        )
+
+    def test_unrelated_person_narrative_is_not_a_direct_handoff(self):
+        message = "Hay una persona tirando basura en la calle"
+        self.assertEqual(classify_handoff_signal(message, ""), "unclear")
+        self.assertFalse(should_resolve_handoff_semantically(message, ""))
+
+    def test_structured_handoff_decision_has_a_closed_vocabulary(self):
+        self.assertEqual(validate_structured_handoff_decision("YES"), "yes")
+        self.assertEqual(validate_structured_handoff_decision("no"), "no")
+        self.assertEqual(
+            validate_structured_handoff_decision("Unclear"),
+            "unclear",
+        )
+        self.assertIsNone(validate_structured_handoff_decision("tal vez"))
 
 
 if __name__ == "__main__":

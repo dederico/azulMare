@@ -64,6 +64,11 @@ from app.services.image_analysis import (
     analyze_image_url,
     build_conversational_image_acknowledgement,
     build_image_acknowledgement,
+    classify_image_conversation_intent,
+    promote_pending_report_images,
+    route_inbound_image,
+    stage_pending_report_image,
+    should_preserve_unconfirmed_image_context,
 )
 
 
@@ -2572,10 +2577,13 @@ def create_or_update_report_session(from_number):
             report_sessions[from_number] = {
                 "images": [],
                 "image_descriptions": [],
+                "pending_images": [],
+                "pending_image_descriptions": [],
                 "location": None,
                 "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
                 "image_prompted": False,
                 "image_decision": None,
+                "awaiting_report_image": False,
                 "declared_emergency": None,
                 "citizen_report_messages": [],
                 "report_intent_confirmed": False,
@@ -2613,6 +2621,7 @@ def confirm_report_intent(
     with report_sessions_lock:
         session = report_sessions[from_number]
         session["report_intent_confirmed"] = True
+        promote_pending_report_images(session)
         messages = session.setdefault("citizen_report_messages", [])
         if normalized and normalized not in messages:
             messages.append(normalized)
@@ -6048,6 +6057,18 @@ def _restore_durable_report_context(storage, payload):
             if report_session_has_confirmed_intent(restored_session):
                 restored_session["report_intent_confirmed"] = True
                 report_sessions[phone_number] = restored_session
+            elif should_preserve_unconfirmed_image_context(restored_session):
+                # Pending media is safe to retain but does not itself activate
+                # a report. The next turn/model decision must still resolve
+                # the citizen's intent before CIAC can be called.
+                restored_session["report_intent_confirmed"] = False
+                report_sessions[phone_number] = restored_session
+                logger.info(
+                    "🖼️ [PENDING IMAGE STATE RESTORED] phone=%s pending=%s awaiting=%s",
+                    phone_number,
+                    len(restored_session.get("pending_images") or []),
+                    bool(restored_session.get("awaiting_report_image")),
+                )
             else:
                 # State created only by media/emergency/location in older
                 # deployments is unsafe and must not survive a worker hop.
@@ -7264,14 +7285,10 @@ async def _process_whatsapp_request(request):
         # Ahora procesar las imágenes cuando ya tenemos from_number
         fotos_urls = get_images_from_payload(payload)
 
-        # Si hay un reporte en progreso, añadir las imágenes a su lista
-        if has_confirmed_report_intent(from_number) and fotos_urls:
-            for foto_url in fotos_urls:
-                if foto_url not in report_sessions[from_number]["images"]:
-                    report_sessions[from_number]["images"].append(foto_url)
-                    report_sessions[from_number]["image_descriptions"].append("Imagen adicional")
-                    report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
-                    logger.info(f"Imagen añadida al reporte en progreso para {from_number}")
+        # La rama de medios guarda primero cada foto como pendiente y decide
+        # después, usando el contexto, si pertenece al reporte. No adjuntar aquí:
+        # hacerlo antes del análisis dividía el estado entre workers y perdía
+        # imágenes cuando la intención aún no estaba confirmada localmente.
 
         # fotos_urls = []
         # # Si hay una foto en este mensaje, guardarla
@@ -8706,39 +8723,117 @@ async def _process_whatsapp_request(request):
                     )
 
                 try:
-                    # Analizar la imagen con rate limiting
-                    image_description = await analyze_image_with_rate_limit(client, photo_url)
+                    # Conservar primero la foto. Aunque el estado local todavía
+                    # no sepa si es reporte o consulta, nunca se le pide al
+                    # ciudadano que la vuelva a enviar.
+                    create_or_update_report_session(from_number)
+                    with report_sessions_lock:
+                        image_session = report_sessions[from_number]
+                        stage_pending_report_image(
+                            image_session,
+                            photo_url,
+                            None,
+                        )
+                        image_session["timestamp"] = datetime.now(
+                            pytz.timezone('America/Mexico_City')
+                        )
+                        awaiting_report_image = bool(
+                            image_session.get("awaiting_report_image")
+                            or assistant_asked_for_optional_image(
+                                last_outbound_message
+                            )
+                        )
+                        if awaiting_report_image:
+                            image_session["awaiting_report_image"] = True
 
-                    if has_confirmed_report_intent(from_number):
+                    report_intent_confirmed = has_confirmed_report_intent(
+                        from_number
+                    )
+                    recent_image_context = [
+                        {
+                            "role": (
+                                "user"
+                                if getattr(message, "direction", "") == "inbound"
+                                else "assistant"
+                            ),
+                            "content": getattr(message, "message", "") or "",
+                        }
+                        for message in preloaded_messages_db[-12:]
+                        if getattr(message, "message", None)
+                    ]
+
+                    if report_intent_confirmed or awaiting_report_image:
+                        image_description = await analyze_image_with_rate_limit(
+                            client,
+                            photo_url,
+                        )
+                        semantic_image_decision = "unclear"
+                    else:
+                        (
+                            image_description,
+                            semantic_image_decision,
+                        ) = await asyncio.gather(
+                            analyze_image_with_rate_limit(client, photo_url),
+                            classify_image_conversation_intent(
+                                client,
+                                recent_image_context,
+                            ),
+                        )
+
+                    with report_sessions_lock:
+                        image_session = report_sessions[from_number]
+                        stage_pending_report_image(
+                            image_session,
+                            photo_url,
+                            image_description,
+                        )
+
+                    image_destination = route_inbound_image(
+                        report_intent_confirmed=report_intent_confirmed,
+                        awaiting_report_image=awaiting_report_image,
+                        semantic_decision=semantic_image_decision,
+                    )
+
+                    if image_destination == "report":
+                        if not report_intent_confirmed:
+                            citizen_context = " | ".join(
+                                str(item["content"]).strip()
+                                for item in recent_image_context[-8:]
+                                if item["role"] == "user"
+                                and str(item["content"]).strip()
+                            )
+                            confirm_report_intent(
+                                from_number,
+                                citizen_context or "Imagen enviada para el reporte",
+                                source=(
+                                    "visible_report_image_prompt"
+                                    if awaiting_report_image
+                                    else "semantic_image_context"
+                                ),
+                            )
+
+                        with report_sessions_lock:
+                            session = report_sessions[from_number]
+                            promote_pending_report_images(session)
+                            session["image_prompted"] = True
+                            session["image_decision"] = "yes"
+                            session["awaiting_report_image"] = False
+                            session["timestamp"] = datetime.now(
+                                pytz.timezone('America/Mexico_City')
+                            )
+
                         previous = get_user_answer(from_number, "selection8") or ""
                         updated_list = [
                             url.strip() for url in previous.split(",") if url.strip()
                         ]
-                        if photo_url not in updated_list:
-                            updated_list.append(photo_url)
+                        for report_image in session.get("images") or []:
+                            if report_image not in updated_list:
+                                updated_list.append(report_image)
                         save_user_answer(
                             from_number,
                             "selection8",
                             ",".join(updated_list),
                         )
-
-                        # Añadir la imagen exclusivamente al reporte confirmado.
-                        session = report_sessions[from_number]
-                        if isinstance(photo_url, str) and (
-                            photo_url.startswith("http")
-                            or "storage.chat2desk.com" in photo_url
-                        ):
-                            if photo_url not in session["images"]:
-                                session["images"].append(photo_url)
-                                session["image_descriptions"].append(image_description)
-                                session["timestamp"] = datetime.now(
-                                    pytz.timezone('America/Mexico_City')
-                                )
-                        else:
-                            logger.error(
-                                "URL de imagen inválida: %s...",
-                                str(photo_url)[:50],
-                            )
 
                         num_images = len(session["images"])
                         first_description = (
@@ -8752,9 +8847,11 @@ async def _process_whatsapp_request(request):
                             num_images,
                         )
                         logger.info(
-                            "Imagen #%s añadida al reporte confirmado para %s",
+                            "Imagen #%s añadida al reporte para %s route=%s semantic=%s",
                             num_images,
                             from_number,
+                            image_destination,
+                            semantic_image_decision,
                         )
                     else:
                         body = build_conversational_image_acknowledgement(
@@ -8762,9 +8859,11 @@ async def _process_whatsapp_request(request):
                             image_description,
                         )
                         logger.critical(
-                            "🖼️ [CONVERSATIONAL IMAGE] phone=%s image not attached "
-                            "because report intent is unconfirmed",
+                            "🖼️ [PENDING CONVERSATIONAL IMAGE] phone=%s "
+                            "route=%s semantic=%s retained=true",
                             from_number,
+                            image_destination,
+                            semantic_image_decision,
                         )
 
                     if not conversation_epoch_is_current(
@@ -10324,6 +10423,47 @@ async def _process_whatsapp_request(request):
             customer_phone=from_number,
             trusted_reference_texts=getattr(llm_service, "trusted_tool_outputs", []),
         )
+        if (
+            assistant_asked_for_optional_image(response_content)
+            and not has_confirmed_report_intent(from_number)
+        ):
+            # The conversational model has entered the report-image step while
+            # deterministic state is still undecided. Resolve that discrepancy
+            # explicitly before delivering the prompt so a later image or "no"
+            # continues the same report instead of falling into another flow.
+            semantic_report_context = [
+                item
+                for item in structured_history
+                if item.get("role") in {"user", "assistant"}
+            ]
+            semantic_report_context.extend(
+                [
+                    {"role": "user", "content": body or ""},
+                    {"role": "assistant", "content": response_content},
+                ]
+            )
+            semantic_report_decision = await classify_image_conversation_intent(
+                client,
+                semantic_report_context,
+            )
+            if semantic_report_decision == "report":
+                confirm_report_intent(
+                    from_number,
+                    body or "Contexto ciudadano de reporte",
+                    source="semantic_report_image_prompt",
+                )
+                transfer_guard_context[str(message_id)][
+                    "report_intent"
+                ] = True
+                transfer_guard_context[str(message_id)][
+                    "report_state"
+                ] = build_report_state_snapshot(from_number)
+            logger.critical(
+                "🧠 [REPORT IMAGE CONTEXT] phone=%s decision=%s confirmed=%s",
+                from_number,
+                semantic_report_decision,
+                has_confirmed_report_intent(from_number),
+            )
         current_transfer_context = transfer_guard_context.get(str(message_id), {})
         widget_empty_response = (
             str(transport or "").strip().lower() == "widget"
@@ -10763,18 +10903,19 @@ async def _process_whatsapp_request(request):
             if response_data.get("status") == "success":
                 persist_bot_outbound_marker(db, from_number, response, "whatsapp_main")
                 persist_successful_delivery_marker(db, from_number, uid, message_id)
-                if (
-                    has_confirmed_report_intent(from_number)
-                    and assistant_asked_for_optional_image(response_content)
-                ):
+                if assistant_asked_for_optional_image(response_content):
+                    create_or_update_report_session(from_number)
                     with report_sessions_lock:
                         report_sessions[from_number]["image_prompted"] = True
+                        report_sessions[from_number]["awaiting_report_image"] = True
                         report_sessions[from_number]["timestamp"] = datetime.now(
                             pytz.timezone('America/Mexico_City')
                         )
                     logger.critical(
-                        "🖼️ [IMAGE PROMPTED] Pregunta de imagen entregada para %s",
+                        "🖼️ [IMAGE PROMPTED] Pregunta de imagen entregada para %s "
+                        "confirmed_report=%s",
                         from_number,
+                        has_confirmed_report_intent(from_number),
                     )
                 conversation_history.add_ai_message(response_content)
                 db.Insert(

@@ -134,6 +134,12 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertTrue(establishes_report_intent("Necesito una patrulla"))
         self.assertTrue(
             establishes_report_intent(
+                "No es emergencia, quiero levantar un reporte. "
+                "Es un bache, ¿puedo reportar?"
+            )
+        )
+        self.assertTrue(
+            establishes_report_intent(
                 "Hola, se solicita pintar cordón amarillo en Río San Lorenzo"
             )
         )

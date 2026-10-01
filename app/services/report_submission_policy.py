@@ -718,10 +718,13 @@ def establishes_report_intent(
     raw = " ".join(str(value or "").split()).strip()
     if not raw:
         return False
-    if raw.endswith("?"):
-        return False
+    # A citizen can state a concrete report and finish with a courtesy
+    # question ("quiero levantar un reporte... ¿puedo reportar?"). The explicit
+    # request is authoritative; punctuation must not erase that evidence.
     if is_explicit_report_intent(raw):
         return True
+    if raw.endswith("?"):
+        return False
     if DECLARATIVE_REPORT_REQUEST_PATTERN.search(raw):
         return True
     return is_likely_report_description(raw)

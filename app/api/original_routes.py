@@ -8173,9 +8173,15 @@ async def _process_whatsapp_request(request):
                 from_number,
             )
         else:
+            intake_skip_reason = (
+                "out_of_scope"
+                if out_of_scope_response
+                else "report_intent_not_confirmed"
+            )
             logger.warning(
-                "🧭 [OUT OF SCOPE] Captura de campo de reporte omitida para %s body=%s",
+                "🧭 [REPORT INTAKE SKIPPED] phone=%s reason=%s body=%s",
                 from_number,
+                intake_skip_reason,
                 (body or "")[:180],
             )
 

@@ -5,6 +5,12 @@ from difflib import SequenceMatcher
 
 from app.api.colonies_array import SAN_PEDRO_COLONIES
 from app.api.streets_array import SAN_PEDRO_STREETS_REAL
+from app.services.report_submission_policy import (
+    infer_high_confidence_report_category,
+    is_likely_report_description,
+    is_meaningful_report_description,
+    normalize_report_number_input,
+)
 
 
 def _normalize(value: str | None) -> str:
@@ -400,3 +406,218 @@ def next_question_after_intake_confirmation(fields: dict[str, str]) -> str:
     if not str(fields.get("selection6") or "").strip():
         return "Gracias por confirmar. ¿Cuál es el número del domicilio o poste más cercano?"
     return "Gracias por confirmar. ¿Deseas agregar una imagen para complementar tu reporte?"
+
+
+def _unique_catalog_mention(
+    message: str,
+    catalog: dict[str, str],
+) -> str | None:
+    """Return one unambiguous official value mentioned anywhere in a message."""
+    normalized = _normalize(message)
+    matches = [
+        (catalog_name, canonical)
+        for catalog_name, canonical in catalog.items()
+        if re.search(rf"(?<!\w){re.escape(catalog_name)}(?!\w)", normalized)
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda item: len(item[0]), reverse=True)
+    best_name, best_value = matches[0]
+    # Nested catalog labels are one mention (for example "Del Valle" inside a
+    # longer official name). Two unrelated labels are an ambiguous location.
+    if any(
+        other_name not in best_name and best_name not in other_name
+        for other_name, _ in matches[1:]
+    ):
+        return None
+    return best_value
+
+
+def _single_report_number(message: str) -> str | None:
+    normalized_no_number = normalize_report_number_input(message)
+    if normalized_no_number == "0000":
+        return "0000"
+    if re.search(
+        r"(?<!\w)#?\s*(?:sin\s+n[uú]mero|sin\s+numeraci[oó]n|s\s*/\s*n)(?!\w)",
+        message,
+        flags=re.IGNORECASE,
+    ):
+        return "0000"
+    numbers = {
+        match.group(1)
+        for match in re.finditer(r"(?<!\w)#?\s*(\d{1,8})(?!\w)", message)
+    }
+    return next(iter(numbers)) if len(numbers) == 1 else None
+
+
+def _clean_problem_fragment(
+    fragment: str,
+    *,
+    street: str,
+    number: str,
+    colony: str,
+) -> str:
+    cleaned = " ".join(str(fragment or "").split()).strip(" ,.;:-")
+    cleaned = re.sub(
+        r"^(?:(?:oye|hola|buen\s+d[ií]a|buenas\s+tardes|buenas\s+noches)"
+        r"\b[\s,;:!¡¿?\-]*)+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip(" ,.;:-")
+    cleaned = re.sub(
+        r"^(?:yo\s+)?(?:quiero|quisiera|necesito|deseo)\s+"
+        r"(?:(?:levantar|hacer|realizar|generar)\s+)?"
+        r"(?:(?:otro|un)\s+)?reporte(?:\s+(?:de|sobre|por))?\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip(" ,.;:-")
+    cleaned = re.sub(
+        r"^(?:yo\s+)?(?:quiero|quisiera|necesito|deseo)\s+reportar"
+        r"(?:\s+que)?\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip(" ,.;:-")
+    if colony:
+        cleaned = re.sub(
+            rf"\b(?:la\s+)?(?:colonia|col\.?)\s+{re.escape(colony)}"
+            r"(?:\s+tambi[eé]n)?\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+    if street:
+        cleaned = re.sub(
+            rf"\b(?:en|sobre)\s+(?:la\s+calle\s+)?{re.escape(street)}\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+    if number:
+        cleaned = re.sub(
+            rf"(?<!\w)#?\s*{re.escape(number)}(?!\w)",
+            " ",
+            cleaned,
+        )
+    cleaned = re.sub(
+        r"\b(?:no\s+tengo|sin)\s+(?:una\s+)?(?:imagen|foto)(?:s|es)?\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = " ".join(cleaned.split()).strip(" ,.;:-")
+    return re.sub(r"\b(?:en|sobre|la|el|y)\s*$", "", cleaned, flags=re.I).strip()
+
+
+def extract_complete_report_evidence_any_order(
+    message: str | None,
+) -> dict[str, str]:
+    """Extract a complete, high-confidence report regardless of clause order.
+
+    This deliberately requires all normal-report location fields. It is used at
+    the CIAC boundary as conservative reconciliation, never as a new workflow
+    trigger and never for emergency submissions.
+    """
+    raw = " ".join(str(message or "").split()).strip()
+    if not raw:
+        return {}
+    street = _unique_catalog_mention(raw, STREET_INDEX)
+    colony = _unique_catalog_mention(raw, COLONY_INDEX)
+    number = _single_report_number(raw)
+    if not street or not colony or number is None:
+        return {}
+
+    problem_fragments: list[str] = []
+    for fragment in re.split(r"[,;.!?]+", raw):
+        if not is_likely_report_description(fragment):
+            continue
+        cleaned = _clean_problem_fragment(
+            fragment,
+            street=street,
+            number=number,
+            colony=colony,
+        )
+        if is_meaningful_report_description(cleaned):
+            problem_fragments.append(cleaned)
+
+    if not problem_fragments and is_likely_report_description(raw):
+        cleaned = _clean_problem_fragment(
+            raw,
+            street=street,
+            number=number,
+            colony=colony,
+        )
+        if is_meaningful_report_description(cleaned):
+            problem_fragments.append(cleaned)
+    if not problem_fragments:
+        return {}
+
+    description = ". ".join(dict.fromkeys(problem_fragments))
+    result = {
+        "selection4": description,
+        "selection5": street,
+        "selection6": number,
+        "selection7": colony,
+    }
+    category = infer_high_confidence_report_category(description)
+    if category:
+        result["selection1"] = category
+    return result
+
+
+def reconcile_report_bundle_before_ciac(
+    selections: dict[str, str],
+    citizen_messages: list[str] | tuple[str, ...] | None,
+) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    """Repair clearly contaminated selections once, immediately before CIAC."""
+    reconciled = dict(selections or {})
+    for message in reversed(list(citizen_messages or [])):
+        evidence = extract_complete_report_evidence_any_order(message)
+        if not evidence:
+            continue
+
+        changes: dict[str, tuple[str, str]] = {}
+        original_message = _normalize(message)
+        current_description = str(reconciled.get("selection4") or "").strip()
+        description_is_raw_message = _normalize(current_description) == original_message
+        description_contains_location = bool(
+            _normalize(evidence["selection5"]) in _normalize(current_description)
+            and evidence["selection6"] in current_description
+        )
+        if (
+            not is_meaningful_report_description(current_description)
+            or description_is_raw_message
+            or description_contains_location
+        ):
+            changes["selection4"] = (
+                current_description,
+                evidence["selection4"],
+            )
+
+        current_street = str(reconciled.get("selection5") or "").strip()
+        if _normalize(current_street) not in STREET_INDEX:
+            changes["selection5"] = (current_street, evidence["selection5"])
+
+        current_number = str(reconciled.get("selection6") or "").strip()
+        if normalize_report_number_input(current_number) is None:
+            changes["selection6"] = (current_number, evidence["selection6"])
+
+        current_colony = str(reconciled.get("selection7") or "").strip()
+        if _normalize(current_colony) not in COLONY_INDEX:
+            changes["selection7"] = (current_colony, evidence["selection7"])
+
+        inferred_category = evidence.get("selection1")
+        if inferred_category and inferred_category != str(
+            reconciled.get("selection1") or ""
+        ).strip():
+            changes["selection1"] = (
+                str(reconciled.get("selection1") or "").strip(),
+                inferred_category,
+            )
+
+        for field, (_, repaired) in changes.items():
+            reconciled[field] = repaired
+        return reconciled, changes
+    return reconciled, {}

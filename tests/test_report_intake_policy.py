@@ -4,8 +4,10 @@ from app.services.report_intake_policy import (
     build_intake_confirmation,
     classify_intake_confirmation,
     extract_catalog_location,
+    extract_complete_report_evidence_any_order,
     extract_initial_report_bundle,
     next_question_after_intake_confirmation,
+    reconcile_report_bundle_before_ciac,
     should_request_intake_confirmation,
 )
 from app.services.report_submission_policy import (
@@ -16,6 +18,90 @@ from app.services.conversation_policy import classify_emergency_answer
 
 
 class ReportIntakePolicyTests(unittest.TestCase):
+    def test_pre_ciac_extractor_understands_complete_message_in_any_order(self):
+        message = (
+            "Oye, quiero levantar otro reporte en Vasconcelos, 312, "
+            "hay un bache gigante, la colonia Centro también, no tengo imagen"
+        )
+
+        self.assertEqual(
+            extract_complete_report_evidence_any_order(message),
+            {
+                "selection1": "984",
+                "selection4": "hay un bache gigante",
+                "selection5": "Vasconcelos",
+                "selection6": "312",
+                "selection7": "Centro",
+            },
+        )
+
+    def test_pre_ciac_reconciliation_repairs_only_contaminated_fields(self):
+        message = (
+            "Oye, quiero levantar otro reporte en Vasconcelos, 312, "
+            "hay un bache gigante, la colonia Centro también, no tengo imagen"
+        )
+        selections = {
+            "selection1": "984",
+            "selection4": message,
+            "selection5": "Vasconcelos, , hay un bache gigante, la",
+            "selection6": "312",
+            "selection7": "",
+        }
+
+        reconciled, changes = reconcile_report_bundle_before_ciac(
+            selections,
+            [message],
+        )
+
+        self.assertEqual(
+            reconciled,
+            {
+                "selection1": "984",
+                "selection4": "hay un bache gigante",
+                "selection5": "Vasconcelos",
+                "selection6": "312",
+                "selection7": "Centro",
+            },
+        )
+        self.assertEqual(set(changes), {"selection4", "selection5", "selection7"})
+
+    def test_pre_ciac_reconciliation_does_not_override_confirmed_valid_fields(self):
+        message = (
+            "Quiero reportar un bache en Vasconcelos 312, colonia Centro"
+        )
+        selections = {
+            "selection1": "984",
+            "selection4": "Hay un bache profundo frente al acceso",
+            "selection5": "Humberto Lobo",
+            "selection6": "400",
+            "selection7": "Del Valle",
+        }
+
+        reconciled, changes = reconcile_report_bundle_before_ciac(
+            selections,
+            [message],
+        )
+
+        self.assertEqual(reconciled, selections)
+        self.assertEqual(changes, {})
+
+    def test_pre_ciac_reconciliation_ignores_incomplete_consultation(self):
+        selections = {
+            "selection1": "",
+            "selection4": "",
+            "selection5": "",
+            "selection6": "",
+            "selection7": "",
+        }
+
+        reconciled, changes = reconcile_report_bundle_before_ciac(
+            selections,
+            ["¿Dónde puedo consultar información sobre baches?"],
+        )
+
+        self.assertEqual(reconciled, selections)
+        self.assertEqual(changes, {})
+
     def test_compact_complete_report_uses_all_fields_without_reasking(self):
         message = (
             "Quiero reportar un bache en Vasconcelos, 321, colonia Centro"

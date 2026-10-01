@@ -201,6 +201,7 @@ from app.services.report_intake_policy import (
     build_intake_confirmation,
     classify_intake_confirmation,
     extract_catalog_location,
+    reconcile_report_bundle_before_ciac,
     extract_initial_report_bundle,
     next_question_after_intake_confirmation,
     should_request_intake_confirmation,
@@ -3115,6 +3116,46 @@ def prefer_captured_report_location(
         captured_colony or selection7,
     )
 
+
+def reconcile_pre_ciac_report_fields(
+    yoga_number: str,
+    selection1: str,
+    selection4: str,
+    selection5: str,
+    selection6: str,
+    selection7: str,
+) -> tuple[str, str, str, str, str]:
+    """Apply the single evidence-based repair boundary before CIAC validation."""
+    session = report_sessions.get(yoga_number, {})
+    if session.get("declared_emergency") is True:
+        return selection1, selection4, selection5, selection6, selection7
+
+    reconciled, changes = reconcile_report_bundle_before_ciac(
+        {
+            "selection1": selection1,
+            "selection4": selection4,
+            "selection5": selection5,
+            "selection6": selection6,
+            "selection7": selection7,
+        },
+        session.get("citizen_report_messages"),
+    )
+    if changes:
+        for field, (_, repaired) in changes.items():
+            save_user_answer(yoga_number, field, repaired)
+        logger.warning(
+            "🧾 [PRE-CIAC RECONCILIATION] phone=%s changes=%s",
+            yoga_number,
+            changes,
+        )
+    return (
+        reconciled.get("selection1", selection1),
+        reconciled.get("selection4", selection4),
+        reconciled.get("selection5", selection5),
+        reconciled.get("selection6", selection6),
+        reconciled.get("selection7", selection7),
+    )
+
 def build_report_state_snapshot(from_number: str) -> dict:
     session = report_sessions.get(from_number, {}) if from_number else {}
     answer_map = user_answers.get(from_number, {}) if from_number else {}
@@ -3200,6 +3241,16 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         selection5,
         selection6,
         selection7,
+    )
+    selection1, selection4, selection5, selection6, selection7 = (
+        reconcile_pre_ciac_report_fields(
+            yoga_number,
+            selection1,
+            selection4,
+            selection5,
+            selection6,
+            selection7,
+        )
     )
     normalized_submission, validation_error = validate_and_normalize_report_submission(
         selection1=selection1,
@@ -3373,6 +3424,16 @@ async def save_client_selection2_guarded(
         selection5,
         selection6,
         selection7,
+    )
+    selection1, selection4, selection5, selection6, selection7 = (
+        reconcile_pre_ciac_report_fields(
+            yoga_number,
+            selection1,
+            selection4,
+            selection5,
+            selection6,
+            selection7,
+        )
     )
     normalized_submission, validation_error = validate_and_normalize_report_submission(
         selection1=selection1,

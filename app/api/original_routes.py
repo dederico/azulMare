@@ -167,6 +167,7 @@ from app.services.conversation_policy import (
     should_suppress_repeated_report_question,
     return_greeting_covers_current_inbound,
     resolve_high_confidence_out_of_scope_response,
+    validate_structured_optional_image_decision,
 )
 from app.services.report_submission_policy import (
     classify_sidewalk_sign_answer,
@@ -3380,6 +3381,7 @@ async def save_client_selection2_guarded(
     selection8: str = None,
     images_list: list = None,
     descriptions_list: list = None,
+    optional_image_decision: str = None,
 ):
     """
     Guardar la información de las preguntas según las respuestas del cliente.
@@ -3394,6 +3396,7 @@ async def save_client_selection2_guarded(
     selection8 (string, optional): URL o ruta de la imagen para la pregunta 8.
     images_list (array[string], optional): Lista de URLs de imágenes.
     descriptions_list (array[string], optional): Lista de descripciones correspondientes a las imágenes.
+    optional_image_decision (string, optional): Decisión semántica estructurada sobre la imagen. Usa exclusivamente "no" cuando la última pregunta visible ofreció una imagen opcional y el ciudadano, considerando la conversación, expresó que no quiere, no tiene o no puede enviarla. No uses este campo para adivinar una respuesta ausente.
     """
     storage = LocalStorage()
     active_takeover = get_active_takeover(yoga_number, storage=storage)
@@ -3413,6 +3416,35 @@ async def save_client_selection2_guarded(
     selection2 = session.get("trusted_reporter_name") or "Anónimo"
     if session.get("declared_emergency") is True:
         selection1 = "964"
+
+    structured_image_decision = validate_structured_optional_image_decision(
+        optional_image_decision
+    )
+    submitted_has_images = (
+        bool(images_list)
+        or bool(session.get("images"))
+        or bool(str(selection8 or "").strip())
+    )
+    if (
+        session.get("image_prompted")
+        and not submitted_has_images
+        and structured_image_decision
+    ):
+        # El modelo interpreta el lenguaje libre. Esta capa únicamente valida
+        # y persiste el resultado cerrado, incluso si otro campo del payload
+        # todavía necesita corrección. Una negativa no se reabre después.
+        current_image_decision = session.get("image_decision")
+        if current_image_decision != "no":
+            current_image_decision = structured_image_decision
+            with report_sessions_lock:
+                report_sessions[yoga_number]["image_decision"] = (
+                    current_image_decision
+                )
+        logger.critical(
+            "🖼️ [IMAGE DECISION STRUCTURED] phone=%s decision=%s",
+            yoga_number,
+            current_image_decision,
+        )
 
     selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
         yoga_number,
@@ -3455,13 +3487,12 @@ async def save_client_selection2_guarded(
     emergency_codes = {"891", "892", "893", "894", "895", "896", "964"}
     normalized_type = normalized_submission["selection1"]
 
-    has_images = bool(images_list) or bool(session.get("images")) or bool(str(selection8 or "").strip())
+    has_images = submitted_has_images
     declared_emergency = session.get("declared_emergency") is True
 
     if normalized_type not in emergency_codes and not declared_emergency:
         image_prompted = bool(session.get("image_prompted"))
         image_decision = session.get("image_decision")
-
         if not image_prompted and not has_images and image_decision is None:
             logger.warning(
                 "🚫 [GUARD] save_client_selection2 bloqueado para %s: falta preguntar imagen",
@@ -3480,6 +3511,17 @@ async def save_client_selection2_guarded(
             return (
                 "VALIDATION_BLOCK: Aún falta la respuesta del usuario sobre si desea agregar "
                 "imagen. Debes esperar su respuesta antes de crear el reporte."
+            )
+
+        if image_prompted and image_decision == "yes" and not has_images:
+            logger.warning(
+                "🚫 [GUARD] save_client_selection2 bloqueado para %s: "
+                "el ciudadano desea adjuntar imagen",
+                yoga_number,
+            )
+            return (
+                "VALIDATION_BLOCK: El ciudadano indicó que desea agregar una imagen. "
+                "Debes esperar a recibirla antes de crear el reporte."
             )
 
     return await save_client_selection2_protected(
@@ -7713,6 +7755,30 @@ async def _process_whatsapp_request(request):
             ),
             "",
         )
+        # Resolve the answer from the visible image question before any intake
+        # or finalization decision. The previous late update allowed the model
+        # to acknowledge "no" without changing state, then ask for a second
+        # authorization on the next turn.
+        if (
+            has_confirmed_report_intent(from_number)
+            and assistant_asked_for_optional_image(last_outbound_message)
+        ):
+            with report_sessions_lock:
+                image_session = report_sessions[from_number]
+                previous_image_decision = image_session.get("image_decision")
+                image_session["image_prompted"] = True
+                resolved_image_decision = classify_image_decision_response(body)
+                if resolved_image_decision:
+                    image_session["image_decision"] = resolved_image_decision
+            if (
+                resolved_image_decision
+                and resolved_image_decision != previous_image_decision
+            ):
+                logger.critical(
+                    "🖼️ [IMAGE DECISION VISIBLE PROMPT] %s respondió sobre imagen: %s",
+                    from_number,
+                    resolved_image_decision,
+                )
         evaluation_turn_active = bool(
             durable_evaluation
             and evaluation_turn_matches_visible_prompt(
@@ -7791,10 +7857,7 @@ async def _process_whatsapp_request(request):
                 ):
                     save_user_answer(from_number, "selection4", body.strip())
                 save_user_answer(from_number, "selection1", "964")
-            elif (
-                emergency_answer is False
-                and has_confirmed_report_intent(from_number)
-            ):
+            elif emergency_answer is False:
                 create_or_update_report_session(from_number)
                 with report_sessions_lock:
                     report_sessions[from_number]["declared_emergency"] = False
@@ -9387,22 +9450,6 @@ async def _process_whatsapp_request(request):
 
     # Agregar mensaje actual del usuario al historial y guardarlo en la base de datos
     conversation_history.add_user_message(body)
-
-    if (
-        has_confirmed_report_intent(from_number)
-        and assistant_asked_for_optional_image(last_outbound_message)
-    ):
-        with report_sessions_lock:
-            report_sessions[from_number]["image_prompted"] = True
-
-            decision = classify_image_decision_response(body)
-            if decision:
-                report_sessions[from_number]["image_decision"] = decision
-                logger.critical(
-                    "🖼️ [IMAGE DECISION] %s respondió sobre imagen: %s",
-                    from_number,
-                    decision,
-                )
 
     user_message = Message(
         time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

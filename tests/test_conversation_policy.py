@@ -42,6 +42,7 @@ from app.services.conversation_policy import (
     should_send_initial_greeting,
     should_suppress_recent_post_folio_input,
     should_suppress_repeated_report_question,
+    validate_structured_optional_image_decision,
 )
 
 
@@ -236,32 +237,31 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             )
         )
 
-    def test_optional_image_answer_does_not_match_arbitrary_substrings(self):
+    def test_optional_image_answer_fast_path_accepts_only_canonical_tokens(self):
         self.assertEqual(classify_optional_image_answer("N"), "no")
         self.assertEqual(classify_optional_image_answer("S"), "yes")
         self.assertEqual(classify_optional_image_answer("No"), "no")
-        self.assertEqual(
-            classify_optional_image_answer("Sí, deseo seguir sin agregar imagen"),
-            "no",
-        )
-        self.assertEqual(
-            classify_optional_image_answer("No quiero compartir una foto"),
-            "no",
-        )
-        self.assertEqual(
-            classify_optional_image_answer("No quiero compartir imagen"),
-            "no",
-        )
-        self.assertEqual(
-            classify_optional_image_answer("No tengo fotos"),
-            "no",
-        )
-        self.assertIsNone(
-            classify_optional_image_answer("No hay luz mercurial en mi calle")
-        )
-        self.assertIsNone(
-            classify_optional_image_answer("Estorba la visibilidad")
-        )
+
+    def test_free_form_optional_image_answer_is_left_to_the_model(self):
+        for answer in (
+            "No tengo",
+            "No no tengo",
+            "Nel",
+            "No puedo",
+            "No traigo",
+            "No quiero compartir una foto",
+            "Sí, deseo seguir sin agregar imagen",
+            "No hay luz mercurial en mi calle",
+            "Estorba la visibilidad",
+        ):
+            with self.subTest(answer=answer):
+                self.assertIsNone(classify_optional_image_answer(answer))
+
+    def test_structured_optional_image_decision_accepts_only_closed_values(self):
+        self.assertEqual(validate_structured_optional_image_decision("no"), "no")
+        self.assertEqual(validate_structured_optional_image_decision("YES"), "yes")
+        self.assertIsNone(validate_structured_optional_image_decision("no tengo"))
+        self.assertIsNone(validate_structured_optional_image_decision("tal vez"))
 
     def test_legacy_required_image_message_is_treated_as_optional_prompt(self):
         self.assertTrue(

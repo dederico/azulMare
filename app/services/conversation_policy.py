@@ -86,31 +86,19 @@ def context_reset_marker_uid(reason: str, event_id) -> str:
 
 
 def classify_optional_image_answer(value: str | None) -> str | None:
-    """Classify an answer to the optional-image question without substrings."""
+    """Fast-path only canonical answers; the model owns free-form language."""
     normalized = " ".join(str(value or "").casefold().split())
     # These single-letter forms are consumed only while the optional-image
     # question is active, so common chat abbreviations are unambiguous here.
     if normalized in {"n", "no", "s", "sí", "si"}:
         return "no" if normalized in {"n", "no"} else "yes"
-
-    no_patterns = (
-        r"\bno\s+gracias\b",
-        r"\bsin\s+(?:im[aá]gen(?:es)?|fotos?)\b",
-        r"\bno\s+(?:tengo|deseo|quiero|puedo)\b.*\b(?:im[aá]gen(?:es)?|fotos?)\b",
-        r"\b(?:prefiero|continua|continúa|sigue)\b.*\bsin\s+(?:im[aá]gen(?:es)?|fotos?)\b",
-        r"\b(?:continuar|seguir)\b.*\bsin\b.*\b(?:im[aá]gen(?:es)?|fotos?)\b",
-        r"\b(?:es\s+peligroso|es\s+riesgoso)\b.*\b(?:im[aá]gen(?:es)?|fotos?|tomar)\b",
-    )
-    yes_patterns = (
-        r"\bs[ií]\s+deseo\b",
-        r"\bquiero\s+agregar\b.*\b(?:imagen|foto)\b",
-        r"\b(?:te\s+env[ií]o|te\s+mando|voy\s+a\s+(?:mandar|enviar))\b.*\bfoto\b",
-    )
-    if any(re.search(pattern, normalized) for pattern in no_patterns):
-        return "no"
-    if any(re.search(pattern, normalized) for pattern in yes_patterns):
-        return "yes"
     return None
+
+
+def validate_structured_optional_image_decision(value: str | None) -> str | None:
+    """Accept only the machine-readable decision produced by the model."""
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in {"yes", "no"} else None
 
 
 def assistant_asked_for_optional_image(message: str | None) -> bool:

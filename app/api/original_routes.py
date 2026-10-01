@@ -186,7 +186,9 @@ from app.services.report_submission_policy import (
     merge_citizen_report_description,
     next_missing_report_detail_before_image,
     next_missing_report_field,
+    parse_report_catalog,
     reconcile_with_citizen_evidence,
+    report_catalog_contains,
     report_session_has_confirmed_intent,
     resolve_trusted_reporter_name,
     resolve_unambiguous_catalog_category,
@@ -3207,6 +3209,7 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         selection6=selection6,
         selection7=selection7,
         declared_emergency=session.get("declared_emergency") is True,
+        allowed_category_ids=session.get("catalog_category_ids"),
     )
     if validation_error:
         logger.warning(
@@ -7920,6 +7923,13 @@ async def _process_whatsapp_request(request):
                 )
             }
             active_report_session = report_sessions.get(from_number, {})
+            catalog_prompt = config.get("prompt") or system_message
+            catalog_entries = parse_report_catalog(catalog_prompt)
+            if catalog_entries:
+                with report_sessions_lock:
+                    active_report_session["catalog_category_ids"] = tuple(
+                        entry.value for entry in catalog_entries
+                    )
             confirmation_prompt = build_intake_confirmation(current_answers)
             should_confirm_fragmented_intake = (
                 not intake_turn_handled
@@ -7943,7 +7953,6 @@ async def _process_whatsapp_request(request):
                     from_number,
                 )
             if pending_field == "selection1":
-                catalog_prompt = config.get("prompt") or system_message
                 category = classify_sidewalk_sign_answer(
                     body,
                     prompt=catalog_prompt,
@@ -7981,7 +7990,7 @@ async def _process_whatsapp_request(request):
                     ),
                     image_decision=active_report_session.get("image_decision"),
                     has_images=bool(active_report_session.get("images")),
-                    prompt=config.get("prompt") or system_message,
+                    prompt=catalog_prompt,
                 )
                 if progress.action == "await_emergency_answer":
                     intake_response_override = progress.response
@@ -8902,8 +8911,25 @@ async def _process_whatsapp_request(request):
                     ):
                         save_user_answer(from_number, "selection2", "Anónimo")
                         selections["selection2"] = "Anónimo"
+                    catalog_prompt = config.get("prompt") or system_message
+                    if (
+                        report_sessions[from_number].get("declared_emergency")
+                        is not True
+                        and parse_report_catalog(catalog_prompt)
+                        and str(selections["selection1"] or "").strip()
+                        and not report_catalog_contains(
+                            catalog_prompt,
+                            selections["selection1"],
+                        )
+                    ):
+                        logger.warning(
+                            "🧾 [REPORT CATALOG REJECT] phone=%s category=%s",
+                            from_number,
+                            selections["selection1"],
+                        )
+                        save_user_answer(from_number, "selection1", "")
+                        selections["selection1"] = ""
                     if not str(selections["selection1"] or "").strip():
-                        catalog_prompt = config.get("prompt") or system_message
                         category = resolve_unambiguous_catalog_category(
                             catalog_prompt,
                             selections["selection4"],

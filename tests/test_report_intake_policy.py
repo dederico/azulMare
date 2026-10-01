@@ -16,6 +16,24 @@ from app.services.conversation_policy import classify_emergency_answer
 
 
 class ReportIntakePolicyTests(unittest.TestCase):
+    def test_compact_complete_report_uses_all_fields_without_reasking(self):
+        message = (
+            "Quiero reportar un bache en Vasconcelos, 321, colonia Centro"
+        )
+
+        normalized, original = extract_initial_report_bundle(message, {})
+
+        self.assertEqual(
+            normalized,
+            {
+                "selection4": "un bache",
+                "selection5": "Vasconcelos",
+                "selection6": "321",
+                "selection7": "Centro",
+            },
+        )
+        self.assertEqual(original["selection4"], "Quiero reportar un bache")
+
     def test_pacelli_report_on_puente_miravalle_extracts_complete_bundle(self):
         message = (
             "Hola! Quiero reportar un poste vial y un señalamiento marcando "

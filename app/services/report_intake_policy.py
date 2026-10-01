@@ -124,6 +124,32 @@ def extract_initial_report_bundle(
         location_source,
         flags=re.IGNORECASE,
     )
+    if not location_intro and re.search(
+        r"\b(?:reportar|reporte)\b",
+        location_source,
+        flags=re.IGNORECASE,
+    ):
+        # Also accept the compact but explicit citizen form
+        # "reportar un bache en Vasconcelos, 321, colonia Centro". Choose the
+        # last suitable "en" so wording inside the problem is not mistaken for
+        # the beginning of the address.
+        for candidate in reversed(
+            list(re.finditer(r"\ben\s+", location_source, flags=re.IGNORECASE))
+        ):
+            possible_location = location_source[candidate.end() :]
+            has_number = re.search(
+                r"(?:#?\s*\d{1,8}|#?\s*sin\s+n[uú]mero|s\s*/\s*n)",
+                possible_location,
+                flags=re.IGNORECASE,
+            )
+            has_colony = re.search(
+                r"\b(?:colonia|col\.?|fraccionamiento|fracc\.?)\s+",
+                possible_location,
+                flags=re.IGNORECASE,
+            )
+            if has_number and has_colony:
+                location_intro = candidate
+                break
     if not location_intro:
         return {}, {}
 

@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 
 
 INVALID_REQUIRED_VALUES = {
@@ -52,6 +53,63 @@ REPORT_INTENT_PHRASES = (
     "manden una patrulla",
     "envien una patrulla",
 )
+
+
+@dataclass(frozen=True)
+class ReportCatalogEntry:
+    """One official CIAC subject declared in the active runtime prompt."""
+
+    value: str
+    label: str
+
+
+_REPORT_CATALOG_ENTRY_PATTERN = re.compile(
+    r"^\s*(?:[*-]\s*)?Valor:\s*(\d+)\s*"
+    r"(?:,\s*Tipo:\s*|\s+-\s*)(.+?)\s*$",
+    flags=re.MULTILINE | re.IGNORECASE,
+)
+
+
+@lru_cache(maxsize=8)
+def parse_report_catalog(prompt: str | None) -> tuple[ReportCatalogEntry, ...]:
+    """Parse CIAC IDs from the active prompt without owning classification.
+
+    The model still interprets the citizen's meaning. This parser supplies the
+    deterministic source of truth used by the existing catalog reconciliation
+    helpers, and supports both catalog formats currently present in the prompt.
+    """
+    entries: dict[str, ReportCatalogEntry] = {}
+    for match in _REPORT_CATALOG_ENTRY_PATTERN.finditer(str(prompt or "")):
+        value = match.group(1)
+        label = " ".join(match.group(2).split()).strip(" .")
+        if label:
+            entries[value] = ReportCatalogEntry(value=value, label=label)
+    return tuple(entries.values())
+
+
+def report_catalog_contains(prompt: str | None, category: str | None) -> bool:
+    """Return whether a numeric subject is declared by the active prompt."""
+    value = " ".join(str(category or "").split()).strip()
+    return bool(value and any(entry.value == value for entry in parse_report_catalog(prompt)))
+
+
+def is_report_intent_only(value: str | None) -> bool:
+    """Detect greetings plus a request to report, with no actual problem."""
+    normalized = normalize_report_text(value)
+    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    normalized = " ".join(normalized.split())
+    normalized = re.sub(
+        r"^(?:(?:hola|buen dia|buenas tardes|buenas noches|que tal)\s+)+",
+        "",
+        normalized,
+    ).strip()
+    normalized = re.sub(r"^(?:solo\s+)?", "", normalized).strip()
+    normalized = re.sub(r"\s+(?:por favor|gracias)$", "", normalized).strip()
+    canonical_intents = {
+        " ".join(re.sub(r"[^a-z0-9\s]", " ", phrase).split())
+        for phrase in REPORT_INTENT_PHRASES
+    }
+    return normalized in canonical_intents
 
 PROBLEM_SIGNAL_WORDS = (
     "hay ",
@@ -387,6 +445,7 @@ def is_meaningful_report_description(value: str | None) -> bool:
     return bool(
         normalized not in INVALID_REQUIRED_VALUES
         and not normalized.startswith("problema reportado:")
+        and not is_report_intent_only(value)
         # Una descripción breve como "un bache" sigue siendo información real.
         # La protección importante es rechazar vacíos y placeholders, no imponer
         # una longitud que termine negando reportes válidos.
@@ -627,7 +686,7 @@ def is_likely_report_description(
         return False
     if normalized in REPORT_CONTROL_MESSAGES or normalized.isdigit():
         return False
-    if normalized in REPORT_INTENT_PHRASES:
+    if is_report_intent_only(value):
         return False
     if infer_high_confidence_report_category(value):
         return True
@@ -759,13 +818,9 @@ def resolve_unambiguous_catalog_category(prompt: str | None, description: str | 
     if not issue_words:
         return None
     candidates = {
-        match.group(1)
-        for match in re.finditer(
-            r"^\s*Valor:\s*(\d+)\s*,\s*Tipo:\s*(.+)$",
-            str(prompt or ""),
-            flags=re.MULTILINE | re.IGNORECASE,
-        )
-        if issue_words & subject_words(match.group(2))
+        entry.value
+        for entry in parse_report_catalog(prompt)
+        if issue_words & subject_words(entry.label)
     }
     return next(iter(candidates)) if len(candidates) == 1 else None
 
@@ -774,14 +829,10 @@ def fallback_report_category_id(prompt: str | None = None) -> str:
     """Return CIAC's general Atención Ciudadana inbox for unknown subjects."""
     # Keep the ID stable even if a shortened runtime prompt omits the catalog.
     # When present, the label documents that the configured catalog agrees.
-    for match in re.finditer(
-        r"^\s*Valor:\s*(\d+)\s*,\s*Tipo:\s*(.+)$",
-        str(prompt or ""),
-        flags=re.MULTILINE | re.IGNORECASE,
-    ):
-        label = normalize_report_text(match.group(2))
+    for entry in parse_report_catalog(prompt):
+        label = normalize_report_text(entry.label)
         if "gestiones direccion de atencion ciudadana" in label:
-            return match.group(1)
+            return entry.value
     return UNCLASSIFIED_REPORT_CATEGORY_ID
 
 
@@ -794,18 +845,14 @@ def sidewalk_sign_category_options(prompt: str | None, description: str | None) 
         return {}
 
     options = {}
-    for match in re.finditer(
-        r"^\s*Valor:\s*(\d+)\s*,\s*Tipo:\s*(.+)$",
-        str(prompt or ""),
-        flags=re.MULTILINE | re.IGNORECASE,
-    ):
-        label = normalize_report_text(match.group(2))
+    for entry in parse_report_catalog(prompt):
+        label = normalize_report_text(entry.label)
         if "obstruccion de banqueta" not in label:
             continue
         if "objetos moviles" in label:
-            options["movil"] = match.group(1)
+            options["movil"] = entry.value
         elif "construccion fija" in label:
-            options["fijo"] = match.group(1)
+            options["fijo"] = entry.value
     return options if len(options) == 2 else {}
 
 
@@ -944,7 +991,7 @@ def select_citizen_report_description(
             continue
         if normalized in REPORT_CONTROL_MESSAGES or normalized.isdigit():
             continue
-        if normalized in REPORT_INTENT_PHRASES:
+        if is_report_intent_only(content):
             continue
         if normalized in {"hola", "buen dia", "buenas tardes", "buenas noches"}:
             continue
@@ -1017,6 +1064,7 @@ def validate_and_normalize_report_submission(
     selection6: str | None,
     selection7: str | None,
     declared_emergency: bool = False,
+    allowed_category_ids: tuple[str, ...] | list[str] | set[str] | None = None,
 ) -> tuple[dict[str, str] | None, str | None]:
     values = {
         "selection1": " ".join(str(selection1 or "").split()).strip(),
@@ -1073,6 +1121,12 @@ def validate_and_normalize_report_submission(
     inferred_category = infer_high_confidence_report_category(values["selection4"])
     if inferred_category and not emergency_submission:
         values["selection1"] = inferred_category
+
+    allowed_ids = {str(value).strip() for value in (allowed_category_ids or ())}
+    if allowed_ids and values["selection1"] not in allowed_ids:
+        return None, (
+            "debes identificar un ID de asunto que exista en el catálogo CIAC activo"
+        )
 
     return values, None
 

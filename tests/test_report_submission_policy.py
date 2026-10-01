@@ -14,11 +14,14 @@ from app.services.report_submission_policy import (
     infer_high_confidence_report_category,
     infer_unsolicited_report_answers,
     is_likely_report_description,
+    is_report_intent_only,
     merge_citizen_report_description,
     next_missing_report_detail_before_image,
     next_missing_report_field,
     normalize_report_number_input,
     normalize_reporter_name_input,
+    parse_report_catalog,
+    report_catalog_contains,
     report_session_has_confirmed_intent,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
@@ -114,6 +117,9 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
     def test_only_citizen_report_evidence_activates_report_mode(self):
         self.assertTrue(establishes_report_intent("Quiero reportar un bache"))
         self.assertTrue(establishes_report_intent("Reporte normal"))
+        self.assertTrue(establishes_report_intent("Hay una luminaria"))
+        self.assertTrue(establishes_report_intent("No hay luminarias"))
+        self.assertTrue(establishes_report_intent("Hay basura tirada"))
         self.assertTrue(
             establishes_report_intent(
                 "Poste de luz dañado a punto de caer en la calzada"
@@ -773,12 +779,66 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertIsNone(next_missing_report_field(fields, prompt=""))
 
     def test_generic_request_alone_is_not_used_as_the_explanation(self):
+        for message in (
+            "Quiero hacer un reporte",
+            "Hola, quiero levantar un reporte",
+            "Buenas tardes, necesito levantar un reporte por favor",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(is_report_intent_only(message))
+                self.assertFalse(is_likely_report_description(message))
+                self.assertEqual(
+                    select_citizen_report_description([("user", message)]),
+                    "",
+                )
+
+    def test_report_intent_with_actual_problem_remains_valid_evidence(self):
+        message = "Quiero reportar un bache profundo"
+
+        self.assertFalse(is_report_intent_only(message))
+        self.assertTrue(is_likely_report_description(message))
         self.assertEqual(
-            select_citizen_report_description(
-                [("user", "Quiero hacer un reporte")]
-            ),
-            "",
+            select_citizen_report_description([("user", message)]),
+            message,
         )
+
+    def test_catalog_parser_supports_runtime_and_emergency_formats(self):
+        prompt = (
+            "* Valor: 964 - Emergencias con riesgo inmediato.\n"
+            "Valor: 984, Tipo: Baches\n"
+            "Valor: 486, Tipo: Gestiones dirección de atención ciudadana\n"
+        )
+
+        self.assertEqual(
+            [(entry.value, entry.label) for entry in parse_report_catalog(prompt)],
+            [
+                ("964", "Emergencias con riesgo inmediato"),
+                ("984", "Baches"),
+                ("486", "Gestiones dirección de atención ciudadana"),
+            ],
+        )
+        self.assertTrue(report_catalog_contains(prompt, "984"))
+        self.assertFalse(report_catalog_contains(prompt, "999999"))
+
+    def test_submission_rejects_category_not_declared_by_active_catalog(self):
+        values, error = self.valid_submission(
+            selection1="999999",
+            selection4="Un elemento urbano presenta daños visibles",
+            allowed_category_ids=("964", "984", "486"),
+        )
+
+        self.assertIsNone(values)
+        self.assertIn("catálogo CIAC activo", error)
+
+    def test_catalog_validation_allows_unambiguous_category_repair(self):
+        values, error = self.valid_submission(
+            selection1="999999",
+            selection4="Hay un bache profundo frente al domicilio",
+            allowed_category_ids=("964", "984", "486"),
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(values["selection1"], "984")
 
     def test_explicit_no_number_is_repaired_to_0000(self):
         values, error = self.valid_submission(selection6="sin número")

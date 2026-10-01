@@ -142,6 +142,7 @@ from app.services.conversation_policy import (
     authorize_transfer,
     classify_emergency_answer,
     classify_emergency_turn,
+    classify_handoff_signal,
     classify_optional_image_answer,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
@@ -167,12 +168,14 @@ from app.services.conversation_policy import (
     should_confirm_operator_outbox_takeover,
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
+    should_resolve_handoff_semantically,
     should_preserve_evaluation_across_new_request,
     should_suppress_recent_post_folio_input,
     should_suppress_repeated_report_question,
     return_greeting_covers_current_inbound,
     resolve_high_confidence_out_of_scope_response,
     validate_structured_emergency_decision,
+    validate_structured_handoff_decision,
     validate_structured_optional_image_decision,
 )
 from app.services.report_submission_policy import (
@@ -2642,82 +2645,6 @@ def classify_image_decision_response(body: str) -> str | None:
     return classify_optional_image_answer(body)
 
 
-def is_explicit_human_handoff_request(body: str) -> bool:
-    if not body:
-        return False
-
-    normalized = body.strip().lower()
-    if not normalized:
-        return False
-
-    direct_phrases = [
-        "agente humano",
-        "asesor humano",
-        "operador humano",
-        "ejecutivo humano",
-        "hablar con un humano",
-        "hablar con humano",
-        "hablar con una persona",
-        "hablar con alguien",
-        "quiero un humano",
-        "quiero hablar con un humano",
-        "quiero hablar con una persona",
-        "pasame con un humano",
-        "pásame con un humano",
-        "pasame con humano",
-        "pásame con humano",
-        "pasame con una persona",
-        "pásame con una persona",
-        "pasame con alguien",
-        "pásame con alguien",
-        "pasame con un agente",
-        "pásame con un agente",
-        "pasame con un asesor",
-        "pásame con un asesor",
-        "pasame con un operador",
-        "pásame con un operador",
-        "pasame con un empleado",
-        "pásame con un empleado",
-        "me transfieres",
-        "me transferes",
-        "me trasfieres",
-        "me transfieres con alguien",
-        "me comunicas con alguien",
-    ]
-
-    if any(phrase in normalized for phrase in direct_phrases):
-        return True
-
-    person_terms = [
-        "humano",
-        "persona",
-        "alguien",
-        "agente",
-        "asesor",
-        "operador",
-        "empleado",
-        "ejecutivo",
-        "representante",
-    ]
-
-    contact_verbs = [
-        "transfer",
-        "transfier",
-        "trasfier",
-        "comunic",
-        "pas",
-        "habl",
-        "atend",
-        "escal",
-        "canaliz",
-    ]
-
-    has_person_term = any(term in normalized for term in person_terms)
-    has_contact_verb = any(verb in normalized for verb in contact_verbs)
-
-    return has_person_term and has_contact_verb
-
-
 def is_simple_greeting(body: str) -> bool:
     if not body:
         return False
@@ -3553,6 +3480,82 @@ async def save_client_selection2_guarded(
 
 save_client_selection2_guarded.__name__ = "save_client_selection2"
 
+
+async def execute_human_handoff(
+    *,
+    from_number: str,
+    message_id,
+    storage,
+    reason: str,
+    pending_source: str,
+    active_source: str,
+    group_id: int | None = None,
+) -> dict:
+    """Execute the provider handoff through one state transition path.
+
+    Every caller enters ``pending_provider`` before contacting Chat2Desk. A
+    confirmed provider response moves the conversation to ``human_active``;
+    ambiguous provider timeouts keep the short pending takeover; failures roll
+    back only the control created by this inbound message.
+    """
+    activate_takeover(
+        from_number,
+        expires_at=(
+            datetime.now().timestamp() + PENDING_HUMAN_TRANSFER_TTL_SECONDS
+        ),
+        source=f"pending_transfer:{pending_source}",
+        message_id=message_id,
+        storage=storage,
+    )
+    try:
+        if not message_id:
+            raise ValueError("No se encontró message_id en el payload para transferir")
+        provider_result = await transfer_to_group(
+            message_id=message_id,
+            group_id=group_id,
+            reason=reason,
+        )
+        if (
+            isinstance(provider_result, str)
+            and provider_result.startswith("TRANSFER_PENDING:")
+        ):
+            return {
+                "state": "pending_provider",
+                "provider_result": provider_result,
+                "error": None,
+            }
+        if not (
+            isinstance(provider_result, str)
+            and "transferida exitosamente" in provider_result.lower()
+        ):
+            raise RuntimeError(
+                provider_result or "La transferencia no confirmó éxito"
+            )
+
+        activate_takeover(
+            from_number,
+            source=active_source,
+            message_id=message_id,
+            storage=storage,
+        )
+        return {
+            "state": "human_active",
+            "provider_result": provider_result,
+            "error": None,
+        }
+    except Exception as error:
+        release_takeover_if_matches(
+            from_number,
+            message_id,
+            storage=storage,
+        )
+        return {
+            "state": "failed",
+            "provider_result": None,
+            "error": str(error),
+        }
+
+
 async def transfer_to_group_guarded(
     message_id: int,
     group_id: int | None = None,
@@ -3658,43 +3661,25 @@ async def transfer_to_group_guarded(
             "o si verificaste que no existe contexto suficiente para resolver la consulta."
         )
 
-    activate_takeover(
-        from_number,
-        expires_at=(
-            datetime.now().timestamp() + PENDING_HUMAN_TRANSFER_TTL_SECONDS
-        ),
-        source=f"pending_transfer:tool:{authorization}",
+    handoff = await execute_human_handoff(
+        from_number=from_number,
         message_id=message_id,
         storage=storage,
-    )
-
-    transfer_result = await transfer_to_group(
-        message_id=message_id,
         group_id=group_id,
-        reason=reason,
+        reason=reason or "Transferencia autorizada por SAM",
+        pending_source=f"tool:{authorization}",
+        active_source=f"tool:{authorization}",
     )
-    transfer_succeeded = bool(
-        isinstance(transfer_result, str)
-        and "transferida exitosamente" in transfer_result.lower()
+    transfer_result = handoff.get("provider_result") or (
+        f"Error al transferir conversación: {handoff.get('error')}"
     )
+    transfer_succeeded = handoff.get("state") == "human_active"
     context["transfer_attempted"] = True
     context["transfer_succeeded"] = transfer_succeeded
-    context["transfer_pending"] = bool(
-        isinstance(transfer_result, str)
-        and transfer_result.startswith("TRANSFER_PENDING:")
-    )
+    context["transfer_pending"] = handoff.get("state") == "pending_provider"
     context["transfer_authorization"] = authorization
 
-    if (
-        from_number and
-        transfer_succeeded
-    ):
-        activate_takeover(
-            from_number,
-            source=f"tool:{authorization}",
-            message_id=message_id,
-            storage=storage,
-        )
+    if transfer_succeeded:
         logger.critical(
             "🔐 [TOOL TRANSFER ACTIVE] from_number=%s message_id=%s expires_at=%s reason=%s",
             from_number,
@@ -3718,12 +3703,6 @@ async def transfer_to_group_guarded(
             from_number,
             message_id,
             reason,
-        )
-    elif from_number:
-        release_takeover_if_matches(
-            from_number,
-            message_id,
-            storage=storage,
         )
 
     return transfer_result
@@ -9800,95 +9779,78 @@ async def _process_whatsapp_request(request):
             "Conservé tus datos para volver a intentarlo."
         )
 
-    direct_handoff_request = is_explicit_human_handoff_request(body)
+    handoff_signal = classify_handoff_signal(body, last_outbound_message)
+    direct_handoff_request = handoff_signal == "yes"
     contextual_handoff_request = is_contextual_handoff_request(
         body,
         last_outbound_message,
     )
-    if direct_handoff_request or contextual_handoff_request:
+    semantic_handoff_resolution_needed = bool(
+        handoff_signal == "unclear"
+        and should_resolve_handoff_semantically(
+            body,
+            last_outbound_message,
+        )
+    )
+    if direct_handoff_request:
         logger.critical(
-            "🔀 [DIRECT TRANSFER MATCH] %s solicitó atención humana con mensaje: %s contextual=%s",
+            "🔀 [DIRECT TRANSFER MATCH] %s solicitó atención humana "
+            "con mensaje: %s contextual=%s signal=%s",
             from_number,
             body,
             contextual_handoff_request,
+            handoff_signal,
         )
         response_content = "Claro, te transfiero con un agente humano, por favor espera un momento."
-        transfer_result = None
-
-        # Close the race window before calling Chat2Desk. While the API request
-        # is in flight SAM must not process newer citizen messages or emit a
-        # delayed model response. A confirmed operator/transfer webhook will
-        # replace this short-lived provisional control with permanent takeover.
-        activate_takeover(
-            from_number,
-            expires_at=(
-                datetime.now().timestamp() + PENDING_HUMAN_TRANSFER_TTL_SECONDS
-            ),
-            source="pending_transfer:explicit_user_request",
+        handoff = await execute_human_handoff(
+            from_number=from_number,
             message_id=message_id,
             storage=db,
+            group_id=None,
+            reason=(
+                "Confirmación del usuario a una transferencia humana ofrecida"
+                if contextual_handoff_request
+                else "Solicitud inequívoca del usuario para atención humana"
+            ),
+            pending_source="explicit_user_request",
+            active_source="explicit_user_request",
         )
+        transfer_result = handoff.get("provider_result")
 
-        try:
-            if not message_id:
-                raise ValueError("No se encontró message_id en el payload para transferir")
-
-            transfer_result = await transfer_to_group(
-                message_id=message_id,
-                group_id=None,
-                reason=(
-                    "Confirmación del usuario a una transferencia humana ofrecida"
-                    if contextual_handoff_request and not direct_handoff_request
-                    else "Solicitud explícita del usuario para hablar con humano"
-                ),
-            )
-
-            if (
-                isinstance(transfer_result, str)
-                and transfer_result.startswith("TRANSFER_PENDING:")
-            ):
-                logger.warning(
-                    "⏳ [DIRECT TRANSFER PENDING] %s message_id=%s result=%s",
-                    from_number,
-                    message_id,
-                    transfer_result,
-                )
-                transfer_note = Message(
-                    time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    senderName="System",
-                    message=(
-                        "[SYSTEM] Transferencia humana pendiente de confirmación; "
-                        "SAM permanecerá silenciado temporalmente"
-                    ),
-                    number=from_number,
-                    uid=f"pending-transfer-{message_id}",
-                    direction="system",
-                    mtype="text",
-                    source="whatsapp",
-                )
-                db.Insert(transfer_note)
-                mark_inbound_processing_delivered(
-                    uid,
-                    inbound_claim_token,
-                    storage=db,
-                )
-                return JSONResponse(
-                    content={
-                        "status": True,
-                        "message": "Transferencia pendiente; SAM silenciado hasta confirmación",
-                    }
-                )
-
-            if not isinstance(transfer_result, str) or "transferida exitosamente" not in transfer_result.lower():
-                raise RuntimeError(transfer_result or "La transferencia no confirmó éxito")
-
-            activate_takeover(
+        if handoff.get("state") == "pending_provider":
+            logger.warning(
+                "⏳ [DIRECT TRANSFER PENDING] %s message_id=%s result=%s",
                 from_number,
-                source="explicit_user_request",
-                message_id=message_id,
+                message_id,
+                transfer_result,
+            )
+            transfer_note = Message(
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                senderName="System",
+                message=(
+                    "[SYSTEM] Transferencia humana pendiente de confirmación; "
+                    "SAM permanecerá silenciado temporalmente"
+                ),
+                number=from_number,
+                uid=f"pending-transfer-{message_id}",
+                direction="system",
+                mtype="text",
+                source="whatsapp",
+            )
+            db.Insert(transfer_note)
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
                 storage=db,
             )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Transferencia pendiente; SAM silenciado hasta confirmación",
+                }
+            )
 
+        if handoff.get("state") == "human_active":
             logger.critical(
                 "✅ [DIRECT TRANSFER] %s solicitado por usuario. Resultado: %s",
                 from_number,
@@ -9903,7 +9865,7 @@ async def _process_whatsapp_request(request):
                 uid=f"direct-transfer-{datetime.now().timestamp()}",
                 direction="system",
                 mtype="text",
-                source="whatsapp"
+                source="whatsapp",
             )
             db.Insert(transfer_note)
 
@@ -9919,14 +9881,14 @@ async def _process_whatsapp_request(request):
                 }
             )
 
-        except Exception as transfer_error:
-            logger.error(f"❌ [DIRECT TRANSFER] Error ejecutando transferencia: {str(transfer_error)}")
-            release_takeover_if_matches(
-                from_number,
-                message_id,
-                storage=db,
-            )
-            response_content = "Estoy teniendo problemas técnicos para transferirte en este momento. Por favor, intenta de nuevo."
+        logger.error(
+            "❌ [DIRECT TRANSFER] Error ejecutando transferencia: %s",
+            handoff.get("error"),
+        )
+        response_content = (
+            "Estoy teniendo problemas técnicos para transferirte en este momento. "
+            "Por favor, intenta de nuevo."
+        )
 
         if (
             has_confirmed_report_intent(from_number)
@@ -10179,8 +10141,9 @@ async def _process_whatsapp_request(request):
             "el nombre y nunca uses otro mensaje del ciudadano como selection2."
         )
         system_prompt += (
-            "\n\nPOLÍTICA DE TRANSFERENCIA: Sólo solicita transfer_to_group cuando el ciudadano pida "
-            "explícitamente atención humana o cuando, después de intentar las herramientas y el contexto "
+            "\n\nPOLÍTICA DE TRANSFERENCIA: Interpreta la intención del ciudadano por el significado "
+            "de la conversación; nunca le exijas repetir una frase exacta. Solicita transfer_to_group "
+            "cuando pida atención humana o cuando, después de intentar las herramientas y el contexto "
             "disponibles, no exista información suficiente para responder. Para este segundo caso usa "
             "reason_code='verified_no_context' y explica en reason qué información falta. Si una herramienta "
             "necesaria falló, usa reason_code='tool_failure'. Nunca uses falta de contexto para sacar del flujo "
@@ -10218,6 +10181,91 @@ async def _process_whatsapp_request(request):
             else func
             for func in registered_functions
         ]
+        if semantic_handoff_resolution_needed:
+            async def record_handoff_decision(decision: str):
+                """Interpreta semánticamente si el ciudadano solicita atención humana.
+
+                decision (string): Usa "yes" si solicita transferencia o atención humana, "no" si la rechaza y "unclear" sólo si la conversación no permite decidir. Evalúa el significado completo, sin exigir palabras exactas.
+                """
+                structured_decision = validate_structured_handoff_decision(
+                    decision
+                )
+                if structured_decision is None:
+                    return (
+                        "VALIDATION_BLOCK: decision debe ser exactamente "
+                        "'yes', 'no' o 'unclear'."
+                    )
+
+                current_context = transfer_guard_context.setdefault(
+                    str(message_id),
+                    {},
+                )
+                current_context["handoff_semantic_decision"] = (
+                    structured_decision
+                )
+                logger.critical(
+                    "🧠 [HANDOFF DECISION STRUCTURED] phone=%s decision=%s "
+                    "body=%s",
+                    from_number,
+                    structured_decision,
+                    (body or "")[:240],
+                )
+
+                if structured_decision == "no":
+                    return json.dumps(
+                        {
+                            "handoff_decision": "no",
+                            "instruction": (
+                                "Continúa atendiendo la solicitud actual. No "
+                                "menciones una transferencia."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                if structured_decision == "unclear":
+                    return json.dumps(
+                        {
+                            "handoff_decision": "unclear",
+                            "instruction": (
+                                "Pregunta una sola vez, con lenguaje natural, si "
+                                "desea atención humana. No le pidas una frase exacta."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                current_context["explicit_handoff"] = True
+                transfer_result = await transfer_to_group_guarded(
+                    message_id=message_id,
+                    group_id=None,
+                    reason=(
+                        "Solicitud de atención humana confirmada por decisión "
+                        "semántica estructurada"
+                    ),
+                )
+                return json.dumps(
+                    {
+                        "handoff_decision": "yes",
+                        "transfer_result": transfer_result,
+                        "instruction": (
+                            "La transferencia es terminal si fue confirmada o "
+                            "quedó pendiente. No continúes la conversación."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            record_handoff_decision.__name__ = "record_handoff_decision"
+            whatsapp_functions.append(record_handoff_decision)
+            required_tool_name = "record_handoff_decision"
+            system_prompt += (
+                "\n\nDECISIÓN SEMÁNTICA DE TRANSFERENCIA PENDIENTE: Interpreta "
+                "la solicitud completa y llama obligatoriamente a "
+                "record_handoff_decision con 'yes', 'no' o 'unclear'. La variedad "
+                "del lenguaje la resuelves tú; no le pidas al ciudadano escribir "
+                "una fórmula ni repetir palabras exactas."
+            )
+
         if semantic_emergency_resolution_needed:
             async def record_emergency_decision(decision: str):
                 """Interpreta y registra la respuesta contextual a la pregunta de emergencia antes de continuar.
@@ -10310,7 +10358,8 @@ async def _process_whatsapp_request(request):
 
             record_emergency_decision.__name__ = "record_emergency_decision"
             whatsapp_functions.append(record_emergency_decision)
-            required_tool_name = "record_emergency_decision"
+            if required_tool_name is None:
+                required_tool_name = "record_emergency_decision"
             system_prompt += (
                 "\n\nDECISIÓN SEMÁNTICA DE EMERGENCIA PENDIENTE: La última "
                 "pregunta visible fue si esta situación representa una emergencia. "
@@ -10373,17 +10422,20 @@ async def _process_whatsapp_request(request):
         transfer_guard_context[str(message_id)] = {
             "from_number": from_number,
             "body": body or "",
-            "explicit_handoff": (
-                is_explicit_human_handoff_request(body or "")
-                or is_contextual_handoff_request(body, last_outbound_message)
-            ),
+            "explicit_handoff": handoff_signal == "yes",
+            "handoff_signal": handoff_signal,
             "report_intent": detect_report_intent(body or "", ""),
             "report_state": build_report_state_snapshot(from_number),
             "storage": db,
         }
 
         fixed_phone_response = resolve_fixed_security_phone_response(body)
-        if intake_response_override:
+        if semantic_handoff_resolution_needed:
+            model_response = llm_service.generate_response(user_input=body)
+            response_content = ""
+            async for response in model_response:
+                response_content += str(response)
+        elif intake_response_override:
             response_content = intake_response_override
             logger.critical(
                 "🧭 [INTAKE RESPONSE OVERRIDE] phone=%s response=%s",
@@ -10793,6 +10845,20 @@ async def _process_whatsapp_request(request):
                 message_id=message_id,
                 response_preview=response_content[:300],
                 remaining=takeover_remaining_label(active_takeover),
+            )
+            # A transfer confirmed during this model turn is terminal. Record
+            # the inbound as delivered even though SAM intentionally emits no
+            # additional message after human control becomes active.
+            persist_successful_delivery_marker(
+                db,
+                from_number,
+                uid,
+                message_id,
+            )
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
             )
             return JSONResponse(content={"status": True, "message": "Respuesta final bloqueada por takeover humano activo"})
 

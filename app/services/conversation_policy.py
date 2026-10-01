@@ -427,24 +427,36 @@ def dialog_transfer_confirms_pending_control(
     return pending_since > 0 and event_time + tolerance_seconds >= pending_since
 
 
-def is_contextual_handoff_request(
-    current_message: str | None,
-    previous_assistant_message: str | None,
-) -> bool:
-    """Recognize a citizen accepting/retrying a just-mentioned human handoff.
+_HANDOFF_CONTROL_WORDS = frozenset(
+    {
+        "agente",
+        "asesor",
+        "ejecutivo",
+        "humano",
+        "operador",
+        "representante",
+        "transferencia",
+    }
+)
+_HANDOFF_PERSON_WORDS = _HANDOFF_CONTROL_WORDS | {"alguien", "persona"}
+_HANDOFF_ACTION_STEMS = (
+    "atend",
+    "atiend",
+    "canaliz",
+    "comunic",
+    "escal",
+    "habl",
+    "pas",
+    "transfer",
+    "trasfier",
+    "transfier",
+)
 
-    Short replies such as "sí", "porfa" or "comunícame con uno" are only
-    authoritative when SAM's immediately preceding message mentioned human
-    attention or a transfer. This avoids treating an unrelated "sí" as a
-    handoff request.
-    """
-    current = normalize_policy_text(current_message)
-    previous = normalize_policy_text(previous_assistant_message)
-    if not current or not previous:
-        return False
 
-    previous_mentions_human = any(
-        marker in previous
+def _assistant_mentions_handoff(value: str | None) -> bool:
+    normalized = normalize_policy_text(value)
+    return any(
+        marker in normalized
         for marker in (
             "agente humano",
             "agente ciudadano",
@@ -458,58 +470,146 @@ def is_contextual_handoff_request(
             "comunicarte con",
         )
     )
-    if not previous_mentions_human:
+
+
+def classify_handoff_signal(
+    current_message: str | None,
+    previous_assistant_message: str | None = None,
+) -> str:
+    """Resolve only high-confidence handoff controls without phrase matching.
+
+    The deterministic layer owns standalone control words and structurally
+    unambiguous requests. Free-form language remains ``unclear`` so the model
+    can interpret it in context instead of forcing the citizen to repeat a
+    prescribed sentence.
+    """
+    current = normalize_policy_text(current_message)
+    if not current:
+        return "unclear"
+
+    if current in _HANDOFF_CONTROL_WORDS:
+        return "yes"
+
+    previous_mentions_handoff = _assistant_mentions_handoff(
+        previous_assistant_message
+    )
+    if previous_mentions_handoff:
+        negative_replies = {
+            "no",
+            "no gracias",
+            "mejor no",
+            "ahorita no",
+            "por ahora no",
+        }
+        if current in negative_replies:
+            return "no"
+
+        affirmative_replies = {
+            "si",
+            "si sam",
+            "si por favor",
+            "si porfa",
+            "si gracias",
+            "si adelante",
+            "porfa",
+            "por favor",
+            "claro",
+            "claro que si",
+            "adelante",
+            "de acuerdo",
+            "ok",
+            "okay",
+            "hazlo",
+            "please",
+        }
+        if current in affirmative_replies:
+            return "yes"
+
+        current_words = current.split()
+        if len(current_words) <= 6 and (
+            current.startswith("si ")
+            or current.startswith("claro ")
+            or current.startswith("de acuerdo ")
+            or current.startswith("me gustaria")
+            or current.startswith("quisiera")
+        ):
+            return "yes"
+
+    words = set(current.split())
+    has_person_word = bool(words & _HANDOFF_PERSON_WORDS)
+    has_action = any(stem in current for stem in _HANDOFF_ACTION_STEMS)
+    if has_person_word and has_action:
+        return "yes"
+
+    if (
+        previous_mentions_handoff
+        and has_action
+        and bool(words & {"uno", "una"})
+    ):
+        return "yes"
+
+    # A direct transfer verb addressed to SAM is also unambiguous even if the
+    # citizen omits the role (for example, "me transfieres").
+    addressed_transfer = (
+        any(stem in current for stem in ("transfer", "trasfier", "transfier"))
+        and any(marker in words for marker in {"me", "nos", "puedes", "podrias"})
+    )
+    if addressed_transfer:
+        return "yes"
+
+    return "unclear"
+
+
+def should_resolve_handoff_semantically(
+    current_message: str | None,
+    previous_assistant_message: str | None = None,
+) -> bool:
+    """Send ambiguous human-attention language to a structured model decision."""
+    if classify_handoff_signal(
+        current_message,
+        previous_assistant_message,
+    ) != "unclear":
         return False
 
-    affirmative_replies = {
-        "si",
-        "si sam",
-        "si por favor",
-        "si porfa",
-        "si gracias",
-        "si adelante",
-        "porfa",
-        "por favor",
-        "claro",
-        "claro que si",
-        "adelante",
-        "de acuerdo",
-        "ok",
-        "okay",
-        "hazlo",
-        "please",
-    }
-    if current in affirmative_replies:
+    if _assistant_mentions_handoff(previous_assistant_message):
         return True
 
-    # Accept natural, short confirmations only in the context of SAM's
-    # immediately preceding handoff offer. The contextual requirement above
-    # keeps phrases such as "sí, por favor" from authorizing a transfer after
-    # an unrelated question.
-    current_words = current.split()
-    if len(current_words) <= 6 and (
-        current.startswith("si ")
-        or current.startswith("claro ")
-        or current.startswith("de acuerdo ")
-        or current.startswith("me gustaria")
-        or current.startswith("quisiera")
-    ):
-        return True
-
-    asks_to_connect = any(
-        marker in current
-        for marker in (
-            "me puedes comunicar",
-            "puedes comunicarme",
-            "comunicar con uno",
-            "comunicarme con uno",
-            "pasame con uno",
-            "pasa con uno",
-            "intenta de nuevo",
-            "vuelve a intentar",
-        )
+    current = normalize_policy_text(current_message)
+    if not current:
+        return False
+    words = set(current.split())
+    semantic_roles = _HANDOFF_CONTROL_WORDS - {"transferencia"}
+    mentions_role = bool(words & semantic_roles)
+    mentions_transfer = any(
+        stem in current for stem in ("transfer", "trasfier", "transfier")
     )
-    return asks_to_connect
+    return mentions_role or mentions_transfer
+
+
+def validate_structured_handoff_decision(value: str | None) -> str | None:
+    """Accept only the closed vocabulary emitted by semantic handoff review."""
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in {"yes", "no", "unclear"} else None
+
+
+def is_contextual_handoff_request(
+    current_message: str | None,
+    previous_assistant_message: str | None,
+) -> bool:
+    """Recognize a citizen accepting/retrying a just-mentioned human handoff.
+
+    Short replies such as "sí", "porfa" or "comunícame con uno" are only
+    authoritative when SAM's immediately preceding message mentioned human
+    attention or a transfer. This avoids treating an unrelated "sí" as a
+    handoff request.
+    """
+    return bool(
+        _assistant_mentions_handoff(previous_assistant_message)
+        and classify_handoff_signal(
+            current_message,
+            previous_assistant_message,
+        ) == "yes"
+    )
 
 
 def greeting_display_name(sender_name: str | None, transport: str | None) -> str:

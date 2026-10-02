@@ -490,7 +490,7 @@ Si el usuario solicita información que NO está en la lista de funciones a cont
 - consulta sobre tramites y/o servicios de desarrollo urbano Utiliza 'get_desarrollo_urbano()'
 - consulta sobre tramites de la secreatria de seguridad Utiliza 'get_seguridad()'
 - consulta sobre INAPAM Utiliza 'get_inapam()'
-- consulta sobre APOYO ALIMENTARIO Utiliza 'get_apoyo_alimentario()'
+- consulta sobre APOYO ALIMENTARIO, o tarjeta azul Utiliza 'get_apoyo_alimentario()'
 - consulta sobre la direccion de salud publica Utiliza 'get_salud_publica()'
 - consulta sobre San Pedro de Pinta Utiliza 'get_san_pedro_de_pinta()'
 - consulta sobre las rutas de basura vegetal Utiliza 'get_basura_vegetal()'

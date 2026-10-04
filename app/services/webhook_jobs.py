@@ -221,6 +221,48 @@ def claim_webhook_job(storage, *, stale_after_seconds: float = 300) -> dict[str,
             conn.close()
 
 
+def has_newer_pending_inbound_job(
+    storage,
+    *,
+    conversation_key: str,
+    current_job_id: int,
+) -> bool:
+    """Check whether a newer citizen message is waiting for this conversation."""
+    if not ensure_webhook_job_storage(storage):
+        return False
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM {WEBHOOK_JOBS_TABLE}
+                    WHERE conversation_key = %s
+                      AND id > %s
+                      AND status IN ('queued', 'retry', 'processing')
+                      AND COALESCE(payload->>'type', '') = 'from_client'
+                )
+                """,
+                (str(conversation_key), int(current_job_id)),
+            )
+            row = cursor.fetchone()
+        return bool(row and row[0])
+    except Exception as error:
+        # Coalescing is an optimization. A lookup failure must not silence the
+        # ordinary response path.
+        logger.error(
+            "No se pudo consultar el siguiente inbound de %s: %s",
+            conversation_key,
+            error,
+        )
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def complete_webhook_job(storage, job_id: int, claim_token: str) -> bool:
     return _finish_job(storage, job_id, claim_token, status="done")
 

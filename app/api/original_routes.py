@@ -170,6 +170,7 @@ from app.services.conversation_policy import (
     should_send_initial_greeting,
     should_resolve_handoff_semantically,
     should_preserve_evaluation_across_new_request,
+    should_coalesce_pending_report_question,
     should_suppress_recent_post_folio_input,
     should_suppress_repeated_report_question,
     return_greeting_covers_current_inbound,
@@ -229,6 +230,7 @@ from app.services.webhook_jobs import (
     enqueue_webhook_job,
     ensure_webhook_job_storage,
     fail_webhook_job,
+    has_newer_pending_inbound_job,
 )
 from app.services.report_state import (
     delete_report_state,
@@ -248,6 +250,7 @@ from app.services.report_completion import (
     ensure_report_completion_storage,
     get_recent_report_completion,
     is_delayed_pre_completion_event,
+    is_queued_before_completion,
     mark_report_completion_notified,
     record_report_completion,
 )
@@ -6235,7 +6238,11 @@ async def process_chat2desk_webhook_jobs():
                     continue
 
                 processing_started_at = time.monotonic()
-                payload = job["payload"]
+                payload = dict(job["payload"])
+                # Ephemeral worker metadata: it is not written back to the
+                # provider payload, but lets the response path coalesce an
+                # intermediate question when another inbound is already queued.
+                payload["_sam_webhook_job_id"] = job["id"]
                 transport = str(payload.get("transport") or "wa_direct").strip().casefold()
                 received_at = float(
                     payload.get("_sam_webhook_received_at")
@@ -6247,11 +6254,11 @@ async def process_chat2desk_webhook_jobs():
                 phone_number = await asyncio.to_thread(
                     _restore_durable_report_context,
                     storage,
-                    job["payload"],
+                    payload,
                 )
                 try:
                     result = await _process_whatsapp_request(
-                        QueuedWebhookRequest(job["payload"], job["query_params"])
+                        QueuedWebhookRequest(payload, job["query_params"])
                     )
                 finally:
                     await asyncio.to_thread(
@@ -7665,6 +7672,50 @@ async def _process_whatsapp_request(request):
                     status_code=503,
                 )
             pending_delivered_before_current = True
+
+        if (
+            recent_completion
+            and not durable_evaluation_answer
+            and not quoted_hsm_ok
+            and not bool(payload.get("is_new_request"))
+            # Preserve SAM's broad report-intent behavior: a new report can be
+            # phrased as "hay un bache" without saying "quiero reportar".
+            and not establishes_report_intent(body)
+            and is_queued_before_completion(
+                recent_completion,
+                webhook_received_timestamp,
+            )
+        ):
+            # This inbound reached SAM before CIAC returned the folio, but it
+            # waited behind the turn that completed the report. It belongs to
+            # the now-terminal workflow and must never fall through as a new
+            # conversation after the report session has been cleared.
+            with report_sessions_lock:
+                report_sessions.pop(from_number, None)
+            user_answers.pop(from_number, None)
+            delete_report_state(db, from_number)
+            logger.warning(
+                "🧾 [PRE-FOLIO QUEUED TERMINAL] Ignorando continuación encolada "
+                "para %s folio=%s uid=%s received_at=%s completed_at=%s body=%s",
+                from_number,
+                recent_completion.get("folio"),
+                uid,
+                webhook_received_timestamp,
+                recent_completion.get("completed_at"),
+                (body or "")[:120],
+            )
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Continuación encolada anterior al folio ignorada",
+                    "folio": recent_completion.get("folio"),
+                }
+            )
 
         if (
             not pending_delivered_before_current
@@ -10616,6 +10667,41 @@ async def _process_whatsapp_request(request):
                     original_response[:240],
                     response_content[:240],
                 )
+
+        current_webhook_job_id = payload.get("_sam_webhook_job_id")
+        newer_pending_inbound = False
+        if has_confirmed_report_intent(from_number) and current_webhook_job_id:
+            newer_pending_inbound = await asyncio.to_thread(
+                has_newer_pending_inbound_job,
+                db,
+                conversation_key=from_number,
+                current_job_id=int(current_webhook_job_id),
+            )
+        if should_coalesce_pending_report_question(
+            report_active=has_confirmed_report_intent(from_number),
+            has_newer_pending_inbound=newer_pending_inbound,
+            proposed_outbound=response_content,
+        ):
+            logger.info(
+                "🧾 [REPORT QUEUE COALESCED] Pregunta intermedia omitida para "
+                "%s uid=%s job_id=%s response=%s",
+                from_number,
+                uid,
+                current_webhook_job_id,
+                response_content[:180],
+            )
+            transfer_guard_context.pop(str(message_id), None)
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Dato acumulado; pregunta intermedia omitida",
+                }
+            )
         if not is_latest_inbound_processing_claim(
             uid,
             from_number,

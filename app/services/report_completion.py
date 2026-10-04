@@ -276,6 +276,28 @@ def is_delayed_pre_completion_event(
     return bool(completed_at and event_timestamp < completed_at - tolerance_seconds)
 
 
+def is_queued_before_completion(
+    completion: dict[str, Any] | None,
+    received_at: float | None,
+) -> bool:
+    """Return whether an inbound was already queued when CIAC confirmed a folio.
+
+    ``received_at`` and ``completed_at`` are both server timestamps, so unlike
+    the provider event timestamp they do not need a clock-skew tolerance.  The
+    inbound that actually creates the report cannot match this condition: no
+    completion exists yet when that job starts.  This fence is for a later job
+    that waited in the durable queue while the previous turn created the folio.
+    """
+    if not completion or received_at is None:
+        return False
+    try:
+        completed_at = float(completion.get("completed_at") or 0)
+        queued_at = float(received_at)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return bool(completed_at > 0 and queued_at < completed_at)
+
+
 def clear_report_completion(storage, phone_number: str) -> bool:
     key = normalize_phone_key(phone_number)
     with _memory_lock:

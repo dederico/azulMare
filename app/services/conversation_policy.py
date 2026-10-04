@@ -245,6 +245,27 @@ def should_suppress_repeated_report_question(
     return bool(previous and proposed and previous == proposed and is_question)
 
 
+def should_coalesce_pending_report_question(
+    *,
+    report_active: bool,
+    has_newer_pending_inbound: bool,
+    proposed_outbound: str | None,
+) -> bool:
+    """Avoid showing an intermediate report question during an inbound burst.
+
+    Every inbound is still processed and persisted in order.  Only the
+    intermediate question is omitted when another citizen message for the same
+    conversation is already waiting; that newer turn will answer from the
+    accumulated report state.  Statements and terminal responses are never
+    coalesced here.
+    """
+    return bool(
+        report_active
+        and has_newer_pending_inbound
+        and str(proposed_outbound or "").strip().endswith("?")
+    )
+
+
 def automatic_report_timeouts_enabled(value: str | None) -> bool:
     """Automatic report creation is opt-in; silence must never create a folio."""
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}

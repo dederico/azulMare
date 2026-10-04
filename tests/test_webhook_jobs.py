@@ -1,6 +1,10 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
-from app.services.webhook_jobs import build_webhook_event_key
+from app.services.webhook_jobs import (
+    build_webhook_event_key,
+    has_newer_pending_inbound_job,
+)
 
 
 class WebhookJobTests(unittest.TestCase):
@@ -39,6 +43,29 @@ class WebhookJobTests(unittest.TestCase):
             build_webhook_event_key(first),
             build_webhook_event_key(second),
         )
+
+    @patch("app.services.webhook_jobs.ensure_webhook_job_storage", return_value=True)
+    @patch("app.services.webhook_jobs._connect")
+    def test_detects_newer_pending_inbound_for_same_conversation(
+        self,
+        connect,
+        _ensure_storage,
+    ):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (True,)
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        connect.return_value = connection
+
+        found = has_newer_pending_inbound_job(
+            MagicMock(),
+            conversation_key="5218125868648",
+            current_job_id=120,
+        )
+
+        self.assertTrue(found)
+        parameters = cursor.execute.call_args.args[1]
+        self.assertEqual(parameters, ("5218125868648", 120))
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ from app.services.conversation_policy import (
     should_accept_bot_return_event,
     should_send_initial_greeting,
     should_suppress_recent_post_folio_input,
+    should_coalesce_pending_report_question,
     should_suppress_repeated_report_question,
     should_resolve_handoff_semantically,
     validate_structured_handoff_decision,
@@ -167,6 +168,38 @@ class AutomaticReportPolicyTests(unittest.TestCase):
                 question,
                 "¿En qué colonia se encuentra el problema?",
                 report_progress_made=True,
+            )
+        )
+
+    def test_report_burst_coalesces_only_intermediate_questions(self):
+        question = "¿Deseas agregar una imagen para complementar tu reporte?"
+
+        self.assertTrue(
+            should_coalesce_pending_report_question(
+                report_active=True,
+                has_newer_pending_inbound=True,
+                proposed_outbound=question,
+            )
+        )
+        self.assertFalse(
+            should_coalesce_pending_report_question(
+                report_active=True,
+                has_newer_pending_inbound=False,
+                proposed_outbound=question,
+            )
+        )
+        self.assertFalse(
+            should_coalesce_pending_report_question(
+                report_active=False,
+                has_newer_pending_inbound=True,
+                proposed_outbound=question,
+            )
+        )
+        self.assertFalse(
+            should_coalesce_pending_report_question(
+                report_active=True,
+                has_newer_pending_inbound=True,
+                proposed_outbound="Entendido, conservaré la información.",
             )
         )
 

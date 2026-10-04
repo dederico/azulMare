@@ -4,6 +4,7 @@ from app.services.report_completion import (
     clear_report_completion,
     get_recent_report_completion,
     is_delayed_pre_completion_event,
+    is_queued_before_completion,
     mark_report_completion_notified,
     record_report_completion,
 )
@@ -97,6 +98,14 @@ class DurableReportCompletionTests(unittest.TestCase):
         self.assertFalse(is_delayed_pre_completion_event(completion, 99.0))
         self.assertFalse(is_delayed_pre_completion_event(completion, 101.0))
         self.assertFalse(is_delayed_pre_completion_event(completion, None))
+
+    def test_queued_input_received_before_folio_is_terminal_even_if_processed_late(self):
+        completion = {"folio": "475504", "completed_at": 100.0}
+
+        self.assertTrue(is_queued_before_completion(completion, 99.999))
+        self.assertFalse(is_queued_before_completion(completion, 100.0))
+        self.assertFalse(is_queued_before_completion(completion, 101.0))
+        self.assertFalse(is_queued_before_completion(completion, None))
 
 
 if __name__ == "__main__":

@@ -419,6 +419,23 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertIn("selection4", error)
         self.assertIn("ubicación", error)
 
+    def test_operational_image_reply_cannot_be_report_description(self):
+        values, error = self.valid_submission(selection4="No tengo fotos")
+
+        self.assertIsNone(values)
+        self.assertIn("selection4", error)
+        self.assertIn("respuesta operativa", error)
+
+    def test_citizen_question_must_be_rewritten_as_a_problem_statement(self):
+        values, error = self.valid_submission(
+            selection4="¿Por qué no han recogido el escombro?",
+            selection1="986",
+        )
+
+        self.assertIsNone(values)
+        self.assertIn("selection4", error)
+        self.assertIn("pregunta", error)
+
     def test_clean_model_summary_wins_over_raw_location_bearing_evidence(self):
         self.assertEqual(
             choose_report_description_for_submission(

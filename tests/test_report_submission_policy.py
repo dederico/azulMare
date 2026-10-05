@@ -390,6 +390,34 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertIsNone(values)
         self.assertIn("explicación concreta", error)
 
+    def test_street_fragment_cannot_be_accepted_as_report_description(self):
+        values, error = self.valid_submission(
+            selection1="986",
+            selection4="Enrique H",
+            selection5="Enrique H. Herrera, frente a la Estancia del DIF, en la",
+            selection6="0000",
+            selection7="Canteras",
+        )
+
+        self.assertIsNone(values)
+        self.assertIn("selection4", error)
+        self.assertIn("ubicación", error)
+
+    def test_description_containing_the_structured_street_is_blocked(self):
+        values, error = self.valid_submission(
+            selection1="986",
+            selection4=(
+                "Hay escombro abandonado en Enrique H. Herrera, frente al DIF"
+            ),
+            selection5="Enrique H. Herrera",
+            selection6="0000",
+            selection7="Canteras",
+        )
+
+        self.assertIsNone(values)
+        self.assertIn("selection4", error)
+        self.assertIn("ubicación", error)
+
     def test_legacy_generic_description_is_blocked(self):
         values, error = self.valid_submission(selection4="Problema reportado: bache")
 
@@ -962,6 +990,26 @@ class SaveSelectionBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.startswith("VALIDATION_BLOCK:"))
         self.assertIn("No se creó ningún folio", result)
+
+    async def test_final_api_boundary_never_posts_location_as_description(self):
+        with patch("httpx.AsyncClient") as http_client:
+            result = await save_client_selection2(
+                yoga_number="5218111111111",
+                selection1="986",
+                selection2="Ana Pérez",
+                selection3="",
+                selection4="Enrique H",
+                selection5=(
+                    "Enrique H. Herrera, frente a la Estancia del DIF, en la"
+                ),
+                selection6="0000",
+                selection7="Canteras",
+            )
+
+        self.assertTrue(result.startswith("VALIDATION_BLOCK:"))
+        self.assertIn("selection4", result)
+        self.assertIn("ubicación", result)
+        http_client.assert_not_called()
 
     async def test_final_api_boundary_repairs_mismatched_category_before_http(self):
         # La validación de la corrección pura se cubre arriba. Aquí se usa un

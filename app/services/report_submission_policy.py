@@ -1250,6 +1250,18 @@ def validate_and_normalize_report_submission(
             "debes obtener una explicación concreta del problema, basada únicamente "
             "en lo dicho por el ciudadano"
         )
+    if normalized_description in REPORT_CONTROL_MESSAGES:
+        return None, (
+            "selection4 contiene una respuesta operativa de la conversación. "
+            "Reconstruye únicamente selection4 como una sola oración breve con "
+            "el problema clave dicho por el ciudadano"
+        )
+    if "?" in values["selection4"] or "¿" in values["selection4"]:
+        return None, (
+            "selection4 contiene una pregunta. Reconstruye únicamente selection4 "
+            "como una oración afirmativa breve con el problema clave dicho por el "
+            "ciudadano"
+        )
 
     conflicting_location_field = report_description_location_conflict(
         values["selection4"],

@@ -19,6 +19,8 @@ explanation.
 | The final CIAC boundary blocks the contaminated payload before opening HTTP | `test_final_api_boundary_never_posts_location_as_description` | Integration boundary | PASS |
 | A clean model summary remains authoritative over raw conversation evidence containing an address | `test_clean_model_summary_wins_over_raw_location_bearing_evidence` | Unit | PASS |
 | A contaminated model summary falls back to citizen evidence before final validation | `test_contaminated_model_summary_falls_back_to_citizen_evidence` | Unit | PASS |
+| An image/workflow answer cannot become the CIAC explanation | `test_operational_image_reply_cannot_be_report_description` | Unit | PASS |
+| A citizen question must be rewritten as a concise problem statement | `test_citizen_question_must_be_rewritten_as_a_problem_statement` | Unit | PASS |
 
 RED command: `PYTHONPATH=. pytest -q tests/test_report_submission_policy.py -k 'street_fragment or structured_street or never_posts_location'`
 
@@ -27,11 +29,11 @@ exact malformed explanation observed in folio `475686`.
 
 GREEN focused command: `PYTHONPATH=. pytest -q tests/test_report_submission_policy.py`
 
-GREEN focused result: `79 passed in 0.18s`.
+GREEN focused result: `81 passed in 0.19s`.
 
 GREEN full-suite command: `PYTHONPATH=. pytest -q`
 
-GREEN full-suite result: `337 passed in 1.31s`.
+GREEN full-suite result: `339 passed in 1.49s`.
 
 ## Coverage and known gaps
 

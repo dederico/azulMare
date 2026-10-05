@@ -496,6 +496,96 @@ def is_meaningful_report_description(value: str | None) -> bool:
     )
 
 
+def report_description_location_conflict(
+    description: str | None,
+    street: str | None,
+    number: str | None,
+    neighborhood: str | None,
+) -> str | None:
+    """Return the structured field contaminating ``selection4``, if any.
+
+    This deliberately validates field ownership rather than trying to decide
+    what the citizen meant.  The model owns the semantic summary; this boundary
+    only prevents a street, number or neighborhood from being submitted as the
+    problem (or repeated inside it).
+    """
+
+    def comparison_text(value: str | None) -> str:
+        normalized = normalize_report_text(value)
+        return " ".join(re.sub(r"[^a-z0-9]+", " ", normalized).split())
+
+    def contains_phrase(container: str, candidate: str) -> bool:
+        return bool(
+            candidate
+            and re.search(
+                rf"(?<!\w){re.escape(candidate)}(?!\w)",
+                container,
+            )
+        )
+
+    problem = comparison_text(description)
+    if not problem:
+        return None
+
+    for field, raw_location in (
+        ("selection5", street),
+        ("selection6", number),
+        ("selection7", neighborhood),
+    ):
+        location = comparison_text(raw_location)
+        if not location:
+            continue
+        if problem == location:
+            return field
+
+        # A number can legitimately describe quantity (for example, "tres
+        # luminarias"). Only an exact numeric description is a field collision.
+        if field == "selection6":
+            continue
+
+        problem_size = len(re.sub(r"\W", "", problem))
+        location_size = len(re.sub(r"\W", "", location))
+        if problem_size >= 6 and contains_phrase(location, problem):
+            return field
+        if (
+            location_size >= 8 or len(location.split()) >= 2
+        ) and contains_phrase(problem, location):
+            return field
+
+    return None
+
+
+def choose_report_description_for_submission(
+    *,
+    model_description: str | None,
+    evidence_description: str | None,
+    street: str | None,
+    number: str | None,
+    neighborhood: str | None,
+) -> str:
+    """Prefer a valid model summary without weakening citizen grounding.
+
+    Conversation reconciliation may recover a raw citizen turn that still
+    includes its address.  A model-produced summary that satisfies field
+    ownership is the intended ``selection4`` contract and must not be replaced
+    by that raw turn.  Contaminated model output still falls back to citizen
+    evidence and is then checked by the final validation boundary.
+    """
+    proposed = sanitize_report_description(model_description)
+    evidence = sanitize_report_description(evidence_description)
+    if (
+        is_meaningful_report_description(proposed)
+        and not report_description_location_conflict(
+            proposed,
+            street,
+            number,
+            neighborhood,
+        )
+    ):
+        return proposed
+    return evidence or proposed
+
+
 def is_valid_reporter_name(value: str | None) -> bool:
     normalized = normalize_report_text(value)
     return bool(
@@ -1159,6 +1249,20 @@ def validate_and_normalize_report_submission(
         return None, (
             "debes obtener una explicación concreta del problema, basada únicamente "
             "en lo dicho por el ciudadano"
+        )
+
+    conflicting_location_field = report_description_location_conflict(
+        values["selection4"],
+        values["selection5"],
+        values["selection6"],
+        values["selection7"],
+    )
+    if conflicting_location_field:
+        return None, (
+            "selection4 contiene información de ubicación que pertenece a "
+            f"{conflicting_location_field}. Reconstruye únicamente selection4 como "
+            "una sola oración breve con el problema clave dicho por el ciudadano; "
+            "conserva los demás campos y no vuelvas a preguntar datos ya proporcionados"
         )
 
     if normalize_report_text(values["selection5"]) in INVALID_REQUIRED_VALUES:

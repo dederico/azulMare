@@ -22,6 +22,7 @@ from app.services.report_submission_policy import (
     normalize_report_number_input,
     normalize_reporter_name_input,
     parse_report_catalog,
+    choose_report_description_for_submission,
     report_catalog_contains,
     report_session_has_confirmed_intent,
     reconcile_with_citizen_evidence,
@@ -417,6 +418,37 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertIsNone(values)
         self.assertIn("selection4", error)
         self.assertIn("ubicación", error)
+
+    def test_clean_model_summary_wins_over_raw_location_bearing_evidence(self):
+        self.assertEqual(
+            choose_report_description_for_submission(
+                model_description=(
+                    "Escombro abandonado junto a los contenedores de basura"
+                ),
+                evidence_description=(
+                    "Hay escombro abandonado junto a los contenedores de basura "
+                    "en Enrique H. Herrera frente al DIF"
+                ),
+                street="Enrique H. Herrera frente al DIF",
+                number="0000",
+                neighborhood="Canteras",
+            ),
+            "Escombro abandonado junto a los contenedores de basura",
+        )
+
+    def test_contaminated_model_summary_falls_back_to_citizen_evidence(self):
+        self.assertEqual(
+            choose_report_description_for_submission(
+                model_description="Enrique H",
+                evidence_description=(
+                    "Hay escombro abandonado junto a los contenedores de basura"
+                ),
+                street="Enrique H. Herrera frente al DIF",
+                number="0000",
+                neighborhood="Canteras",
+            ),
+            "Hay escombro abandonado junto a los contenedores de basura",
+        )
 
     def test_legacy_generic_description_is_blocked(self):
         values, error = self.valid_submission(selection4="Problema reportado: bache")

@@ -181,6 +181,7 @@ from app.services.conversation_policy import (
 )
 from app.services.report_submission_policy import (
     classify_sidewalk_sign_answer,
+    choose_report_description_for_submission,
     contains_complete_report_phrase,
     deduplicate_report_media,
     determine_report_progress,
@@ -3174,6 +3175,7 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         # CIAC 964 is the direct C4 / immediate-attention inbox.
         selection1 = "964"
 
+    model_selection4 = selection4
     selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
         yoga_number,
         selection1,
@@ -3194,6 +3196,13 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             selection6,
             selection7,
         )
+    )
+    selection4 = choose_report_description_for_submission(
+        model_description=model_selection4,
+        evidence_description=selection4,
+        street=selection5,
+        number=selection6,
+        neighborhood=selection7,
     )
     normalized_submission, validation_error = validate_and_normalize_report_submission(
         selection1=selection1,
@@ -3388,6 +3397,7 @@ async def save_client_selection2_guarded(
             current_image_decision,
         )
 
+    model_selection4 = selection4
     selection1, selection4 = reconcile_report_fields_with_citizen_evidence(
         yoga_number,
         selection1,
@@ -3408,6 +3418,13 @@ async def save_client_selection2_guarded(
             selection6,
             selection7,
         )
+    )
+    selection4 = choose_report_description_for_submission(
+        model_description=model_selection4,
+        evidence_description=selection4,
+        street=selection5,
+        number=selection6,
+        neighborhood=selection7,
     )
     normalized_submission, validation_error = validate_and_normalize_report_submission(
         selection1=selection1,

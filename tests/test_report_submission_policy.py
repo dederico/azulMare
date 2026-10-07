@@ -182,7 +182,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             )
         )
 
-    def test_ciac_summary_removes_intent_greeting_repetition_and_uses_location(self):
+    def test_ciac_summary_removes_intent_greeting_and_repetition(self):
         summary = build_ciac_report_summary(
             "Quiero levantar un reporte, una luminaria que no funciona. "
             "Hola, quiero levantar un reporte - Ubicación del reporte: "
@@ -194,8 +194,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             summary,
-            "Se reporta una luminaria que no funciona en Vasconcelos 123, "
-            "colonia Centro.",
+            "Se reporta una luminaria que no funciona.",
         )
 
     def test_ciac_summary_does_not_change_original_evidence(self):
@@ -211,8 +210,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         self.assertEqual(original, "Quiero reportar un bache que obstruye el carril derecho")
         self.assertEqual(
             summary,
-            "Se reporta un bache que obstruye el carril derecho en Vasconcelos "
-            "321, colonia Centro.",
+            "Se reporta un bache que obstruye el carril derecho.",
         )
 
     def test_ciac_summary_uses_one_key_statement_instead_of_accumulated_chat(self):
@@ -234,7 +232,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             ),
             "Se reporta que el domingo vinieron los de la CFE a cortar unas ramas "
             "de arboles afuera de mi casa y dejaron lleno de troncos y ramas "
-            "tiradas en San José, colonia Residencial Santa Barbara.",
+            "tiradas.",
         )
 
     def test_ciac_summary_preserves_concrete_negative_problem(self):
@@ -245,8 +243,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 "321",
                 "Centro",
             ),
-            "Se reporta que no hay luminarias en Vasconcelos 321, "
-            "colonia Centro.",
+            "Se reporta que no hay luminarias.",
         )
 
     def test_ciac_summary_removes_conversational_leading_filler(self):
@@ -257,8 +254,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 "100",
                 "Centro",
             ),
-            "Se reporta que hay bastante basura por la escuela Lauro Aguirre "
-            "en Lauro Aguirre 100, colonia Centro.",
+            "Se reporta que hay bastante basura por la escuela Lauro Aguirre.",
         )
 
     def test_emergency_description_is_captured_after_situation_question(self):
@@ -280,8 +276,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 "0000",
                 "Palo Blanco",
             ),
-            "Se reporta que no hay luminarias en General Francisco Naranjo, "
-            "colonia Palo Blanco.",
+            "Se reporta que no hay luminarias.",
         )
 
     def test_sam_location_acknowledgement_is_removed_from_description(self):
@@ -453,7 +448,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             "Escombro abandonado junto a los contenedores de basura",
         )
 
-    def test_contaminated_model_summary_falls_back_to_citizen_evidence(self):
+    def test_contaminated_model_summary_is_preserved_for_validation(self):
         self.assertEqual(
             choose_report_description_for_submission(
                 model_description="Enrique H",
@@ -464,7 +459,7 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 number="0000",
                 neighborhood="Canteras",
             ),
-            "Hay escombro abandonado junto a los contenedores de basura",
+            "Enrique H",
         )
 
     def test_legacy_generic_description_is_blocked(self):
@@ -574,16 +569,73 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             )
         )
 
-    def test_citizen_evidence_repairs_category_and_model_description(self):
+    def test_citizen_evidence_does_not_replace_model_owned_fields(self):
         category, description, changed = reconcile_with_citizen_evidence(
             "974",
             "Hay basura en la calle",
             "Hay un bache profundo frente a mi domicilio",
         )
 
-        self.assertTrue(changed)
+        self.assertFalse(changed)
+        self.assertEqual(category, "974")
+        self.assertEqual(description, "Hay basura en la calle")
+
+    def test_transcript_evidence_never_overwrites_valid_model_description(self):
+        model_description = "Hay un bache profundo que obstruye el carril derecho"
+
+        for transcript_evidence in (
+            "buenos días",
+            "reporte",
+            "los Callejones",
+        ):
+            with self.subTest(transcript_evidence=transcript_evidence):
+                _, description, _ = reconcile_with_citizen_evidence(
+                    "984",
+                    model_description,
+                    transcript_evidence,
+                )
+
+                self.assertEqual(description, model_description)
+
+    def test_transcript_evidence_does_not_fill_missing_model_description(self):
+        category, description, changed = reconcile_with_citizen_evidence(
+            "984",
+            "",
+            "Hay un bache profundo frente a mi domicilio",
+        )
+
+        self.assertFalse(changed)
         self.assertEqual(category, "984")
-        self.assertEqual(description, "Hay un bache profundo frente a mi domicilio")
+        self.assertEqual(description, "")
+
+    def test_short_structured_location_is_rejected_inside_description(self):
+        for fields in (
+            {
+                "selection4": "Hay basura acumulada en Centro",
+                "selection7": "Centro",
+            },
+            {
+                "selection4": "Hay basura acumulada sobre Río",
+                "selection5": "Río",
+            },
+        ):
+            with self.subTest(fields=fields):
+                values, error = self.valid_submission(**fields)
+
+                self.assertIsNone(values)
+                self.assertIn("ubicación", error)
+
+    def test_reporter_identity_and_contact_are_rejected_from_description(self):
+        for description in (
+            "Ana Pérez reporta un bache profundo",
+            "Hay un bache; mi teléfono es 8112345678",
+            "Hay un bache; escribir a ana@example.com",
+        ):
+            with self.subTest(description=description):
+                values, error = self.valid_submission(selection4=description)
+
+                self.assertIsNone(values)
+                self.assertIn("datos personales", error)
 
     def test_unfamiliar_wording_is_not_rejected_by_keyword_lists(self):
         description = select_citizen_report_description(
@@ -1078,6 +1130,37 @@ class SaveSelectionBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.startswith("VALIDATION_BLOCK:"))
         self.assertIn("nombre real", result)
 
+    async def test_ciac_payload_keeps_report_summary_separate_from_location(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "471998"
+        response.raise_for_status.return_value = None
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(return_value=response)
+
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await save_client_selection2(
+                yoga_number="5218111111111",
+                selection1="984",
+                selection2="Ana Pérez",
+                selection3="",
+                selection4="Hay un bache profundo que obstruye el carril derecho",
+                selection5="Vasconcelos",
+                selection6="321",
+                selection7="Centro",
+            )
+
+        self.assertEqual(result, "Folio: 471998")
+        payload = client.post.await_args.kwargs["json"]
+        self.assertEqual(
+            payload["reporte"],
+            "Se reporta que hay un bache profundo que obstruye el carril derecho.",
+        )
+        self.assertEqual(payload["localizacion"], "Vasconcelos 321, Centro")
+
     async def test_ciac_transient_timeout_is_retried_and_category_is_repaired(self):
         response = MagicMock()
         response.status_code = 200
@@ -1113,8 +1196,7 @@ class SaveSelectionBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.post.await_args.kwargs["json"]["asunto"], "984")
         self.assertEqual(
             client.post.await_args.kwargs["json"]["reporte"],
-            "Se reporta que hay un bache frente a mi domicilio en Vasconcelos "
-            "321, colonia Centro.",
+            "Se reporta que hay un bache frente a mi domicilio.",
         )
 
     async def test_invalid_ciac_response_is_not_presented_as_a_folio(self):

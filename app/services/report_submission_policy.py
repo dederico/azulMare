@@ -302,10 +302,10 @@ def build_ciac_report_summary(
 ) -> str:
     """Build the concise municipal summary sent only in CIAC's report field.
 
-    The original citizen evidence remains untouched in conversation storage and
-    ``selection4``.  This presentation layer removes greetings, report-intent
-    boilerplate and repeated clauses, then appends the already validated
-    structured location without asking a model to invent or infer facts.
+    The model owns the semantic summary stored in ``selection4``. This
+    presentation layer only removes legacy conversational boilerplate and adds
+    stable municipal wording. Location is deliberately excluded because CIAC
+    receives it separately in the ``localizacion`` payload field.
     """
     cleaned = sanitize_report_description(description)
     raw_clauses = re.split(r"(?:[.!?]+|\s+-\s+)", cleaned)
@@ -421,21 +421,6 @@ def build_ciac_report_summary(
     else:
         summary = f"Se reporta {problem[0].lower() + problem[1:]}" if problem else ""
 
-    clean_street = " ".join(str(street or "").split()).strip(" ,")
-    clean_number = " ".join(str(number or "").split()).strip(" ,")
-    clean_neighborhood = " ".join(str(neighborhood or "").split()).strip(" ,")
-    location = clean_street
-    if clean_number and clean_number != "0000":
-        location = f"{location} {clean_number}".strip()
-    if clean_neighborhood:
-        location = (
-            f"{location}, colonia {clean_neighborhood}"
-            if location
-            else f"colonia {clean_neighborhood}"
-        )
-    if location:
-        summary = f"{summary.rstrip(' .')} en {location}"
-
     summary = " ".join(summary.split()).strip(" .")
     if len(summary) > max_length:
         summary = summary[:max_length].rsplit(" ", 1)[0].rstrip(" ,.;:")
@@ -523,6 +508,42 @@ def report_description_location_conflict(
             )
         )
 
+    def contains_locative_reference(container: str, candidate: str) -> bool:
+        if not candidate:
+            return False
+        locative_prefix = (
+            r"(?:en|sobre|por|hacia|desde|frente\s+a|junto\s+a|"
+            r"cruce\s+con|ubicad[oa]s?\s+en)"
+        )
+        optional_kind = r"(?:la|el|las|los|calle|avenida|colonia)"
+        if re.search(
+            rf"(?<!\w){locative_prefix}\s+(?:{optional_kind}\s+)*"
+            rf"{re.escape(candidate)}(?!\w)",
+            container,
+        ):
+            return True
+
+        ignored_location_tokens = {
+            "avenida",
+            "calle",
+            "colonia",
+            "boulevard",
+            "carretera",
+        }
+        significant_tokens = [
+            token
+            for token in candidate.split()
+            if token not in ignored_location_tokens and len(token) >= 4
+        ]
+        return any(
+            re.search(
+                rf"(?<!\w){locative_prefix}\s+(?:{optional_kind}\s+)*"
+                rf"{re.escape(token)}(?!\w)",
+                container,
+            )
+            for token in significant_tokens
+        )
+
     problem = comparison_text(description)
     if not problem:
         return None
@@ -542,6 +563,9 @@ def report_description_location_conflict(
         # luminarias"). Only an exact numeric description is a field collision.
         if field == "selection6":
             continue
+
+        if contains_locative_reference(problem, location):
+            return field
 
         problem_size = len(re.sub(r"\W", "", problem))
         location_size = len(re.sub(r"\W", "", location))
@@ -563,27 +587,15 @@ def choose_report_description_for_submission(
     number: str | None,
     neighborhood: str | None,
 ) -> str:
-    """Prefer a valid model summary without weakening citizen grounding.
+    """Return the model-owned summary for final boundary validation.
 
-    Conversation reconciliation may recover a raw citizen turn that still
-    includes its address.  A model-produced summary that satisfies field
-    ownership is the intended ``selection4`` contract and must not be replaced
-    by that raw turn.  Contaminated model output still falls back to citizen
-    evidence and is then checked by the final validation boundary.
+    Transcript evidence may help restore other structured report fields, but it
+    must never become a second writer for ``selection4``. Invalid model output
+    is returned unchanged so validation can block it and the model can retry
+    with the same conversation context.
     """
     proposed = sanitize_report_description(model_description)
-    evidence = sanitize_report_description(evidence_description)
-    if (
-        is_meaningful_report_description(proposed)
-        and not report_description_location_conflict(
-            proposed,
-            street,
-            number,
-            neighborhood,
-        )
-    ):
-        return proposed
-    return evidence or proposed
+    return proposed
 
 
 def is_valid_reporter_name(value: str | None) -> bool:
@@ -1192,13 +1204,9 @@ def reconcile_with_citizen_evidence(
     model_description: str | None,
     citizen_description: str | None,
 ) -> tuple[str, str, bool]:
-    """Prefer grounded citizen wording and repair an unambiguous category."""
+    """Preserve the model-owned summary and repair only its category."""
     category = " ".join(str(model_category or "").split()).strip()
     description = " ".join(str(model_description or "").split()).strip()
-    citizen = " ".join(str(citizen_description or "").split()).strip()
-
-    if is_meaningful_report_description(citizen):
-        description = citizen
 
     inferred_category = infer_high_confidence_report_category(description)
     if inferred_category:
@@ -1261,6 +1269,35 @@ def validate_and_normalize_report_submission(
             "selection4 contiene una pregunta. Reconstruye únicamente selection4 "
             "como una oración afirmativa breve con el problema clave dicho por el "
             "ciudadano"
+        )
+
+    normalized_reporter_name = normalize_report_text(values["selection2"])
+    contains_reporter_name = bool(
+        normalized_reporter_name
+        and normalized_reporter_name != "anonimo"
+        and re.search(
+            rf"(?<!\w){re.escape(normalized_reporter_name)}(?!\w)",
+            normalized_description,
+        )
+    )
+    contains_email = bool(
+        re.search(
+            r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[a-z]{2,}(?!\w)",
+            values["selection4"],
+            flags=re.IGNORECASE,
+        )
+    )
+    contains_phone = bool(
+        re.search(
+            r"(?<!\d)(?:\+?\d[\s().-]*){7,15}(?!\d)",
+            values["selection4"],
+        )
+    )
+    if contains_reporter_name or contains_email or contains_phone:
+        return None, (
+            "selection4 contiene datos personales del ciudadano. Reconstruye "
+            "únicamente selection4 con el problema municipal, sin nombre ni "
+            "información de contacto"
         )
 
     conflicting_location_field = report_description_location_conflict(

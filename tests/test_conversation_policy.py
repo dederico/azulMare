@@ -9,6 +9,7 @@ from app.services.conversation_policy import (
     apply_widget_empty_response_fallback,
     automatic_report_timeouts_enabled,
     authorize_transfer,
+    build_pending_report_evaluation_notice,
     classify_emergency_answer,
     classify_emergency_declaration,
     classify_emergency_turn,
@@ -18,6 +19,7 @@ from app.services.conversation_policy import (
     dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
     evaluation_prompt_matches_state,
+    evaluation_turn_matches_visible_answer,
     evaluation_turn_matches_visible_prompt,
     extract_confirmed_folio,
     greeting_display_name,
@@ -27,6 +29,7 @@ from app.services.conversation_policy import (
     is_contextual_handoff_request,
     is_bot_return_message,
     is_human_takeover_message,
+    is_evaluation_skip_request,
     is_known_automated_outbound,
     is_likely_bot_echo,
     is_non_authoritative_control_source,
@@ -258,6 +261,63 @@ class AutomaticReportPolicyTests(unittest.TestCase):
                 "Tu reporte ha sido generado con éxito. Folio 473812.",
                 None,
             )
+        )
+
+    def test_visible_survey_does_not_consume_a_new_report(self):
+        self.assertFalse(
+            evaluation_turn_matches_visible_answer(
+                "evaluacion_esperando_click_ok",
+                "Tu reporte anterior concluyó.",
+                "Presiona o escribe OK para conocer los detalles de tu reporte.",
+                "Quiero reportar luminarias apagadas. No es una emergencia.",
+            )
+        )
+
+    def test_visible_survey_consumes_only_the_answer_for_its_step(self):
+        self.assertTrue(
+            evaluation_turn_matches_visible_answer(
+                "evaluacion_esperando_click_ok",
+                "Tu reporte anterior concluyó.",
+                "Presiona o escribe OK para conocer los detalles de tu reporte.",
+                "OK",
+            )
+        )
+        self.assertFalse(
+            evaluation_turn_matches_visible_answer(
+                "evaluacion_esperando_calificacion",
+                "¿Qué te pareció la atención? Califícala del 1 al 5.",
+                None,
+                "Vasconcelos 321, colonia Centro",
+            )
+        )
+
+    def test_pending_report_notice_keeps_the_current_survey_question_visible(self):
+        notice = build_pending_report_evaluation_notice(
+            "evaluacion_esperando_respuesta_resolucion",
+            "475667",
+        )
+
+        self.assertIn("guardé", notice)
+        self.assertIn("475667", notice)
+        self.assertTrue(
+            evaluation_prompt_matches_state(
+                "evaluacion_esperando_respuesta_resolucion",
+                notice,
+            )
+        )
+
+    def test_citizen_can_explicitly_skip_the_pending_evaluation(self):
+        for message in (
+            "Omitir evaluación",
+            "Quiero saltar la encuesta",
+            "No deseo calificar",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(is_evaluation_skip_request(message))
+
+        self.assertFalse(is_evaluation_skip_request("No es una emergencia"))
+        self.assertFalse(
+            is_evaluation_skip_request("No puedo responder el número exterior")
         )
 
     def test_quoted_hsm_ok_is_control_event_not_report_content(self):

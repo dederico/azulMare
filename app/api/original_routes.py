@@ -140,16 +140,19 @@ from app.services.conversation_policy import (
     assistant_asked_for_optional_image,
     automatic_report_timeouts_enabled,
     authorize_transfer,
+    build_emergency_evaluation_resume_notice,
     classify_emergency_answer,
+    classify_emergency_declaration,
     classify_emergency_turn,
     classify_handoff_signal,
     classify_optional_image_answer,
+    build_pending_report_evaluation_notice,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     extract_confirmed_folio,
     greeting_display_name,
     event_precedes_context_boundary,
-    evaluation_turn_matches_visible_prompt,
+    evaluation_turn_matches_visible_answer,
     inactivity_snapshot_is_still_stale,
     is_active_danger_statement,
     is_explicit_report_finalization_token,
@@ -157,6 +160,7 @@ from app.services.conversation_policy import (
     is_contextual_handoff_request,
     is_emergency_related,
     is_human_takeover_message,
+    is_evaluation_skip_request,
     is_known_automated_outbound,
     is_likely_bot_echo,
     is_non_authoritative_control_source,
@@ -255,8 +259,11 @@ from app.services.report_completion import (
     record_report_completion,
 )
 from app.services.report_completion_delivery import (
+    bind_report_completion_context,
     build_report_completion_message,
     get_pending_report_completion,
+    report_completion_belongs_to_inbound,
+    resolve_report_completion_origin,
     stage_report_completion_delivery,
 )
 from app.services.evaluation_state import (
@@ -264,6 +271,15 @@ from app.services.evaluation_state import (
     ensure_evaluation_state_storage,
     get_evaluation_state,
     save_evaluation_state,
+)
+from app.services.pending_evaluation_reports import (
+    build_resumed_report_payload,
+    clear_pending_evaluation_reports,
+    delete_pending_evaluation_report,
+    ensure_pending_evaluation_report_storage,
+    get_pending_evaluation_reports,
+    list_resumable_pending_report_phones,
+    stage_pending_evaluation_report,
 )
 from app.services.media_payload import get_video_from_payload
 from app.services.outbound_delivery import post_json_with_retry
@@ -750,6 +766,92 @@ EVALUATION_OK_PROMPT = "Presiona o escribe OK para conocer los detalles de tu re
 EVALUATION_RESOLUTION_PROMPT = (
     "¿Está de acuerdo con la resolución? Por favor responda *Sí* o *No*."
 )
+
+
+async def resume_reports_paused_for_evaluation(storage, from_number: str) -> int:
+    """Return paused citizen turns to the ordinary durable webhook queue."""
+
+    pending_reports = get_pending_evaluation_reports(storage, from_number)
+    resumed = 0
+    for pending in pending_reports:
+        replay_payload = build_resumed_report_payload(pending)
+        try:
+            inserted, replay_event_key = await asyncio.to_thread(
+                enqueue_webhook_job,
+                storage,
+                replay_payload,
+                pending.get("query_params") or {},
+            )
+        except Exception:
+            logger.exception(
+                "No se pudo reanudar reporte pausado phone=%s event_key=%s",
+                from_number,
+                pending.get("event_key"),
+            )
+            continue
+
+        # ``inserted=False`` means this deterministic replay was already
+        # queued by an earlier attempt. In both cases the paused copy can be
+        # removed safely without creating a duplicate citizen turn.
+        delete_pending_evaluation_report(
+            storage,
+            from_number,
+            pending["event_key"],
+        )
+        resumed += 1
+        logger.critical(
+            "▶️ [EVAL REPORT RESUMED] phone=%s original_event=%s "
+            "replay_event=%s queued=%s",
+            from_number,
+            pending.get("event_key"),
+            replay_event_key,
+            inserted,
+        )
+    return resumed
+
+
+async def resume_survey_after_emergency_report(
+    storage,
+    from_number: str,
+    *,
+    client_id,
+    channel_id,
+    transport: str,
+) -> bool:
+    """Make the previously suspended survey visible again after the folio."""
+
+    suspended_evaluation = get_evaluation_state(storage, from_number)
+    if not suspended_evaluation:
+        return False
+    resume_notice = build_emergency_evaluation_resume_notice(
+        suspended_evaluation.get("state"),
+        suspended_evaluation.get("folio"),
+    )
+    resume_notice_sent = await send_chat2desk_message(
+        from_number,
+        suspended_evaluation.get("client_id") or client_id,
+        suspended_evaluation.get("channel_id") or channel_id,
+        resume_notice,
+        suspended_evaluation.get("transport") or transport,
+    )
+    if resume_notice_sent:
+        save_evaluation_state(
+            storage,
+            from_number,
+            state=suspended_evaluation["state"],
+            folio=suspended_evaluation["folio"],
+            client_id=(suspended_evaluation.get("client_id") or client_id),
+            channel_id=(suspended_evaluation.get("channel_id") or channel_id),
+            transport=(suspended_evaluation.get("transport") or transport),
+            visible_prompt=resume_notice,
+        )
+    logger.critical(
+        "▶️ [EVAL RESUMED AFTER EMERGENCY] phone=%s folio=%s sent=%s",
+        from_number,
+        suspended_evaluation.get("folio"),
+        resume_notice_sent,
+    )
+    return resume_notice_sent
 
 async def handle_hsm_conclusion_notification(payload, from_number, storage=None):
     """
@@ -5560,8 +5662,12 @@ async def deliver_pending_report_completion(
     if not pending:
         return None
 
-    origin_uid = str(pending.get("origin_uid") or uid)
-    origin_message_id = str(pending.get("origin_message_id") or message_id)
+    resume_evaluation_after_emergency = bool(
+        report_sessions.get(from_number, {}).get(
+            "evaluation_suspended_for_emergency"
+        )
+    )
+    origin_uid, origin_message_id = resolve_report_completion_origin(pending)
     current_is_origin = origin_uid == str(uid)
 
     # The provider delivery may have succeeded before a worker crashed during
@@ -5588,6 +5694,14 @@ async def deliver_pending_report_completion(
             logger.exception(
                 "No se pudo limpiar estado durable ya entregado para folio %s",
                 pending["folio"],
+            )
+        if resume_evaluation_after_emergency:
+            await resume_survey_after_emergency_report(
+                storage,
+                from_number,
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
             )
         return "origin_delivered" if current_is_origin else "delivered_before_current"
 
@@ -5666,6 +5780,14 @@ async def deliver_pending_report_completion(
             "No se pudo limpiar estado durable después de entregar folio %s",
             pending["folio"],
         )
+    if resume_evaluation_after_emergency:
+        await resume_survey_after_emergency_report(
+            storage,
+            from_number,
+            client_id=client_id,
+            channel_id=channel_id,
+            transport=transport,
+        )
     logger.critical(
         "📤 [REPORT COMPLETION DELIVERED] folio=%s phone=%s",
         pending["folio"],
@@ -5702,18 +5824,9 @@ def should_ignore_message(message_text, message_type, from_number=None):
         logger.critical(f"🚫 [ECHO DETECTED] Ignorando echo de timeout para {from_number}: '{message_text[:50]}...'")
         return True, "Echo de timeout ignorado"
     
-    # 4. Verificar si viene de un número que acaba de crear reporte
-    if (from_number and from_number in completed_reports and 
-        message_text and len(message_text.strip()) > 10):
-        
-        recent_report = completed_reports[from_number]
-        elapsed_seconds = datetime.now().timestamp() - recent_report['timestamp']
-        
-        # Si el reporte fue creado en los últimos 30 segundos
-        if elapsed_seconds < 30:
-            logger.critical(f"🚫 [POST-REPORT] Ignorando mensaje post-reporte para {from_number} (hace {elapsed_seconds:.1f}s): '{message_text[:30]}...'")
-            return True, "Mensaje post-reporte ignorado"
-    
+    # Late fragments are handled later with durable completion timestamps and
+    # explicit new-report exemptions. Never discard an arbitrary citizen
+    # sentence merely because another report finished a few seconds earlier.
     return False, "Mensaje válido para procesar"
 
 def is_timeout_notification_echo(message_text):
@@ -6285,6 +6398,33 @@ async def process_chat2desk_webhook_jobs():
                 await asyncio.sleep(0.5)
 
     await asyncio.gather(*(worker(index + 1) for index in range(concurrency)))
+
+
+async def process_pending_evaluation_report_resumptions():
+    """Recover reports left between survey completion and webhook requeue."""
+
+    logger.critical("▶️ [EVAL REPORT RESUME WORKER] iniciado")
+    while True:
+        try:
+            storage = LocalStorage()
+            phone_numbers = await asyncio.to_thread(
+                list_resumable_pending_report_phones,
+                storage,
+            )
+            for phone_number in phone_numbers:
+                await resume_reports_paused_for_evaluation(
+                    storage,
+                    phone_number,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Error recuperando reportes pausados después de evaluación"
+            )
+        await asyncio.sleep(1)
+
+
 # ------------------------------
 # Función de ciclo de vida (lifespan)
 # ------------------------------
@@ -6310,7 +6450,9 @@ async def lifespan(app: FastAPI):
     ensure_greeting_outbox_storage(LocalStorage())
     ensure_report_completion_storage(LocalStorage())
     ensure_evaluation_state_storage(LocalStorage())
+    ensure_pending_evaluation_report_storage(LocalStorage())
     asyncio.create_task(process_chat2desk_webhook_jobs())
+    asyncio.create_task(process_pending_evaluation_report_resumptions())
     asyncio.create_task(process_greeting_outbox())
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
@@ -7495,6 +7637,23 @@ async def _process_whatsapp_request(request):
             if reply_context.get('is_reply')
             else body
         )
+        evaluation_suspended_for_active_emergency = bool(
+            durable_evaluation
+            and report_sessions.get(from_number, {}).get(
+                "evaluation_suspended_for_emergency"
+            )
+        )
+        if evaluation_suspended_for_active_emergency:
+            logger.critical(
+                "⏸️ [EVAL REMAINS SUSPENDED] phone=%s folio=%s uid=%s",
+                from_number,
+                durable_evaluation.get("folio"),
+                uid,
+            )
+            durable_evaluation = None
+        current_inbound_establishes_report = establishes_report_intent(
+            effective_inbound_text
+        )
         durable_evaluation_answer = bool(
             durable_evaluation
             and should_preserve_evaluation_across_new_request(
@@ -7503,6 +7662,175 @@ async def _process_whatsapp_request(request):
                 effective_inbound_text,
             )
         )
+        evaluation_skip_requested = bool(
+            durable_evaluation
+            and not quoted_hsm_ok
+            and is_evaluation_skip_request(effective_inbound_text)
+        )
+        pending_evaluation_reports = (
+            get_pending_evaluation_reports(db, from_number)
+            if durable_evaluation
+            else []
+        )
+        inbound_has_media = bool(
+            payload.get("photo")
+            or payload.get("video")
+            or payload.get("audio")
+        )
+        emergency_preempts_evaluation = bool(
+            durable_evaluation
+            and current_inbound_establishes_report
+            and classify_emergency_declaration(
+                effective_inbound_text,
+                prompted=False,
+            )
+            is True
+        )
+
+        if evaluation_skip_requested:
+            skipped_evaluation = durable_evaluation
+            evaluation_folio = skipped_evaluation.get("folio")
+            had_paused_reports = bool(pending_evaluation_reports)
+            clear_evaluation_state(db, from_number)
+            durable_evaluation = None
+            durable_evaluation_answer = False
+            user_sessions.pop(from_number, None)
+            resumed_reports = await resume_reports_paused_for_evaluation(
+                db,
+                from_number,
+            )
+            skip_notice = (
+                f"Omití la evaluación pendiente del folio {evaluation_folio}. "
+                + (
+                    "Ahora retomaré automáticamente el reporte que guardé."
+                    if resumed_reports or had_paused_reports
+                    else "Podemos continuar con tu siguiente solicitud."
+                )
+            )
+            await send_chat2desk_message(
+                from_number,
+                skipped_evaluation.get("client_id") or client_id,
+                skipped_evaluation.get("channel_id") or channel_id,
+                skip_notice,
+                skipped_evaluation.get("transport") or transport,
+            )
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            logger.critical(
+                "⏭️ [EVAL SKIPPED] phone=%s folio=%s resumed_reports=%s",
+                from_number,
+                evaluation_folio,
+                resumed_reports,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Evaluación omitida",
+                    "resumed_reports": resumed_reports,
+                }
+            )
+
+        if emergency_preempts_evaluation:
+            evaluation_folio = durable_evaluation.get("folio")
+            durable_evaluation = None
+            durable_evaluation_answer = False
+            logger.critical(
+                "🚨 [EVAL SUSPENDED BY EMERGENCY] phone=%s folio=%s uid=%s",
+                from_number,
+                evaluation_folio,
+                uid,
+            )
+
+        should_pause_report_for_evaluation = bool(
+            durable_evaluation
+            and not quoted_hsm_ok
+            and (
+                current_inbound_establishes_report
+                or (
+                    not durable_evaluation_answer
+                    and (inbound_has_media or pending_evaluation_reports)
+                )
+            )
+        )
+        if should_pause_report_for_evaluation:
+            paused_report = stage_pending_evaluation_report(
+                db,
+                from_number,
+                evaluation_folio=durable_evaluation["folio"],
+                payload=payload,
+                query_params=dict(args),
+            )
+            if not paused_report.get("durable"):
+                release_inbound_processing_claim(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": "No se pudo guardar el reporte mientras termina la evaluación",
+                    },
+                    status_code=503,
+                )
+
+            pause_notice = build_pending_report_evaluation_notice(
+                durable_evaluation.get("state"),
+                durable_evaluation.get("folio"),
+            )
+            notice_sent = await send_chat2desk_message(
+                from_number,
+                durable_evaluation.get("client_id") or client_id,
+                durable_evaluation.get("channel_id") or channel_id,
+                pause_notice,
+                durable_evaluation.get("transport") or transport,
+            )
+            if not notice_sent:
+                release_inbound_processing_claim(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": "El reporte quedó guardado, pero no se pudo confirmar al ciudadano",
+                    },
+                    status_code=503,
+                )
+
+            save_evaluation_state(
+                db,
+                from_number,
+                state=durable_evaluation["state"],
+                folio=durable_evaluation["folio"],
+                client_id=(durable_evaluation.get("client_id") or client_id),
+                channel_id=(durable_evaluation.get("channel_id") or channel_id),
+                transport=(durable_evaluation.get("transport") or transport),
+                visible_prompt=pause_notice,
+            )
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            logger.critical(
+                "⏸️ [REPORT PAUSED FOR EVAL] phone=%s folio=%s uid=%s event=%s",
+                from_number,
+                durable_evaluation.get("folio"),
+                uid,
+                paused_report.get("event_key"),
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Reporte guardado mientras termina la evaluación",
+                    "evaluation_folio": durable_evaluation.get("folio"),
+                }
+            )
 
         try:
             (
@@ -7545,6 +7873,24 @@ async def _process_whatsapp_request(request):
             )
 
         if (
+            emergency_preempts_evaluation
+            or evaluation_suspended_for_active_emergency
+        ):
+            # A Chat2Desk new-request boundary can legitimately clear the
+            # replica-local report session. Reapply the suspension marker in
+            # the new conversation epoch so later emergency details cannot be
+            # captured by the still-durable survey.
+            confirm_report_intent(
+                from_number,
+                effective_inbound_text,
+                source="emergency_preempts_evaluation_after_boundary",
+            )
+            with report_sessions_lock:
+                report_sessions[from_number][
+                    "evaluation_suspended_for_emergency"
+                ] = True
+
+        if (
             durable_evaluation
             and initial_greeting_required
             and bool(payload.get("is_new_request"))
@@ -7565,7 +7911,7 @@ async def _process_whatsapp_request(request):
         recent_completion = get_recent_report_completion(
             db,
             from_number,
-            max_age_seconds=24 * 60 * 60,
+            max_age_seconds=30 * 60,
         )
         if (
             recent_completion
@@ -7581,6 +7927,9 @@ async def _process_whatsapp_request(request):
                     {"report_intent_confirmed": True},
                 )
                 recovery_session["report_intent_confirmed"] = True
+                recovery_origin_uid, recovery_origin_message_id = (
+                    resolve_report_completion_origin(recent_completion)
+                )
                 stage_report_completion_delivery(
                     recovery_session,
                     folio=recent_completion["folio"],
@@ -7588,11 +7937,8 @@ async def _process_whatsapp_request(request):
                     request_id=(recent_completion.get("request_id") or request_id),
                     location="ubicación confirmada",
                     image_count=0,
-                    origin_uid=(recent_completion.get("origin_uid") or str(uid)),
-                    origin_message_id=(
-                        recent_completion.get("origin_message_id")
-                        or str(message_id)
-                    ),
+                    origin_uid=recovery_origin_uid,
+                    origin_message_id=recovery_origin_message_id,
                     client_id=(recent_completion.get("client_id") or client_id),
                     channel_id=(recent_completion.get("channel_id") or channel_id),
                     transport=(recent_completion.get("transport") or transport),
@@ -7778,10 +8124,11 @@ async def _process_whatsapp_request(request):
                 )
         evaluation_turn_active = bool(
             durable_evaluation
-            and evaluation_turn_matches_visible_prompt(
+            and evaluation_turn_matches_visible_answer(
                 durable_evaluation.get("state"),
                 last_outbound_message,
                 durable_evaluation.get("visible_prompt"),
+                effective_inbound_text,
             )
         )
         if durable_evaluation and not evaluation_turn_active:
@@ -8380,7 +8727,33 @@ async def _process_whatsapp_request(request):
                     storage=db,
                 )
                 if evaluation_handled:
-                    return JSONResponse(content={"status": True, "message": "Evaluation response processed"})
+                    resumed_reports = 0
+                    if get_evaluation_state(db, from_number) is None:
+                        resumed_reports = await resume_reports_paused_for_evaluation(
+                            db,
+                            from_number,
+                        )
+                        if resumed_reports:
+                            await send_chat2desk_message(
+                                from_number,
+                                client_id,
+                                channel_id,
+                                "La evaluación quedó terminada. Ahora retomaré "
+                                "automáticamente el reporte que guardé.",
+                                transport,
+                            )
+                    mark_inbound_processing_delivered(
+                        uid,
+                        inbound_claim_token,
+                        storage=db,
+                    )
+                    return JSONResponse(
+                        content={
+                            "status": True,
+                            "message": "Evaluation response processed",
+                            "resumed_reports": resumed_reports,
+                        }
+                    )
         
         # Extraer información del payload de Chat2Desk
         chat_id = payload.get('chat_id')
@@ -9248,14 +9621,15 @@ async def _process_whatsapp_request(request):
                             part for part in location_parts if part
                         ) or "ubicación no especificada"
                         with report_sessions_lock:
-                            report_sessions[from_number]["completion_delivery_context"] = {
-                                "request_id": request_id,
-                                "origin_uid": str(uid),
-                                "origin_message_id": str(message_id),
-                                "client_id": client_id,
-                                "channel_id": channel_id,
-                                "transport": transport,
-                            }
+                            bind_report_completion_context(
+                                report_sessions[from_number],
+                                request_id=request_id,
+                                origin_uid=str(uid),
+                                origin_message_id=str(message_id),
+                                client_id=client_id,
+                                channel_id=channel_id,
+                                transport=transport,
+                            )
                         result = await process_and_save_report(
                             from_number,
                             user_location,
@@ -9656,14 +10030,15 @@ async def _process_whatsapp_request(request):
             request_id or f"{from_number}-{uid}"
         )
         with report_sessions_lock:
-            report_sessions[from_number]["completion_delivery_context"] = {
-                "request_id": emergency_request_id,
-                "origin_uid": str(uid),
-                "origin_message_id": str(message_id),
-                "client_id": client_id,
-                "channel_id": channel_id,
-                "transport": transport,
-            }
+            bind_report_completion_context(
+                report_sessions[from_number],
+                request_id=emergency_request_id,
+                origin_uid=str(uid),
+                origin_message_id=str(message_id),
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+            )
 
         logger.critical(
             "🚨 [EMERGENCY AUTO-SUBMIT] phone=%s location=%s",
@@ -10171,6 +10546,14 @@ async def _process_whatsapp_request(request):
                 "sesión. Responde directamente a la solicitud del ciudadano sin repetir el "
                 "aviso de privacidad ni el mensaje de bienvenida."
             )
+        if payload.get("_sam_resumed_after_evaluation"):
+            system_prompt += (
+                "\n\nREPORTE REANUDADO: Este mensaje del ciudadano quedó guardado mientras "
+                "terminaba la evaluación de un folio anterior. La evaluación ya concluyó o "
+                "fue omitida. Atiende ahora este mensaje como el reporte nuevo pendiente, "
+                "conserva todos sus datos e imágenes y no vuelvas a mencionar ni abrir la "
+                "evaluación anterior."
+            )
         required_tool_name = None
         whatsapp_functions = [
             save_client_selection2_guarded
@@ -10367,6 +10750,23 @@ async def _process_whatsapp_request(request):
                 "'no'. No repitas la pregunta ni exijas que responda una palabra exacta."
             )
 
+        # A model tool call can create a CIAC folio before control returns to
+        # this route. Bind that future result to the current inbound now, so a
+        # later citizen message can never become the fallback origin.
+        if has_confirmed_report_intent(from_number):
+            with report_sessions_lock:
+                active_completion_session = report_sessions.get(from_number)
+                if active_completion_session is not None:
+                    bind_report_completion_context(
+                        active_completion_session,
+                        request_id=str(request_id or f"{from_number}-{uid}"),
+                        origin_uid=str(uid),
+                        origin_message_id=str(message_id),
+                        client_id=client_id,
+                        channel_id=channel_id,
+                        transport=transport,
+                    )
+
         function_manager = FunctionManager(whatsapp_functions)
         # Añadir instrucción para evitar generación automática de reportes
         # if from_number in report_sessions and report_sessions[from_number]["images"]:
@@ -10468,6 +10868,89 @@ async def _process_whatsapp_request(request):
             response_content = " ".join([str(item) for item in response_content])
         elif not isinstance(response_content, str):
             response_content = str(response_content)
+
+        # A save_client_selection2 tool call may have created the CIAC folio
+        # during model generation. Deliver that durable completion in this
+        # same turn instead of sending model-authored success text and waiting
+        # for the next citizen message to flush the canonical notification.
+        model_tool_completion = get_recent_report_completion(
+            db,
+            from_number,
+            max_age_seconds=10 * 60,
+        )
+        if report_completion_belongs_to_inbound(model_tool_completion, uid):
+            completion_origin_uid, completion_origin_message_id = (
+                resolve_report_completion_origin(model_tool_completion)
+            )
+            with report_sessions_lock:
+                completion_session = report_sessions.setdefault(
+                    from_number,
+                    {"report_intent_confirmed": True},
+                )
+                completion_session["report_intent_confirmed"] = True
+                stage_report_completion_delivery(
+                    completion_session,
+                    folio=model_tool_completion["folio"],
+                    message=model_tool_completion["notification_message"],
+                    request_id=(
+                        model_tool_completion.get("request_id")
+                        or str(request_id or f"{from_number}-{uid}")
+                    ),
+                    location="ubicación confirmada",
+                    image_count=0,
+                    origin_uid=completion_origin_uid,
+                    origin_message_id=completion_origin_message_id,
+                    client_id=(
+                        model_tool_completion.get("client_id") or client_id
+                    ),
+                    channel_id=(
+                        model_tool_completion.get("channel_id") or channel_id
+                    ),
+                    transport=(
+                        model_tool_completion.get("transport") or transport
+                    ),
+                )
+            model_tool_delivery = await deliver_pending_report_completion(
+                storage=db,
+                from_number=from_number,
+                client_id=client_id,
+                channel_id=channel_id,
+                transport=transport,
+                uid=uid,
+                message_id=message_id,
+                inbound_claim_token=inbound_claim_token,
+            )
+            if model_tool_delivery == "origin_delivered":
+                logger.critical(
+                    "📤 [MODEL TOOL COMPLETION DELIVERED] folio=%s phone=%s uid=%s",
+                    model_tool_completion["folio"],
+                    from_number,
+                    uid,
+                )
+                return JSONResponse(
+                    content={
+                        "status": True,
+                        "message": "Reporte creado y folio entregado",
+                        "folio": model_tool_completion["folio"],
+                    }
+                )
+            if model_tool_delivery is None:
+                release_inbound_processing_claim(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": (
+                            "El folio está confirmado pero su notificación "
+                            "sigue pendiente"
+                        ),
+                        "folio": model_tool_completion["folio"],
+                    },
+                    status_code=503,
+                )
 
         response_content = normalize_user_facing_response(
             response_content,
@@ -11429,6 +11912,7 @@ async def reset_conversation(phone_number: str):
             "durable_report_state": False,
             "durable_report_completion": False,
             "durable_evaluation_state": False,
+            "durable_pending_evaluation_reports": False,
         }
 
         with report_sessions_lock:
@@ -11475,6 +11959,9 @@ async def reset_conversation(phone_number: str):
         memory_cleanup["durable_evaluation_state"] = clear_evaluation_state(
             db,
             phone_number,
+        )
+        memory_cleanup["durable_pending_evaluation_reports"] = (
+            clear_pending_evaluation_reports(db, phone_number)
         )
 
         if phone_number in last_response_time:

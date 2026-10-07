@@ -181,6 +181,121 @@ def evaluation_turn_matches_visible_prompt(
     )
 
 
+def evaluation_answer_matches_state(
+    state: str | None,
+    inbound_message: str | None,
+) -> bool:
+    """Return whether the current inbound can answer the active survey step."""
+
+    normalized_state = str(state or "").strip().casefold()
+    answer = normalize_policy_text(inbound_message)
+    if not answer:
+        return False
+
+    if normalized_state in {"waiting_ok_click", "evaluacion_esperando_click_ok"}:
+        return answer == "ok"
+    if normalized_state in {
+        "waiting_resolution_response",
+        "evaluacion_esperando_respuesta_resolucion",
+    }:
+        return answer in {"si", "s", "no", "n"}
+    if normalized_state in {"waiting_rating", "evaluacion_esperando_calificacion"}:
+        return answer in {"1", "2", "3", "4", "5"}
+    if normalized_state in {"waiting_reason", "evaluacion_esperando_motivo"}:
+        return bool(answer)
+    return False
+
+
+def is_evaluation_skip_request(inbound_message: str | None) -> bool:
+    """Recognize an explicit request to leave the optional survey."""
+
+    answer = normalize_policy_text(inbound_message)
+    if not answer:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:omitir|saltar|cancelar|terminar)\b.*\b(?:evaluacion|encuesta)\b",
+            answer,
+        )
+        or re.search(
+            r"\bno\s+(?:quiero|deseo|puedo)\b.*\b(?:evaluar|calificar)\b",
+            answer,
+        )
+        or re.search(
+            r"\bno\s+(?:quiero|deseo|puedo)\b.*\bresponder\b.*"
+            r"\b(?:evaluacion|encuesta|pregunta)\b",
+            answer,
+        )
+    )
+
+
+def _evaluation_instruction(state: str | None) -> str:
+    normalized_state = str(state or "").strip().casefold()
+    if normalized_state in {"waiting_ok_click", "evaluacion_esperando_click_ok"}:
+        return "Presiona o escribe *OK* para continuar con la evaluación."
+    if normalized_state in {
+        "waiting_resolution_response",
+        "evaluacion_esperando_respuesta_resolucion",
+    }:
+        return "¿Estás de acuerdo con la resolución? Responde *Sí* o *No*."
+    if normalized_state in {
+        "waiting_rating",
+        "evaluacion_esperando_calificacion",
+    }:
+        return "Indica tu calificación de la evaluación con un número del *1* al *5*."
+    if normalized_state in {"waiting_reason", "evaluacion_esperando_motivo"}:
+        return "Indica brevemente el motivo por el que no tuvo resolución."
+    return "Responde la pregunta de evaluación pendiente."
+
+
+def build_pending_report_evaluation_notice(
+    state: str | None,
+    folio: str | None,
+) -> str:
+    """Explain that a new report is safe and repeat the active survey step."""
+
+    folio_label = str(folio or "").strip() or "anterior"
+    prefix = (
+        "Detecté tu nuevo reporte y lo guardé para que no tengas que repetirlo. "
+        f"Primero terminemos la evaluación pendiente del folio {folio_label}; "
+        "después retomaré automáticamente tu reporte. "
+    )
+    instruction = _evaluation_instruction(state)
+    return f"{prefix}{instruction} También puedes escribir *OMITIR EVALUACIÓN*."
+
+
+def build_emergency_evaluation_resume_notice(
+    state: str | None,
+    folio: str | None,
+) -> str:
+    """Resume the survey after the higher-priority emergency was submitted."""
+
+    folio_label = str(folio or "").strip() or "anterior"
+    return (
+        "El reporte de emergencia ya fue enviado. Ahora retomemos la evaluación "
+        f"pendiente del folio {folio_label}. {_evaluation_instruction(state)} "
+        "También puedes escribir *OMITIR EVALUACIÓN*."
+    )
+
+
+def evaluation_turn_matches_visible_answer(
+    state: str | None,
+    last_outbound_message: str | None,
+    durable_visible_prompt: str | None,
+    inbound_message: str | None,
+) -> bool:
+    """Let a survey own a turn only when both its prompt and answer match."""
+
+    return bool(
+        evaluation_turn_matches_visible_prompt(
+            state,
+            last_outbound_message,
+            durable_visible_prompt,
+        )
+        and evaluation_answer_matches_state(state, inbound_message)
+    )
+
+
 def is_quoted_hsm_completion_ok(
     original_message: str | None,
     user_response: str | None,
@@ -211,23 +326,7 @@ def should_preserve_evaluation_across_new_request(
     if not evaluation_prompt_matches_state(state, last_outbound_message):
         return False
 
-    normalized_state = str(state or "").strip().casefold()
-    answer = normalize_policy_text(inbound_message)
-    if not answer:
-        return False
-
-    if normalized_state in {"waiting_ok_click", "evaluacion_esperando_click_ok"}:
-        return answer == "ok"
-    if normalized_state in {
-        "waiting_resolution_response",
-        "evaluacion_esperando_respuesta_resolucion",
-    }:
-        return answer in {"si", "s", "no", "n"}
-    if normalized_state in {"waiting_rating", "evaluacion_esperando_calificacion"}:
-        return answer in {"1", "2", "3", "4", "5"}
-    if normalized_state in {"waiting_reason", "evaluacion_esperando_motivo"}:
-        return bool(answer)
-    return False
+    return evaluation_answer_matches_state(state, inbound_message)
 
 
 def should_suppress_repeated_report_question(

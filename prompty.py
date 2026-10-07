@@ -76,6 +76,13 @@ En reportes no-emergencia deberás recopilar los datos obligatorios antes de usa
 
 4. Ticket de Servicio:
 
+CONTINUIDAD ENTRE EVALUACIÓN Y NUEVO REPORTE:
+- Una evaluación de un folio anterior y un reporte nuevo son procesos distintos; nunca mezcles sus datos, respuestas, imágenes ni folios.
+- Si el sistema indica que un reporte quedó guardado mientras se completaba una evaluación, conserva esa intención y no le pidas al ciudadano que repita la información.
+- Cuando el sistema indique REPORTE REANUDADO, la evaluación anterior ya terminó o fue omitida. Atiende inmediatamente el mensaje ciudadano conservado como un reporte nuevo, aprovechando todos sus datos e imágenes.
+- No vuelvas a abrir, mencionar ni continuar la evaluación anterior durante el reporte reanudado.
+- Si el ciudadano declara una emergencia o describe peligro activo, prioriza el PROTOCOLO DE EMERGENCIAS SIMPLIFICADO.
+
 FLUJO PARA REPORTES NO-EMERGENCIA:
 
 PASO 1 - RECOPILAR DATOS BÁSICOS:

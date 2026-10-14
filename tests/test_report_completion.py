@@ -7,6 +7,7 @@ from app.services.report_completion import (
     is_queued_before_completion,
     mark_report_completion_notified,
     record_report_completion,
+    report_session_supersedes_completion,
 )
 
 
@@ -106,6 +107,32 @@ class DurableReportCompletionTests(unittest.TestCase):
         self.assertFalse(is_queued_before_completion(completion, 100.0))
         self.assertFalse(is_queued_before_completion(completion, 101.0))
         self.assertFalse(is_queued_before_completion(completion, None))
+
+    def test_confirmed_report_started_after_folio_owns_new_events(self):
+        completion = {"folio": "477399", "completed_at": 100.0}
+
+        self.assertTrue(
+            report_session_supersedes_completion(
+                completion,
+                {"report_intent_confirmed": True, "started_at": 101.0},
+            )
+        )
+
+    def test_unconfirmed_or_older_report_does_not_supersede_folio(self):
+        completion = {"folio": "477399", "completed_at": 100.0}
+
+        self.assertFalse(
+            report_session_supersedes_completion(
+                completion,
+                {"report_intent_confirmed": False, "started_at": 101.0},
+            )
+        )
+        self.assertFalse(
+            report_session_supersedes_completion(
+                completion,
+                {"report_intent_confirmed": True, "started_at": 99.0},
+            )
+        )
 
 
 if __name__ == "__main__":

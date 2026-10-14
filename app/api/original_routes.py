@@ -222,6 +222,7 @@ from app.services.report_intake_policy import (
     next_question_after_intake_confirmation,
     should_request_intake_confirmation,
 )
+from app.services.report_summary import repair_report_summary_with_model
 from app.services.inbound_processing import (
     claim_inbound_processing,
     is_latest_inbound_processing_claim,
@@ -257,6 +258,7 @@ from app.services.report_completion import (
     is_queued_before_completion,
     mark_report_completion_notified,
     record_report_completion,
+    report_session_supersedes_completion,
 )
 from app.services.report_completion_delivery import (
     bind_report_completion_context,
@@ -2688,6 +2690,7 @@ def create_or_update_report_session(from_number):
                 "pending_images": [],
                 "pending_image_descriptions": [],
                 "location": None,
+                "started_at": time.time(),
                 "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
                 "image_prompted": False,
                 "image_decision": None,
@@ -2728,6 +2731,7 @@ def confirm_report_intent(
     normalized = " ".join(str(citizen_message or "").split()).strip()
     with report_sessions_lock:
         session = report_sessions[from_number]
+        session.setdefault("started_at", time.time())
         session["report_intent_confirmed"] = True
         promote_pending_report_images(session)
         messages = session.setdefault("citizen_report_messages", [])
@@ -3474,6 +3478,45 @@ async def save_client_selection2_guarded(
         selection7=selection7,
         declared_emergency=session.get("declared_emergency") is True,
     )
+    if validation_error and validation_error.startswith("selection4 contiene"):
+        repaired_selection4 = await repair_report_summary_with_model(
+            client,
+            citizen_messages=session.get("citizen_report_messages"),
+            current_summary=selection4,
+            street=selection5,
+            number=selection6,
+            neighborhood=selection7,
+        )
+        if repaired_selection4:
+            repaired_submission, repaired_error = (
+                validate_and_normalize_report_submission(
+                    selection1=selection1,
+                    selection2=selection2,
+                    selection4=repaired_selection4,
+                    selection5=selection5,
+                    selection6=selection6,
+                    selection7=selection7,
+                    declared_emergency=(
+                        session.get("declared_emergency") is True
+                    ),
+                )
+            )
+            if repaired_error is None:
+                normalized_submission = repaired_submission
+                validation_error = None
+                selection4 = repaired_submission["selection4"]
+                save_user_answer(yoga_number, "selection4", selection4)
+                logger.critical(
+                    "🧾 [REPORT SUMMARY REPAIRED] phone=%s summary=%s",
+                    yoga_number,
+                    selection4,
+                )
+            else:
+                logger.warning(
+                    "🚫 [REPORT SUMMARY REPAIR REJECTED] phone=%s reason=%s",
+                    yoga_number,
+                    repaired_error,
+                )
     if validation_error:
         logger.warning(
             "🚫 [REPORT PAYLOAD BLOCK] save_client_selection2 bloqueado para %s: %s",
@@ -7913,6 +7956,21 @@ async def _process_whatsapp_request(request):
             from_number,
             max_age_seconds=30 * 60,
         )
+        active_report_session = report_sessions.get(from_number)
+        newer_report_active = report_session_supersedes_completion(
+            recent_completion,
+            active_report_session,
+        )
+        if recent_completion and active_report_session:
+            logger.critical(
+                "🧭 [REPORT GENERATION ORDER] phone=%s folio=%s "
+                "completed_at=%s report_started_at=%s newer_report_active=%s",
+                from_number,
+                recent_completion.get("folio"),
+                recent_completion.get("completed_at"),
+                active_report_session.get("started_at"),
+                newer_report_active,
+            )
         if (
             recent_completion
             and not recent_completion.get("notified_at")
@@ -7990,10 +8048,11 @@ async def _process_whatsapp_request(request):
             # waited behind the turn that completed the report. It belongs to
             # the now-terminal workflow and must never fall through as a new
             # conversation after the report session has been cleared.
-            with report_sessions_lock:
-                report_sessions.pop(from_number, None)
-            user_answers.pop(from_number, None)
-            delete_report_state(db, from_number)
+            if not newer_report_active:
+                with report_sessions_lock:
+                    report_sessions.pop(from_number, None)
+                user_answers.pop(from_number, None)
+                delete_report_state(db, from_number)
             logger.warning(
                 "🧾 [PRE-FOLIO QUEUED TERMINAL] Ignorando continuación encolada "
                 "para %s folio=%s uid=%s received_at=%s completed_at=%s body=%s",
@@ -8031,15 +8090,17 @@ async def _process_whatsapp_request(request):
                 ),
                 is_new_request=bool(payload.get("is_new_request")),
                 explicit_new_report=is_explicit_report_intent(body),
+                newer_report_active=newer_report_active,
             )
         ):
             # A confirmed folio is terminal for late field answers and media.
             # Remove any replica-local snapshot that could otherwise resurrect
             # the old report, then consume the webhook without another prompt.
-            with report_sessions_lock:
-                report_sessions.pop(from_number, None)
-            user_answers.pop(from_number, None)
-            delete_report_state(db, from_number)
+            if not newer_report_active:
+                with report_sessions_lock:
+                    report_sessions.pop(from_number, None)
+                user_answers.pop(from_number, None)
+                delete_report_state(db, from_number)
             logger.warning(
                 "🧾 [POST-FOLIO TERMINAL] Ignorando continuación tardía para %s "
                 "folio=%s uid=%s media=%s body=%s",

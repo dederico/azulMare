@@ -235,6 +235,44 @@ def deduplicate_report_media(
     return unique_images, unique_descriptions
 
 
+def canonical_report_image_urls(
+    images_list: list[str] | None,
+    selection8: str | list[str] | None,
+) -> list[str]:
+    """Return one canonical image source without duplicating legacy fields.
+
+    ``images_list`` is the current structured contract. ``selection8`` exists
+    only for older callers and is consulted exclusively when the structured
+    list is empty. This prevents a comma-joined compatibility value from being
+    submitted to CIAC as an additional, malformed photo URL.
+    """
+    candidates: list[str] = []
+    if images_list:
+        candidates.extend(str(value or "").strip() for value in images_list)
+    elif isinstance(selection8, list):
+        candidates.extend(str(value or "").strip() for value in selection8)
+    elif isinstance(selection8, str):
+        candidates.extend(
+            part.strip()
+            for part in re.split(r"[\s,]+", selection8)
+            if part.strip()
+        )
+
+    canonical: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or not (
+            candidate.startswith(("http://", "https://"))
+            or "storage.chat2desk.com" in candidate
+        ):
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        canonical.append(candidate)
+    return canonical
+
+
 def normalize_report_text(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(char for char in text if not unicodedata.combining(char))

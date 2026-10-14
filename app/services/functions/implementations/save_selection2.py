@@ -1,6 +1,7 @@
 # Módulo de almacenamiento temporal por usuario y pregunta
 from app.services.report_submission_policy import (
     build_ciac_report_summary,
+    canonical_report_image_urls,
     validate_and_normalize_report_submission,
 )
 
@@ -106,46 +107,17 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
         logger.debug("Llamada inicial con todos los campos vacíos. No se creará reporte.")
         return "Formulario pendiente de completar"
 
-    # En la parte donde procesas las imágenes
-    fotos = []
-    if images_list and len(images_list) > 0:
-        logger.critical(f"Processing {len(images_list)} images")
-        # Filtrar URLs válidas
-        for i, img in enumerate(images_list):
-            logger.debug(f"Image {i+1}: {img}")
-            if isinstance(img, str) and (img.startswith('http') or 'storage.chat2desk.com' in img):
-                clean_url = img.strip()
-                clean_url = urllib.parse.quote(clean_url, safe=':/?&=')
-                fotos.append(clean_url)
-                logger.critical(f"  Added valid image URL: {clean_url}")
-            else:
-                logger.critical(f"  Skipped invalid image URL: {img}")
-    else:
-        logger.critical("No images provided")
-
-    
-    
-    # También verificar selection8 para retrocompatibilidad
-    if selection8 and isinstance(selection8, list):
-        # Manejar casos donde selection8 podría contener varias URLs separadas por espacios
-        logger.debug(f"Procesando selection8 como lista con {len(selection8)} elementos")
-        for url in selection8:
-            if isinstance(url, str) and (url.startswith('http') or 'storage.chat2desk.com' in url) and url not in fotos:
-                clean_url = url.strip()
-                clean_url = urllib.parse.quote(clean_url, safe=':/?&=')
-                fotos.append(clean_url)
-                logger.debug(f"Añadida URL válida desde selection8 (lista): {clean_url}")
-    elif selection8 and isinstance(selection8, str):
-        logger.debug(f"Procesando selection8: {selection8}")
-        if ' ' in selection8:
-            urls = selection8.split()
-            for url in urls:
-                if (url.startswith('http') or 'storage.chat2desk.com' in url) and url not in fotos:
-                    fotos.append(url)
-        # Manejar caso donde selection8 es una única URL
-        elif selection8.startswith('http') or 'storage.chat2desk.com' in selection8:
-            if selection8 not in fotos:
-                fotos.append(selection8)
+    canonical_images = canonical_report_image_urls(images_list, selection8)
+    fotos = [
+        urllib.parse.quote(image_url, safe=':/?&=')
+        for image_url in canonical_images
+    ]
+    logger.critical(
+        "Processing %s canonical images (structured=%s legacy_used=%s)",
+        len(fotos),
+        bool(images_list),
+        bool(selection8 and not images_list),
+    )
     
     asunto_id = selection1
 
@@ -191,10 +163,6 @@ async def save_client_selection2(yoga_number: str, selection1: str, selection2: 
     # Verificación final para evitar patrones vacíos
     if localizacion in [", ", " , ", ","]:
         localizacion = "Ubicación no especificada"
-
-    # Asegurar que tenemos al menos una imagen si se proporcionó
-    if selection8 and isinstance(selection8, str) and (selection8.startswith('http') or 'storage.chat2desk.com' in selection8) and selection8 not in fotos:
-        fotos.append(selection8)
 
     # Imprimir valores antes de crear el payload para depuración
     logger.debug(f"Valores para el payload:")

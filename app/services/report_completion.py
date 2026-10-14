@@ -298,6 +298,31 @@ def is_queued_before_completion(
     return bool(completed_at > 0 and queued_at < completed_at)
 
 
+def report_session_supersedes_completion(
+    completion: dict[str, Any] | None,
+    report_session: dict[str, Any] | None,
+) -> bool:
+    """Return whether an active report generation started after a completion.
+
+    A recent folio remains useful for rejecting genuinely delayed events from
+    the report that just ended.  It must not, however, own media or control
+    messages from a later report.  ``started_at`` is immutable for one report
+    generation, unlike the legacy ``timestamp`` field which changes on every
+    turn, so this comparison is the single ordering rule used by the inbound
+    guards.
+    """
+    if not completion or not report_session:
+        return False
+    if report_session.get("report_intent_confirmed") is not True:
+        return False
+    try:
+        completed_at = float(completion.get("completed_at") or 0)
+        started_at = float(report_session.get("started_at") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return bool(completed_at > 0 and started_at > completed_at)
+
+
 def clear_report_completion(storage, phone_number: str) -> bool:
     key = normalize_phone_key(phone_number)
     with _memory_lock:

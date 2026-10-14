@@ -29,6 +29,7 @@ def should_suppress_recent_post_folio_input(
     has_media: bool = False,
     is_new_request: bool = False,
     explicit_new_report: bool = False,
+    newer_report_active: bool = False,
     now: float | None = None,
     window_seconds: float = 180.0,
 ) -> bool:
@@ -39,7 +40,12 @@ def should_suppress_recent_post_folio_input(
     field answers, FIN and unaccompanied media. Explicit new requests remain
     available, so this guard does not freeze the rest of the assistant.
     """
-    if not completion or is_new_request or explicit_new_report:
+    if (
+        not completion
+        or is_new_request
+        or explicit_new_report
+        or newer_report_active
+    ):
         return False
 
     try:

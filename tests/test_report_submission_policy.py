@@ -5,6 +5,7 @@ import httpx
 
 from app.services.report_submission_policy import (
     build_ciac_report_summary,
+    canonical_report_image_urls,
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
     establishes_report_intent,
@@ -57,6 +58,28 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
 
         self.assertEqual(images, ["photo-a", "photo-b"])
         self.assertEqual(descriptions, ["Frente", "Costado"])
+
+    def test_structured_images_are_authoritative_over_legacy_selection8(self):
+        images = canonical_report_image_urls(
+            ["https://img.test/one.jpg", "https://img.test/two.jpg"],
+            "https://img.test/one.jpg,https://img.test/two.jpg",
+        )
+
+        self.assertEqual(
+            images,
+            ["https://img.test/one.jpg", "https://img.test/two.jpg"],
+        )
+
+    def test_legacy_selection8_is_split_and_deduplicated(self):
+        images = canonical_report_image_urls(
+            None,
+            "https://img.test/one.jpg,https://img.test/two.jpg https://img.test/one.jpg",
+        )
+
+        self.assertEqual(
+            images,
+            ["https://img.test/one.jpg", "https://img.test/two.jpg"],
+        )
 
     def test_complete_non_emergency_moves_to_optional_image_without_llm(self):
         decision = determine_report_progress(
@@ -1160,6 +1183,38 @@ class SaveSelectionBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "Se reporta que hay un bache profundo que obstruye el carril derecho.",
         )
         self.assertEqual(payload["localizacion"], "Vasconcelos 321, Centro")
+
+    async def test_ciac_payload_does_not_append_comma_joined_selection8(self):
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "477403"
+        response.raise_for_status.return_value = None
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(return_value=response)
+
+        images = [
+            "https://img.test/one.jpg",
+            "https://img.test/two.jpg",
+        ]
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await save_client_selection2(
+                yoga_number="5218111111111",
+                selection1="984",
+                selection2="Ana Pérez",
+                selection3="",
+                selection4="Hay un bache profundo que obstruye el carril derecho",
+                selection5="Vasconcelos",
+                selection6="321",
+                selection7="Centro",
+                selection8=",".join(images),
+                images_list=images,
+            )
+
+        self.assertEqual(result, "Folio: 477403")
+        self.assertEqual(client.post.await_args.kwargs["json"]["fotos"], images)
 
     async def test_ciac_transient_timeout_is_retried_and_category_is_repaired(self):
         response = MagicMock()

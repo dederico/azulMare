@@ -103,6 +103,27 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_recent_folio_never_suppresses_current_report_generation(self):
+        completion = {"folio": "477399", "completed_at": 100.0}
+
+        self.assertFalse(
+            should_suppress_recent_post_folio_input(
+                completion,
+                text="",
+                has_media=True,
+                newer_report_active=True,
+                now=120.0,
+            )
+        )
+        self.assertFalse(
+            should_suppress_recent_post_folio_input(
+                completion,
+                text="FIN",
+                newer_report_active=True,
+                now=120.0,
+            )
+        )
+
     def test_delayed_resolution_answer_preserves_visible_evaluation(self):
         prompt = "¿Está de acuerdo con la resolución? Por favor responda Sí o No."
         for answer in ("Sí", "S", "No", "N"):

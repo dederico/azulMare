@@ -297,9 +297,37 @@ def extract_catalog_location(
     if not raw:
         return {}
 
-    explicit_street = bool(re.match(r"^(?:calle|avenida|av\.?|boulevard)\s+", raw, re.I))
-    explicit_colony = bool(re.match(r"^(?:en\s+)?(?:colonia|col\.?|fraccionamiento)\s+", raw, re.I))
-    prefixed_en = bool(re.match(r"^en\s+", raw, re.I))
+    # A location answer may contain street, neighborhood and exterior number
+    # in one burst.  Remove a clearly labelled/trailing number before resolving
+    # the municipal catalogs, then return it alongside the location fields.
+    # This keeps ``#0000`` from becoming part of the street and, importantly,
+    # does not depend on which individual field SAM happened to ask for.
+    embedded_number = None
+    number_span = None
+    hash_number = re.search(r"(?<!\w)#\s*(\d{1,8})(?!\w)", raw)
+    if hash_number:
+        embedded_number = hash_number.group(1)
+        number_span = hash_number.span()
+    else:
+        no_number = re.search(
+            r"(?<!\w)(?:#\s*)?(?:sin\s+n[uú]mero|sin\s+numeraci[oó]n|s\s*/\s*n)"
+            r"[.!]?\s*$",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if no_number:
+            embedded_number = "0000"
+            number_span = no_number.span()
+
+    location_raw = raw
+    if number_span:
+        start, end = number_span
+        location_raw = f"{raw[:start]} {raw[end:]}"
+        location_raw = " ".join(location_raw.split()).strip(" ,.;:-")
+
+    explicit_street = bool(re.match(r"^(?:calle|avenida|av\.?|boulevard)\s+", location_raw, re.I))
+    explicit_colony = bool(re.match(r"^(?:en\s+)?(?:colonia|col\.?|fraccionamiento)\s+", location_raw, re.I))
+    prefixed_en = bool(re.match(r"^en\s+", location_raw, re.I))
 
     # A citizen may answer the street question with the entire reference and
     # append the neighborhood, e.g. "Francisco Siller ... Col. General Lázaro
@@ -307,7 +335,7 @@ def extract_catalog_location(
     # sees the whole sentence and stores it as one field.
     inline_colony = None if explicit_colony else re.search(
         r"(?:^|\s)(?:colonia|col\.?|fraccionamiento)\s+(.+?)\.?$",
-        raw,
+        location_raw,
         flags=re.I,
     )
     if inline_colony:
@@ -319,23 +347,28 @@ def extract_catalog_location(
         )
         if colony:
             result = {"selection7": colony}
-            street_reference = raw[: inline_colony.start()].strip(" ,.-")
+            if embedded_number and not str(existing.get("selection6") or "").strip():
+                result["selection6"] = embedded_number
+            street_reference = location_raw[: inline_colony.start()].strip(" ,.-")
             if street_reference and (
                 expected_field == "selection5" or not existing.get("selection5")
             ):
+                street_reference = re.sub(
+                    r"^(?:calle|avenida|av\.?|boulevard)\s+",
+                    "",
+                    street_reference,
+                    flags=re.IGNORECASE,
+                ).strip()
                 # Keep the citizen's own street/reference wording; the catalog
                 # match is used to establish municipal scope, not to discard
                 # useful landmarks.
-                result = {
-                    "selection5": street_reference,
-                    "selection7": colony,
-                }
+                result["selection5"] = street_reference
             return result
 
     candidate = re.sub(
         r"^(?:en\s+)?(?:(?:calle|avenida|av\.?|boulevard|colonia|col\.?|fraccionamiento)\s+)?",
         "",
-        raw,
+        location_raw,
         flags=re.I,
     ).strip()
     normalized = _normalize(candidate)

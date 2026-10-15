@@ -470,6 +470,51 @@ class ReportIntakePolicyTests(unittest.TestCase):
             },
         )
 
+    def test_requested_street_captures_complete_multiline_location_bundle(self):
+        self.assertEqual(
+            extract_catalog_location(
+                "Calle Alfredo Verástegui y Diego Saldivar\n"
+                "Colonia Gral. Lázaro Garza Ayala.\n"
+                "#0000",
+                {"selection5": "", "selection6": "", "selection7": ""},
+                expected_field="selection5",
+            ),
+            {
+                "selection5": "Alfredo Verástegui y Diego Saldivar",
+                "selection6": "0000",
+                "selection7": "Lázaro Garza Ayala",
+            },
+        )
+
+    def test_complete_location_bundle_does_not_overwrite_existing_number(self):
+        self.assertEqual(
+            extract_catalog_location(
+                "Calle Alfredo Verástegui y Diego Saldivar, "
+                "Colonia Gral. Lázaro Garza Ayala, #0000",
+                {"selection5": "", "selection6": "42", "selection7": ""},
+                expected_field="selection5",
+            ),
+            {
+                "selection5": "Alfredo Verástegui y Diego Saldivar",
+                "selection7": "Lázaro Garza Ayala",
+            },
+        )
+
+    def test_complete_location_bundle_understands_hash_sin_numero(self):
+        self.assertEqual(
+            extract_catalog_location(
+                "Calle Alfredo Verástegui y Diego Saldivar, "
+                "Colonia Gral. Lázaro Garza Ayala, #sin número",
+                {"selection5": "", "selection6": "", "selection7": ""},
+                expected_field="selection5",
+            ),
+            {
+                "selection5": "Alfredo Verástegui y Diego Saldivar",
+                "selection6": "0000",
+                "selection7": "Lázaro Garza Ayala",
+            },
+        )
+
     def test_confirmation_requires_problem_street_colony_and_catalog(self):
         fields = {
             "selection1": "982",

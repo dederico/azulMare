@@ -222,6 +222,10 @@ from app.services.report_intake_policy import (
     next_question_after_intake_confirmation,
     should_request_intake_confirmation,
 )
+from app.services.report_notification_policy import (
+    build_report_status_notification,
+    extract_ciac_conclusion_attachments,
+)
 from app.services.report_summary import repair_report_summary_with_model
 from app.services.inbound_processing import (
     claim_inbound_processing,
@@ -1256,7 +1260,7 @@ def get_effective_user_message_text(body, reply_context):
 
 async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id, transport="wa_direct"):
     """
-    VERSIÓN MEJORADA: Obtiene y envía el comentario de conclusión e imagen del técnico.
+    Obtiene y envía el comentario de conclusión y todos los adjuntos devueltos por CIAC.
     Supports both wa_direct (WhatsApp) and widget (web chat).
     """
     try:
@@ -1288,13 +1292,16 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id, t
         comentario = comentario_data.get("comentario", "Sin comentario")
         dir_calle = comentario_data.get("dirCalle", "Dirección no disponible")
         dir_colonia = comentario_data.get("dirColonia", "Colonia no disponible") 
-        imagen_url = comentario_data.get("imagen", "")
+        attachments = extract_ciac_conclusion_attachments(data)
 
         logger.critical(f"📄 [DATOS] ===== DATOS EXTRAÍDOS =====")
         logger.critical(f"📄 [DATOS] comentario: {comentario}")
         logger.critical(f"📄 [DATOS] dir_calle: {dir_calle}")
         logger.critical(f"📄 [DATOS] dir_colonia: {dir_colonia}")
-        logger.critical(f"📄 [DATOS] imagen_url: '{imagen_url}' (tipo: {type(imagen_url)})")
+        logger.critical(
+            "📄 [DATOS] adjuntos: %s",
+            [(item.filename, item.content_type) for item in attachments],
+        )
         
         # Enviar comentario de conclusión
         conclusion_message = f"📋 *Reporte #{clean_reporte_id} - CONCLUIDO*\n\n"
@@ -1305,36 +1312,39 @@ async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id, t
         await send_chat2desk_message_direct(client_id, channel_id, conclusion_message, transport)
         logger.critical(f"📄 [MENSAJE] ✅ Mensaje de conclusión enviado")
         
-        # ✅ ENVIAR IMAGEN CON LOGS DETALLADOS
-        logger.critical(f"📷 [IMAGE CHECK] ===== EVALUANDO IMAGEN =====")
-        logger.critical(f"📷 [IMAGE CHECK] imagen_url: '{imagen_url}'")
-        logger.critical(f"📷 [IMAGE CHECK] str(imagen_url): '{str(imagen_url)}'")
-        logger.critical(f"📷 [IMAGE CHECK] .strip(): '{str(imagen_url).strip()}'")
-        logger.critical(f"📷 [IMAGE CHECK] != '0': {str(imagen_url).strip() != '0'}")
-        logger.critical(f"📷 [IMAGE CHECK] bool: {bool(str(imagen_url).strip())}")
-        
-        if imagen_url and str(imagen_url).strip() and str(imagen_url).strip() != "0":
-            try:
-                clean_image_url = str(imagen_url).strip()
-                logger.critical(f"📷 [SENDING] ===== ENVIANDO IMAGEN =====")
-                logger.critical(f"📷 [SENDING] URL limpia: {clean_image_url}")
-
-                image_sent = await send_chat2desk_image_direct(client_id, channel_id, clean_image_url, transport)
-                
-                if image_sent:
-                    logger.critical(f"📷 [SUCCESS] ✅ Imagen enviada exitosamente")
-                else:
-                    logger.error(f"📷 [FAILED] ❌ No se pudo enviar la imagen")
-                
-            except Exception as img_error:
-                logger.error(f"📷 [ERROR] ❌ Error enviando imagen: {str(img_error)}")
-                logger.error(f"📷 [ERROR] Traceback: {traceback.format_exc()}")
+        if attachments:
+            sent_count = 0
+            for attachment in attachments:
+                try:
+                    attachment_sent = await send_chat2desk_attachment_direct(
+                        client_id,
+                        channel_id,
+                        attachment.url,
+                        transport,
+                        filename=attachment.filename,
+                        content_type=attachment.content_type,
+                    )
+                    sent_count += int(attachment_sent)
+                except Exception as attachment_error:
+                    logger.error(
+                        "📎 [ERROR] No se pudo enviar %s (%s): %s",
+                        attachment.filename,
+                        attachment.content_type,
+                        attachment_error,
+                    )
+            logger.critical(
+                "📎 [CONCLUSION] Adjuntos enviados: %s/%s",
+                sent_count,
+                len(attachments),
+            )
         else:
-            logger.critical(f"📷 [SKIP] ❌ No hay imagen válida para enviar")
-            logger.critical(f"📷 [SKIP] Razón: imagen_url='{imagen_url}', strip='{str(imagen_url).strip() if imagen_url else 'None'}'")
-        
+            logger.info(
+                "📎 [CONCLUSION] CIAC no devolvió adjuntos para el reporte %s",
+                clean_reporte_id,
+            )
+
         logger.critical(f"📄 [CONCLUSION] ===== PROCESO COMPLETADO =====")
-        
+
     except Exception as e:
         logger.error(f"📄 [ERROR] Error en send_conclusion_comment_and_image: {str(e)}")
         logger.error(f"📄 [ERROR] Traceback: {traceback.format_exc()}")
@@ -1403,41 +1413,37 @@ async def send_chat2desk_message_direct(client_id, channel_id, text, transport="
             recent_direct_message_keys.remove(dedup_key)
         return False
 
-async def send_chat2desk_image_direct(client_id, channel_id, image_url, transport="wa_direct"):
-    """
-    VERSIÓN CORREGIDA según documentación Chat2Desk
-    Supports both wa_direct (WhatsApp) and widget (web chat).
-    """
+async def send_chat2desk_attachment_direct(
+    client_id,
+    channel_id,
+    attachment_url,
+    transport="wa_direct",
+    *,
+    filename="evidencia",
+    content_type="application/octet-stream",
+):
+    """Envía una imagen o documento conservando su nombre y tipo de archivo."""
     try:
-        logger.critical(f"📷 [CORRECTED] ===== USANDO FORMATO CORRECTO =====")
-
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
-
-        # ✅ FORMATO CORRECTO según documentación
         payload = {
             "client_id": client_id,
             "channel_id": channel_id,
             "transport": transport,
             "text": "",
-            "attachment": image_url.strip(),
-            "attachment_filename": "evidencia.jpg"  # ✅ ESTO FALTABA
+            "attachment": attachment_url.strip(),
+            "attachment_filename": filename,
         }
-        
-        logger.critical(f"📷 [CORRECTED] Payload: {payload}")
-        
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                "https://api.chat2desk.com.mx/v1/messages",  # Mantenemos este endpoint
+                "https://api.chat2desk.com.mx/v1/messages",
                 headers={
                     "Authorization": api_token,
                     "Content-Type": "application/json"
                 },
                 json=payload
             )
-            
-        logger.critical(f"📷 [CORRECTED] Response: {response.status_code}")
-        logger.critical(f"📷 [CORRECTED] Text: {response.text}")
-        
+
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":
@@ -1445,43 +1451,56 @@ async def send_chat2desk_image_direct(client_id, channel_id, image_url, transpor
                     LocalStorage(),
                     str(client_id),
                     response,
-                    "send_chat2desk_image_direct",
+                    "send_chat2desk_attachment_direct",
                 )
-                logger.critical(f"📷 [SUCCESS] ✅ Imagen enviada con attachment_filename")
+                logger.info(
+                    "📎 [SUCCESS] Adjunto enviado: %s (%s)",
+                    filename,
+                    content_type,
+                )
                 return True
-        
-        # Si aún falla, intentar método base64 con filename
-        logger.critical(f"📷 [FALLBACK] Intentando base64 con filename...")
-        return await send_image_base64_with_filename(client_id, channel_id, image_url, transport)
-        
+
+        logger.warning(
+            "📎 [FALLBACK] Chat2Desk rechazó URL para %s; intentando base64",
+            filename,
+        )
+        return await send_attachment_base64_with_filename(
+            client_id,
+            channel_id,
+            attachment_url,
+            transport,
+            filename=filename,
+            content_type=content_type,
+        )
+
     except Exception as e:
-        logger.error(f"📷 [ERROR] {str(e)}")
+        logger.error("📎 [ERROR] No se pudo enviar %s: %s", filename, e)
         return False
 
 
-async def send_image_base64_with_filename(client_id, channel_id, image_url, transport="wa_direct"):
-    """
-    Método base64 con attachment_filename
-    Supports both wa_direct (WhatsApp) and widget (web chat).
-    """
+async def send_attachment_base64_with_filename(
+    client_id,
+    channel_id,
+    attachment_url,
+    transport="wa_direct",
+    *,
+    filename="evidencia",
+    content_type="application/octet-stream",
+):
+    """Descarga un adjunto y lo reenvía como data URL sin convertir su tipo."""
     try:
-        # Descargar imagen
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
-            response = await client.get(image_url, headers=headers)
+            response = await client.get(attachment_url, headers=headers)
             response.raise_for_status()
-            image_data = response.content
-            
-        logger.critical(f"📷 [BASE64] Descargada: {len(image_data)} bytes")
-        
-        # Convertir a base64
-        import base64
-        image_b64 = base64.b64encode(image_data).decode('utf-8')
-        data_url = f"data:image/jpeg;base64,{image_b64}"
-        
-        # ✅ ENVIAR CON FILENAME
+            attachment_data = response.content
+            response_content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+
+        effective_content_type = response_content_type or content_type or "application/octet-stream"
+        attachment_b64 = base64.b64encode(attachment_data).decode("utf-8")
+        data_url = f"data:{effective_content_type};base64,{attachment_b64}"
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
 
         payload = {
@@ -1490,9 +1509,9 @@ async def send_image_base64_with_filename(client_id, channel_id, image_url, tran
             "transport": transport,
             "text": "",
             "attachment": data_url,
-            "attachment_filename": "evidencia.jpg"  # ✅ FILENAME REQUERIDO
+            "attachment_filename": filename,
         }
-        
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 "https://api.chat2desk.com.mx/v1/messages",
@@ -1502,10 +1521,7 @@ async def send_image_base64_with_filename(client_id, channel_id, image_url, tran
                 },
                 json=payload
             )
-            
-        logger.critical(f"📷 [BASE64] Response: {response.status_code}")
-        logger.critical(f"📷 [BASE64] Text: {response.text}")
-        
+
         if response.status_code == 200:
             response_data = response.json()
             if response_data.get("status") == "success":
@@ -1513,16 +1529,45 @@ async def send_image_base64_with_filename(client_id, channel_id, image_url, tran
                     LocalStorage(),
                     str(client_id),
                     response,
-                    "send_image_base64_with_filename",
+                    "send_attachment_base64_with_filename",
                 )
-                logger.critical(f"📷 [SUCCESS] ✅ Base64 enviado con filename")
+                logger.info(
+                    "📎 [SUCCESS] Adjunto base64 enviado: %s (%s, %s bytes)",
+                    filename,
+                    effective_content_type,
+                    len(attachment_data),
+                )
                 return True
-        
+
         return False
-        
+
     except Exception as e:
-        logger.error(f"📷 [BASE64 ERROR] {str(e)}")
+        logger.error("📎 [BASE64 ERROR] No se pudo enviar %s: %s", filename, e)
         return False
+
+
+async def send_chat2desk_image_direct(client_id, channel_id, image_url, transport="wa_direct"):
+    """Compatibilidad para los llamadores históricos de imágenes."""
+    return await send_chat2desk_attachment_direct(
+        client_id,
+        channel_id,
+        image_url,
+        transport,
+        filename="evidencia.jpg",
+        content_type="image/jpeg",
+    )
+
+
+async def send_image_base64_with_filename(client_id, channel_id, image_url, transport="wa_direct"):
+    """Compatibilidad para el fallback histórico de imágenes."""
+    return await send_attachment_base64_with_filename(
+        client_id,
+        channel_id,
+        image_url,
+        transport,
+        filename="evidencia.jpg",
+        content_type="image/jpeg",
+    )
 
 
 async def download_and_upload_image(client_id, channel_id, image_url, transport="wa_direct"):
@@ -11715,8 +11760,8 @@ def format_phone_number(phone):
 async def report_status_update(request: Request):
     """
     Endpoint para recibir actualizaciones de estados de reportes y enviar notificaciones
-    por WhatsApp a los clientes correspondientes. Solo se envían notificaciones
-    para estados "en progreso" y "concluido".
+    por WhatsApp a los clientes correspondientes. El contrato acepta eventos de
+    progreso, conclusión y reactivación; cada uno se traduce en un mensaje explícito.
     """
     try:
         # Obtener los datos del cuerpo de la solicitud
@@ -11734,16 +11779,21 @@ async def report_status_update(request: Request):
         
         # Extraer datos
         report_id = payload["reportId"]
-        report_status = payload["reportStatus"].lower()  # Convertir a minúsculas para comparación
+        report_status_input = payload["reportStatus"]
         phone_number = payload["phoneNumber"]
-        
-        # Solo procesar estados específicos
-        if report_status != "en progreso" and report_status != "concluido":
-            logger.debug(f"Estado '{report_status}' no requiere notificación. Solo se notifican 'en progreso' y 'concluido'")
+
+        notification = build_report_status_notification(
+            report_id,
+            report_status_input,
+            payload.get("additionalInfo"),
+        )
+        if notification is None:
+            logger.debug("Estado '%s' no requiere notificación", report_status_input)
             return JSONResponse(content={
                 "status": True,
-                "message": f"No se requiere notificación para el estado: {report_status}"
+                "message": f"No se requiere notificación para el estado: {report_status_input}"
             })
+        report_status = notification.status
         
         # Formatear el número de teléfono para Chat2Desk
         original_phone = phone_number
@@ -11825,15 +11875,7 @@ async def report_status_update(request: Request):
         # Preparar y enviar el mensaje al cliente
         message_url = f"{chat2desk_base_url}/messages"
         
-        # Construir mensaje según el estado específico del reporte
-        if report_status == "en progreso":
-            message_text = f"Su reporte #{report_id} ya se encuentra en proceso de atención. Un técnico está trabajando para resolver su solicitud lo antes posible."
-        elif report_status == "concluido":
-            message_text = f"¡Buenas noticias! Su reporte #{report_id} ha sido concluido satisfactoriamente. Gracias por su paciencia."
-        
-        # Si hay información adicional en el payload, incluirla en el mensaje
-        if "additionalInfo" in payload and payload["additionalInfo"]:
-            message_text += f"\n\nInformación adicional: {payload['additionalInfo']}"
+        message_text = notification.text
             
         message_data = {
             "client_id": client_id,
@@ -11885,7 +11927,8 @@ async def report_status_update(request: Request):
             "message": "Notificación de actualización de reporte enviada",
             "reportId": report_id,
             "clientId": client_id,
-            "reportStatus": report_status
+            "reportStatus": report_status,
+            "isHsm": notification.is_hsm,
         })
         
     except Exception as e:

@@ -21,6 +21,7 @@ from .implementations.get_protocolo_preventivo_hostigamiento import get_protocol
 from .implementations.get_posicionamiento_caso_dafne import get_posicionamiento_caso_dafne
 from .implementations.get_reglamento_oficial import get_reglamento_oficial
 from .implementations.get_disciplina import get_disciplina
+from .implementations.get_educacion_dual import get_educacion_dual
 
 
 registered_functions = [
@@ -46,5 +47,6 @@ registered_functions = [
     get_protocolo_preventivo_hostigamiento,
     get_posicionamiento_caso_dafne,
     get_reglamento_oficial,
-    get_disciplina
+    get_disciplina,
+    get_educacion_dual,
 ]

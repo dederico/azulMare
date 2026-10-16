@@ -113,6 +113,19 @@ def validate_structured_emergency_decision(value: str | None) -> str | None:
     return normalized if normalized in {"yes", "no"} else None
 
 
+def validate_structured_report_start_emergency(
+    value: str | None,
+) -> str | None:
+    """Validate the model's urgency assessment when it starts a report.
+
+    ``unclear`` is intentionally supported here because the citizen may request
+    municipal action without providing enough information to determine whether
+    there is immediate danger.  The existing intake flow owns that follow-up.
+    """
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in {"yes", "no", "unclear"} else None
+
+
 def assistant_asked_for_optional_image(message: str | None) -> bool:
     """Recognize both the current optional prompt and the legacy image guard."""
     normalized = " ".join(str(message or "").casefold().split())

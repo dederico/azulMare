@@ -155,11 +155,12 @@ def _puntaje(consulta: str, candidato: str) -> float:
 
 async def get_catalogo_servicios_municipales(servicio: str):
     """Consultar el área y teléfono verificados para un servicio municipal.
-
-    Usa esta función cuando el ciudadano pregunte qué área, teléfono, extensión o canal
-    atiende un servicio municipal. No uses el directorio de funcionarios para inferir
-    responsabilidades. Si el resultado indica que el contacto no está documentado,
-    informa esa limitación o transfiere; nunca sustituyas otro teléfono municipal.
+    Úsala sólo cuando el ciudadano solicite información de contacto: área, teléfono,
+    extensión o canal de un servicio municipal. No la uses como sustituto de un reporte
+    cuando el ciudadano busca que el Municipio realice una acción. No uses el directorio
+    de funcionarios para inferir responsabilidades. Si el resultado indica que el
+    contacto no está documentado, informa esa limitación o transfiere; nunca sustituyas
+    otro teléfono municipal.
 
     Args:
         servicio (string): Servicio municipal que desea consultar el ciudadano.
@@ -208,6 +209,8 @@ async def get_catalogo_servicios_municipales(servicio: str):
     return (
         "DIRECTORIO PRELIMINAR DE SERVICIOS MUNICIPALES\n\n"
         + "\n\n".join(bloques)
-        + "\n\nResponde al ciudadano con el área y teléfono indicados. "
-        "No menciones identificadores internos ni nombres personales."
+        + "\n\nEstos son datos de contacto verificados. Compártelos únicamente si el "
+        "ciudadano solicitó información de contacto; no los presentes como sustituto "
+        "de un reporte que puede levantarse en este chat. No menciones identificadores "
+        "internos ni nombres personales."
     )

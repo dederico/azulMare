@@ -51,10 +51,28 @@ from app.services.conversation_policy import (
     validate_structured_handoff_decision,
     validate_structured_emergency_decision,
     validate_structured_optional_image_decision,
+    validate_structured_report_start_emergency,
 )
 
 
 class AutomaticReportPolicyTests(unittest.TestCase):
+    def test_semantic_report_start_accepts_closed_emergency_vocabulary(self):
+        self.assertEqual(
+            validate_structured_report_start_emergency("YES"),
+            "yes",
+        )
+        self.assertEqual(
+            validate_structured_report_start_emergency(" no "),
+            "no",
+        )
+        self.assertEqual(
+            validate_structured_report_start_emergency("unclear"),
+            "unclear",
+        )
+        self.assertIsNone(
+            validate_structured_report_start_emergency("tal vez"),
+        )
+
     def test_recent_folio_suppresses_brenda_late_fragments_and_media(self):
         completion = {"folio": "473811", "completed_at": 100.0}
 

@@ -182,6 +182,7 @@ from app.services.conversation_policy import (
     validate_structured_emergency_decision,
     validate_structured_handoff_decision,
     validate_structured_optional_image_decision,
+    validate_structured_report_start_emergency,
 )
 from app.services.report_submission_policy import (
     classify_sidewalk_sign_answer,
@@ -10638,8 +10639,9 @@ async def _process_whatsapp_request(request):
             "de transporte utiliza get_circuitos_de_transporte()."
         )
         system_prompt += (
-            "\n\nCONTACTOS DE SERVICIOS MUNICIPALES: Si el ciudadano pregunta qué área, teléfono, "
-            "extensión o canal atiende un servicio municipal, llama primero a "
+            "\n\nCONTACTOS DE SERVICIOS MUNICIPALES: Usa el directorio únicamente cuando el "
+            "ciudadano solicite información de contacto —área, teléfono, extensión o canal— y no "
+            "esté pidiendo que el Municipio realice una acción. En ese caso llama primero a "
             "get_catalogo_servicios_municipales(servicio). Usa get_funcionarios() únicamente cuando "
             "pregunte por una persona, funcionario, cargo o dependencia específica. Nunca deduzcas "
             "la responsabilidad de un servicio desde el directorio. Si el catálogo no contiene un "
@@ -10669,6 +10671,208 @@ async def _process_whatsapp_request(request):
             else func
             for func in registered_functions
         ]
+        semantic_report_start_available = bool(
+            body
+            and not has_confirmed_report_intent(from_number)
+            and not evaluation_turn_active
+            and not quoted_hsm_ok
+            and not out_of_scope_response
+            and not is_simple_greeting(body)
+            and not semantic_handoff_resolution_needed
+        )
+        if semantic_report_start_available:
+            async def begin_report_intake(
+                problem_summary: str,
+                emergency: str = "unclear",
+            ):
+                """Inicia un reporte cuando el significado del mensaje pide una acción municipal.
+                Úsala aunque el ciudadano se exprese como pregunta, indirectamente o sin decir
+                "reporte". Ejemplos semánticos: solicita que el Municipio recoja, retire, repare,
+                limpie, inspeccione o atienda algo. No la uses si sólo pide un teléfono, una oficina,
+                requisitos o información. problem_summary debe ser una sola oración breve y fiel al
+                problema, sin saludo, intención, preguntas ni ubicación. emergency debe ser "yes"
+                si describe peligro inmediato, "no" si claramente no es urgente, o "unclear" sólo
+                cuando el contexto no permita decidir.
+
+                problem_summary (string): Una sola oración breve y fiel con el problema clave, sin ubicación ni texto operativo.
+                emergency (string, optional): "yes", "no" o "unclear" según el significado completo del mensaje.
+                """
+                structured_emergency = (
+                    validate_structured_report_start_emergency(emergency)
+                )
+                if structured_emergency is None:
+                    return (
+                        "VALIDATION_BLOCK: emergency debe ser exactamente "
+                        "'yes', 'no' o 'unclear'."
+                    )
+
+                normalized_summary = " ".join(
+                    str(problem_summary or "").split()
+                ).strip(" .")
+                if not is_meaningful_report_description(normalized_summary):
+                    return (
+                        "VALIDATION_BLOCK: problem_summary debe describir "
+                        "brevemente el problema municipal."
+                    )
+
+                # The model decides only the meaning. Existing report state,
+                # field validation and CIAC submission remain authoritative.
+                confirm_report_intent(
+                    from_number,
+                    body,
+                    source="model_semantic_report_start",
+                )
+                persist_trusted_reporter_name(from_number, sender_name)
+                capture_citizen_report_evidence(
+                    from_number,
+                    body,
+                    previous_assistant_message=last_outbound_message,
+                )
+
+                current_answers = {
+                    key: get_user_answer(from_number, key)
+                    for key in (
+                        "selection1", "selection2", "selection4",
+                        "selection5", "selection6", "selection7",
+                    )
+                }
+                bundled_fields, original_fields = extract_initial_report_bundle(
+                    body,
+                    current_answers,
+                )
+                for selection_key, value in bundled_fields.items():
+                    save_user_answer(from_number, selection_key, value)
+
+                # selection4 is the model's concise semantic interpretation;
+                # the original citizen message remains preserved separately as
+                # evidence and is never replaced by this summary.
+                save_user_answer(
+                    from_number,
+                    "selection4",
+                    normalized_summary[:400],
+                )
+
+                catalog_prompt = config.get("prompt") or system_message
+                inferred_category = (
+                    infer_high_confidence_report_category(normalized_summary)
+                    or resolve_unambiguous_catalog_category(
+                        catalog_prompt,
+                        normalized_summary,
+                    )
+                )
+                if inferred_category:
+                    save_user_answer(
+                        from_number,
+                        "selection1",
+                        inferred_category,
+                    )
+
+                active_session = report_sessions[from_number]
+                with report_sessions_lock:
+                    if original_fields:
+                        active_session.setdefault(
+                            "original_report_fields", {}
+                        ).update(original_fields)
+                    if bundled_fields:
+                        active_session.setdefault(
+                            "normalized_report_fields", {}
+                        ).update(bundled_fields)
+                    if structured_emergency == "yes":
+                        active_session["declared_emergency"] = True
+                    elif structured_emergency == "no":
+                        active_session["declared_emergency"] = False
+                    else:
+                        active_session["declared_emergency"] = None
+
+                if structured_emergency == "yes":
+                    save_user_answer(from_number, "selection1", "964")
+
+                bind_report_completion_context(
+                    active_session,
+                    request_id=str(request_id or f"{from_number}-{uid}"),
+                    origin_uid=str(uid),
+                    origin_message_id=str(message_id),
+                    client_id=client_id,
+                    channel_id=channel_id,
+                    transport=transport,
+                )
+                current_context = transfer_guard_context.setdefault(
+                    str(message_id),
+                    {},
+                )
+                current_context["report_intent"] = True
+                current_context["report_state"] = (
+                    build_report_state_snapshot(from_number)
+                )
+
+                current_answers = {
+                    key: get_user_answer(from_number, key)
+                    for key in (
+                        "selection1", "selection2", "selection4",
+                        "selection5", "selection6", "selection7",
+                    )
+                }
+                progress = determine_report_progress(
+                    current_answers,
+                    declared_emergency=active_session.get(
+                        "declared_emergency"
+                    ),
+                    image_prompted=bool(active_session.get("image_prompted")),
+                    image_decision=active_session.get("image_decision"),
+                    has_images=bool(active_session.get("images")),
+                    prompt=catalog_prompt,
+                )
+                with report_sessions_lock:
+                    if progress.action == "await_emergency_answer":
+                        active_session["pending_intake_question"] = "emergency"
+                    else:
+                        active_session.pop("pending_intake_question", None)
+                    if progress.action == "ask_field":
+                        active_session["pending_finalization_field"] = (
+                            progress.field
+                        )
+                        active_session[
+                            "pending_finalization_prompted_at"
+                        ] = datetime.now().timestamp()
+
+                logger.critical(
+                    "🧠 [REPORT INTENT STRUCTURED] phone=%s emergency=%s "
+                    "next_action=%s evidence=%s",
+                    from_number,
+                    structured_emergency,
+                    progress.action,
+                    (body or "")[:240],
+                )
+                return json.dumps(
+                    {
+                        "report_intake_started": True,
+                        "emergency": structured_emergency,
+                        "next_action": progress.action,
+                        "next_question": progress.response,
+                        "instruction": (
+                            "El reporte ya está iniciado. No proporciones un "
+                            "teléfono como sustituto y no vuelvas a pedir "
+                            "autorización. Continúa con next_question; si es "
+                            "null, sigue el flujo normal con las funciones "
+                            "existentes."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            begin_report_intake.__name__ = "begin_report_intake"
+            whatsapp_functions.append(begin_report_intake)
+            system_prompt += (
+                "\n\nACCIÓN MUNICIPAL O INFORMACIÓN: Puedes levantar reportes "
+                "directamente en este chat. Interpreta el objetivo completo del "
+                "ciudadano, no palabras exactas ni la puntuación. Si busca que el "
+                "Municipio actúe sobre un problema, llama a begin_report_intake, "
+                "aunque lo formule como pregunta o no diga 'reporte'. Si pide "
+                "solamente datos de contacto o información, usa la herramienta "
+                "informativa correspondiente. Si la intención es genuinamente "
+                "ambigua, explícale que puedes levantar el reporte aquí y pregunta "
+                "una sola vez si desea hacerlo."
+            )
         if semantic_handoff_resolution_needed:
             async def record_handoff_decision(decision: str):
                 """Interpreta semánticamente si el ciudadano solicita atención humana.

@@ -173,6 +173,7 @@ from app.services.conversation_policy import (
     should_replace_unconfirmed_transfer_response,
     should_send_initial_greeting,
     should_resolve_handoff_semantically,
+    should_enter_legacy_report_finalization,
     should_preserve_evaluation_across_new_request,
     should_coalesce_pending_report_question,
     should_suppress_recent_post_folio_input,
@@ -182,6 +183,7 @@ from app.services.conversation_policy import (
     validate_structured_emergency_decision,
     validate_structured_handoff_decision,
     validate_structured_optional_image_decision,
+    validate_structured_optional_image_resolution,
     validate_structured_report_start_emergency,
 )
 from app.services.report_submission_policy import (
@@ -8212,6 +8214,7 @@ async def _process_whatsapp_request(request):
             ),
             "",
         )
+        semantic_optional_image_resolution_needed = False
         # Resolve the answer from the visible image question before any intake
         # or finalization decision. The previous late update allowed the model
         # to acknowledge "no" without changing state, then ask for a second
@@ -8220,6 +8223,7 @@ async def _process_whatsapp_request(request):
             has_confirmed_report_intent(from_number)
             and assistant_asked_for_optional_image(last_outbound_message)
         ):
+            resolved_image_decision = None
             with report_sessions_lock:
                 image_session = report_sessions[from_number]
                 previous_image_decision = image_session.get("image_decision")
@@ -8227,6 +8231,16 @@ async def _process_whatsapp_request(request):
                 resolved_image_decision = classify_image_decision_response(body)
                 if resolved_image_decision:
                     image_session["image_decision"] = resolved_image_decision
+            semantic_optional_image_resolution_needed = bool(
+                not resolved_image_decision
+                and str(body or "").strip()
+                and not any(
+                    payload.get(media_key)
+                    for media_key in (
+                        "photo", "video", "audio", "pdf", "attachments"
+                    )
+                )
+            )
             if (
                 resolved_image_decision
                 and resolved_image_decision != previous_image_decision
@@ -8235,6 +8249,12 @@ async def _process_whatsapp_request(request):
                     "🖼️ [IMAGE DECISION VISIBLE PROMPT] %s respondió sobre imagen: %s",
                     from_number,
                     resolved_image_decision,
+                )
+            elif semantic_optional_image_resolution_needed:
+                logger.critical(
+                    "🧠 [OPTIONAL IMAGE SEMANTIC PENDING] phone=%s body=%s",
+                    from_number,
+                    (body or "")[:240],
                 )
         evaluation_turn_active = bool(
             durable_evaluation
@@ -8644,7 +8664,8 @@ async def _process_whatsapp_request(request):
                             "pending_finalization_prompted_at"
                         ] = datetime.now().timestamp()
                 elif progress.action == "ask_image":
-                    intake_response_override = progress.response
+                    if not semantic_optional_image_resolution_needed:
+                        intake_response_override = progress.response
                     with report_sessions_lock:
                         active_report_session.pop(
                             "pending_intake_question",
@@ -9539,10 +9560,31 @@ async def _process_whatsapp_request(request):
                             from_number,
                             current_image_decision,
                         )
-                is_finalization = (
-                    is_finalization_message(body, from_number)
-                    or bool(pending_field)
-                    or report_sessions[from_number].get("image_decision") == "no"
+                # A free-language answer owned by a semantic resolver must
+                # reach its forced model tool before the legacy finalization
+                # block can send another question and return from the webhook.
+                # This keeps orchestration deterministic without constraining
+                # how a citizen may say "there is no number" or "no image".
+                semantic_pending_report_turn = bool(
+                    semantic_report_number_resolution_needed
+                    or semantic_optional_image_resolution_needed
+                )
+                is_finalization = should_enter_legacy_report_finalization(
+                    explicit_finalization=(
+                        False
+                        if semantic_pending_report_turn
+                        else is_finalization_message(body, from_number)
+                    ),
+                    pending_field=pending_field,
+                    image_decision=report_sessions[from_number].get(
+                        "image_decision"
+                    ),
+                    semantic_number_resolution_needed=(
+                        semantic_report_number_resolution_needed
+                    ),
+                    semantic_optional_image_resolution_needed=(
+                        semantic_optional_image_resolution_needed
+                    ),
                 )
                 
                 # First, ensure this isn't a bot-generated message being echoed back
@@ -9570,9 +9612,16 @@ async def _process_whatsapp_request(request):
                 
                 # Una respuesta a un dato pendiente pertenece al cierre del
                 # reporte, aunque contenga palabras como "calle" o "colonia".
-                is_location = not is_finalization and any(
-                    keyword in body.lower()
-                    for keyword in ["ubicación", "dirección", "calle", "avenida", "colonia", "avenue", "numero", "número"]
+                is_location = (
+                    not semantic_pending_report_turn
+                    and not is_finalization
+                    and any(
+                        keyword in body.lower()
+                        for keyword in [
+                            "ubicación", "dirección", "calle", "avenida",
+                            "colonia", "avenue", "numero", "número",
+                        ]
+                    )
                 )
 
                 
@@ -11258,6 +11307,131 @@ async def _process_whatsapp_request(request):
                 "exijas palabras exactas, no repitas una respuesta ya entendida "
                 "y no conviertas este turno en la descripción del problema. Nunca "
                 "inventes un número ni reutilices otro número ajeno a esta respuesta."
+            )
+
+        if (
+            semantic_optional_image_resolution_needed
+            and not semantic_handoff_resolution_needed
+            and not semantic_emergency_resolution_needed
+            and not semantic_report_number_resolution_needed
+        ):
+            async def record_optional_image_decision(decision: str):
+                """Interpreta la respuesta libre a la oferta de imagen opcional.
+
+                decision (string): Usa "yes" si desea adjuntar una imagen, "no"
+                si no desea, no tiene o no puede enviarla, y "unclear" únicamente
+                si el significado completo no permite decidir. No exijas frases
+                exactas ni reconstruyas los campos del reporte.
+                """
+                structured_decision = (
+                    validate_structured_optional_image_resolution(decision)
+                )
+                if structured_decision is None:
+                    return (
+                        "VALIDATION_BLOCK: decision debe ser exactamente "
+                        "'yes', 'no' o 'unclear'."
+                    )
+
+                active_session = report_sessions.get(from_number, {})
+                if (
+                    not has_confirmed_report_intent(from_number)
+                    or not active_session.get("image_prompted")
+                ):
+                    return (
+                        "VALIDATION_BLOCK: No hay una pregunta de imagen "
+                        "opcional pendiente para este reporte."
+                    )
+
+                if structured_decision == "unclear":
+                    logger.critical(
+                        "🧠 [OPTIONAL IMAGE STRUCTURED] phone=%s "
+                        "decision=unclear body=%s",
+                        from_number,
+                        (body or "")[:240],
+                    )
+                    return json.dumps(
+                        {
+                            "optional_image_decision_recorded": "unclear",
+                            "next_action": "clarify_image_decision",
+                            "next_question": (
+                                "¿Deseas adjuntar una imagen o prefieres "
+                                "continuar sin imagen?"
+                            ),
+                            "instruction": (
+                                "Pide una sola aclaración natural. No solicites "
+                                "una frase exacta ni reinicies el reporte."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                with report_sessions_lock:
+                    active_session["image_decision"] = structured_decision
+                    active_session["awaiting_report_image"] = (
+                        structured_decision == "yes"
+                    )
+
+                logger.critical(
+                    "🖼️ [OPTIONAL IMAGE STRUCTURED] phone=%s decision=%s",
+                    from_number,
+                    structured_decision,
+                )
+                if structured_decision == "yes":
+                    return json.dumps(
+                        {
+                            "optional_image_decision_recorded": "yes",
+                            "next_action": "await_image",
+                            "next_question": (
+                                "Perfecto. Envía la imagen para adjuntarla "
+                                "al reporte."
+                            ),
+                            "instruction": (
+                                "Espera la imagen y conserva el mismo reporte. "
+                                "No vuelvas a pedir sus datos."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                current_answers = {
+                    key: get_user_answer(from_number, key)
+                    for key in (
+                        "selection1", "selection2", "selection4",
+                        "selection5", "selection6", "selection7",
+                    )
+                }
+                images = list(active_session.get("images") or [])
+                descriptions = list(
+                    active_session.get("image_descriptions") or []
+                )
+                return await save_client_selection2_guarded(
+                    yoga_number=from_number,
+                    selection1=current_answers.get("selection1") or "",
+                    selection2=current_answers.get("selection2") or "Anónimo",
+                    selection3="",
+                    selection4=current_answers.get("selection4") or "",
+                    selection5=current_answers.get("selection5") or "",
+                    selection6=current_answers.get("selection6") or "",
+                    selection7=current_answers.get("selection7") or "",
+                    selection8=images[0] if images else "",
+                    images_list=images,
+                    descriptions_list=descriptions,
+                    optional_image_decision="no",
+                )
+
+            record_optional_image_decision.__name__ = (
+                "record_optional_image_decision"
+            )
+            whatsapp_functions.append(record_optional_image_decision)
+            if required_tool_name is None:
+                required_tool_name = "record_optional_image_decision"
+            system_prompt += (
+                "\n\nDECISIÓN DE IMAGEN OPCIONAL PENDIENTE: Interpreta el "
+                "significado completo de la respuesta del ciudadano y llama "
+                "obligatoriamente a record_optional_image_decision con 'yes', "
+                "'no' o 'unclear'. No le exijas palabras exactas. Esta función "
+                "conserva los campos durables del reporte: no vuelvas a pedir "
+                "el problema, la calle, el número ni la colonia."
             )
 
         # A model tool call can create a CIAC folio before control returns to

@@ -837,6 +837,21 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
         )
         self.assertEqual(fields["selection4"], "Hay un cable suelto a nivel del piso")
 
+    def test_free_form_plural_no_number_reply_is_delegated_to_model(self):
+        answer = (
+            "Las casas se identifican de otra manera y no tienen número exterior"
+        )
+        parsed = extract_pending_report_answers("selection6", answer)
+
+        self.assertEqual(parsed, {})
+        self.assertTrue(
+            should_resolve_report_number_semantically(
+                "selection6",
+                answer,
+                parsed,
+            )
+        )
+
     def test_report_number_semantic_decision_uses_closed_internal_contract(self):
         for decision in ("provided", "UNAVAILABLE", "unclear"):
             with self.subTest(decision=decision):

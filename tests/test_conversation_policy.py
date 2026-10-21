@@ -48,9 +48,11 @@ from app.services.conversation_policy import (
     should_coalesce_pending_report_question,
     should_suppress_repeated_report_question,
     should_resolve_handoff_semantically,
+    should_enter_legacy_report_finalization,
     validate_structured_handoff_decision,
     validate_structured_emergency_decision,
     validate_structured_optional_image_decision,
+    validate_structured_optional_image_resolution,
     validate_structured_report_start_emergency,
 )
 
@@ -385,6 +387,7 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             "Nel",
             "No puedo",
             "No traigo",
+            "Sin imagen",
             "No quiero compartir una foto",
             "Sí, deseo seguir sin agregar imagen",
             "No hay luz mercurial en mi calle",
@@ -398,6 +401,56 @@ class AutomaticReportPolicyTests(unittest.TestCase):
         self.assertEqual(validate_structured_optional_image_decision("YES"), "yes")
         self.assertIsNone(validate_structured_optional_image_decision("no tengo"))
         self.assertIsNone(validate_structured_optional_image_decision("tal vez"))
+
+    def test_optional_image_semantic_resolver_has_closed_three_way_contract(self):
+        for decision in ("yes", "NO", "unclear"):
+            with self.subTest(decision=decision):
+                self.assertEqual(
+                    validate_structured_optional_image_resolution(decision),
+                    decision.casefold(),
+                )
+        self.assertIsNone(
+            validate_structured_optional_image_resolution("sin imagen")
+        )
+        self.assertIsNone(
+            validate_structured_optional_image_resolution("tal vez")
+        )
+
+    def test_semantic_number_turn_bypasses_legacy_finalization(self):
+        self.assertFalse(
+            should_enter_legacy_report_finalization(
+                explicit_finalization=False,
+                pending_field="selection6",
+                image_decision=None,
+                semantic_number_resolution_needed=True,
+            )
+        )
+
+    def test_semantic_optional_image_turn_bypasses_legacy_finalization(self):
+        self.assertFalse(
+            should_enter_legacy_report_finalization(
+                explicit_finalization=False,
+                pending_field=None,
+                image_decision=None,
+                semantic_optional_image_resolution_needed=True,
+            )
+        )
+
+    def test_canonical_pending_answer_keeps_legacy_finalization(self):
+        self.assertTrue(
+            should_enter_legacy_report_finalization(
+                explicit_finalization=False,
+                pending_field="selection7",
+                image_decision=None,
+            )
+        )
+        self.assertTrue(
+            should_enter_legacy_report_finalization(
+                explicit_finalization=False,
+                pending_field=None,
+                image_decision="no",
+            )
+        )
 
     def test_legacy_required_image_message_is_treated_as_optional_prompt(self):
         self.assertTrue(

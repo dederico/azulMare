@@ -107,6 +107,46 @@ def validate_structured_optional_image_decision(value: str | None) -> str | None
     return normalized if normalized in {"yes", "no"} else None
 
 
+def validate_structured_optional_image_resolution(
+    value: str | None,
+) -> str | None:
+    """Validate the model's closed interpretation of an optional-image reply.
+
+    ``unclear`` belongs to the conversational resolver only.  It is deliberately
+    not accepted by ``validate_structured_optional_image_decision`` because the
+    report submission guard may persist only a definitive yes/no answer.
+    """
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in {"yes", "no", "unclear"} else None
+
+
+def should_enter_legacy_report_finalization(
+    *,
+    explicit_finalization: bool,
+    pending_field: str | None,
+    image_decision: str | None,
+    semantic_number_resolution_needed: bool = False,
+    semantic_optional_image_resolution_needed: bool = False,
+) -> bool:
+    """Keep semantic field decisions ahead of the legacy closing branch.
+
+    The legacy branch sends its response and returns from the webhook.  If it
+    owns a free-language turn first, the model's forced decision tool is
+    unreachable.  Definitive/canonical answers continue through the existing
+    finalization path unchanged.
+    """
+    if (
+        semantic_number_resolution_needed
+        or semantic_optional_image_resolution_needed
+    ):
+        return False
+    return bool(
+        explicit_finalization
+        or str(pending_field or "").strip()
+        or str(image_decision or "").strip().casefold() == "no"
+    )
+
+
 def validate_structured_emergency_decision(value: str | None) -> str | None:
     """Accept only the closed emergency decision produced by the model."""
     normalized = str(value or "").strip().casefold()

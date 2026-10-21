@@ -31,7 +31,9 @@ from app.services.report_submission_policy import (
     resolve_trusted_reporter_name,
     sanitize_report_description,
     select_citizen_report_description,
+    should_resolve_report_number_semantically,
     validate_and_normalize_report_submission,
+    validate_structured_report_number_decision,
     determine_report_progress,
     deduplicate_report_media,
     validation_error_to_user_message,
@@ -776,6 +778,83 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                 self.assertEqual(
                     extract_pending_report_answers("selection6", answer),
                     {"selection6": "0000"},
+                )
+
+    def test_pending_number_ignores_whatsapp_quotes_and_punctuation(self):
+        for answer in (
+            "Sin numero.",
+            "“Sin numero”",
+            "¿Sin número!",
+            "“136”",
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    extract_pending_report_answers("selection6", answer),
+                    {
+                        "selection6": (
+                            "136" if "136" in answer else "0000"
+                        )
+                    },
+                )
+
+    def test_pending_number_understands_clear_natural_absence(self):
+        for answer in (
+            "Es en la calle, no hay número",
+            "Ese lugar no cuenta con numeración",
+            "Desconozco el número exterior",
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    extract_pending_report_answers("selection6", answer),
+                    {"selection6": "0000"},
+                )
+
+    def test_unresolved_number_language_is_delegated_without_corrupting_problem(self):
+        answer = "Ahí las casas se identifican de otra manera"
+        parsed = extract_pending_report_answers("selection6", answer)
+        fields = {
+            "selection4": "Hay un cable suelto a nivel del piso",
+            "selection5": "Río Suchiate",
+            "selection6": "",
+            "selection7": "",
+        }
+
+        self.assertEqual(parsed, {})
+        self.assertTrue(
+            should_resolve_report_number_semantically(
+                "selection6",
+                answer,
+                parsed,
+            )
+        )
+        self.assertEqual(
+            infer_unsolicited_report_answers(
+                fields,
+                answer,
+                pending_field="selection6",
+            ),
+            {},
+        )
+        self.assertEqual(fields["selection4"], "Hay un cable suelto a nivel del piso")
+
+    def test_report_number_semantic_decision_uses_closed_internal_contract(self):
+        for decision in ("provided", "UNAVAILABLE", "unclear"):
+            with self.subTest(decision=decision):
+                self.assertEqual(
+                    validate_structured_report_number_decision(decision),
+                    decision.casefold(),
+                )
+        self.assertIsNone(validate_structured_report_number_decision("tal vez"))
+
+    def test_controls_do_not_trigger_number_semantic_resolution(self):
+        for answer in ("FIN", "Gracias", "OK"):
+            with self.subTest(answer=answer):
+                self.assertFalse(
+                    should_resolve_report_number_semantically(
+                        "selection6",
+                        answer,
+                        {},
+                    )
                 )
 
     def test_pending_street_extracts_compound_multiline_address(self):

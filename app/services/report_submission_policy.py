@@ -689,9 +689,14 @@ def resolve_trusted_reporter_name(sender_name: str | None) -> str:
 
 def normalize_report_number_input(value: str | None) -> str | None:
     raw = " ".join(str(value or "").split()).strip()
-    normalized = normalize_report_text(raw)
-    if raw.isdigit():
-        return raw
+    # WhatsApp preserves punctuation and typographic quotes typed by the
+    # citizen.  They do not change the meaning of an otherwise unambiguous
+    # number answer, so remove them only at the edges before interpreting it.
+    normalized = normalize_report_text(raw).strip(
+        " \t\r\n.,;:!?¡¿\"'“”‘’«»()[]{}"
+    )
+    if normalized.isdigit():
+        return normalized
     # Citizens rarely answer with a bare number. Accept the same value when it
     # is wrapped in natural wording such as "Número 136" or "el número es
     # 136". This parser is only used while resolving the exterior-number field,
@@ -727,7 +732,46 @@ def normalize_report_number_input(value: str | None) -> str | None:
         "sn",
     }:
         return "0000"
+    # Resolve clear natural-language statements while the caller owns the
+    # exterior-number field.  This is deliberately structural rather than a
+    # growing list of complete citizen phrases; genuinely novel or ambiguous
+    # language is delegated to the semantic resolver.
+    number_concept = r"(?:n[uú]mero|numeraci[oó]n)"
+    unavailable_number = re.search(
+        rf"\b(?:sin\s+{number_concept}|"
+        rf"no\s+(?:hay|tiene|existe|cuenta\s+con)\s+(?:un\s+)?{number_concept}|"
+        rf"carece\s+de\s+{number_concept})\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    unknown_number = re.search(
+        rf"\b(?:no\s+(?:se|conozco|recuerdo)|desconozco)\b.*\b{number_concept}\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if unavailable_number or unknown_number:
+        return "0000"
     return None
+
+
+def validate_structured_report_number_decision(value: str | None) -> str | None:
+    """Validate the model's closed interpretation of a free-language answer."""
+    decision = normalize_report_text(value)
+    return decision if decision in {"provided", "unavailable", "unclear"} else None
+
+
+def should_resolve_report_number_semantically(
+    pending_field: str | None,
+    citizen_message: str | None,
+    parsed_answers: dict[str, str] | None = None,
+) -> bool:
+    """Delegate an unresolved number turn without constraining citizen wording."""
+    if str(pending_field or "").strip() != "selection6" or parsed_answers:
+        return False
+    compact = " ".join(str(citizen_message or "").split()).strip()
+    if not compact:
+        return False
+    return normalize_report_text(compact) not in REPORT_CONTROL_MESSAGES
 
 
 def extract_pending_report_answers(
@@ -947,6 +991,8 @@ def report_session_has_confirmed_intent(session: dict | None) -> bool:
 def infer_unsolicited_report_answers(
     existing: dict[str, str],
     citizen_message: str | None,
+    *,
+    pending_field: str | None = None,
 ) -> dict[str, str]:
     """Capture useful report fragments even when citizens answer in bursts.
 
@@ -957,6 +1003,12 @@ def infer_unsolicited_report_answers(
     compact = " ".join(str(citizen_message or "").split()).strip()
     normalized = normalize_report_text(compact)
     if not compact or normalized in REPORT_CONTROL_MESSAGES:
+        return {}
+
+    # A requested structured field owns the turn. If its deterministic parser
+    # could not understand the answer, the semantic resolver must decide it;
+    # treating the same text as a new problem corrupts selection4.
+    if str(pending_field or "").strip() == "selection6":
         return {}
 
     updates: dict[str, str] = {}

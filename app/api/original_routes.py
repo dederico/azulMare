@@ -204,13 +204,16 @@ from app.services.report_submission_policy import (
     merge_citizen_report_description,
     next_missing_report_detail_before_image,
     next_missing_report_field,
+    normalize_report_number_input,
     parse_report_catalog,
     reconcile_with_citizen_evidence,
     report_catalog_contains,
     report_session_has_confirmed_intent,
     resolve_trusted_reporter_name,
     resolve_unambiguous_catalog_category,
+    should_resolve_report_number_semantically,
     sidewalk_sign_category_options,
+    validate_structured_report_number_decision,
     validate_and_normalize_report_submission,
     validation_error_to_user_message,
 )
@@ -3021,6 +3024,7 @@ def capture_citizen_report_evidence(
     from_number: str,
     citizen_message: str,
     previous_assistant_message: str | None = None,
+    pending_field: str | None = None,
 ) -> None:
     """Persist grounded report evidence without treating workflow answers as facts."""
     citizen_message = extract_citizen_reply_text(citizen_message)
@@ -3046,6 +3050,9 @@ def capture_citizen_report_evidence(
 
     if inferred_code:
         save_user_answer(from_number, "selection1", inferred_code)
+
+    if str(pending_field or "").strip() == "selection6":
+        return
 
     if not is_likely_report_description(
         citizen_message,
@@ -8252,6 +8259,7 @@ async def _process_whatsapp_request(request):
         captured_report_field = None
         auto_finalize_emergency = False
         semantic_emergency_resolution_needed = False
+        semantic_report_number_resolution_needed = False
         existing_before_intake = {
             key: get_user_answer(from_number, key)
             for key in (
@@ -8267,10 +8275,15 @@ async def _process_whatsapp_request(request):
             # Establish report intent before field extraction. Previously this
             # happened immediately before the LLM call, after the deterministic
             # intake block had already skipped the citizen's first message.
+            active_report_session = report_sessions.get(from_number, {})
+            pending_report_field_before_capture = active_report_session.get(
+                "pending_finalization_field"
+            )
             capture_citizen_report_evidence(
                 from_number,
                 body,
                 previous_assistant_message=last_outbound_message,
+                pending_field=pending_report_field_before_capture,
             )
             active_report_session = report_sessions.get(from_number, {})
             pending_intake_question = active_report_session.get(
@@ -8447,6 +8460,21 @@ async def _process_whatsapp_request(request):
                 {} if intake_turn_handled or captured_report_field
                 else extract_pending_report_answers(pending_field, body)
             )
+            semantic_report_number_resolution_needed = bool(
+                not intake_turn_handled
+                and not captured_report_field
+                and should_resolve_report_number_semantically(
+                    pending_field,
+                    body,
+                    pending_answers,
+                )
+            )
+            if semantic_report_number_resolution_needed:
+                logger.critical(
+                    "🧠 [REPORT NUMBER SEMANTIC PENDING] phone=%s body=%s",
+                    from_number,
+                    (body or "")[:240],
+                )
             for selection_key, value in pending_answers.items():
                 if selection_key == "selection4":
                     value = merge_citizen_report_description(
@@ -8465,7 +8493,11 @@ async def _process_whatsapp_request(request):
                     pending_field,
                     sorted(pending_answers),
                 )
-            elif not intake_turn_handled and not captured_report_field:
+            elif (
+                not intake_turn_handled
+                and not captured_report_field
+                and not semantic_report_number_resolution_needed
+            ):
                 captured_report_field = capture_contextual_report_answer(
                     from_number,
                     body,
@@ -8479,8 +8511,17 @@ async def _process_whatsapp_request(request):
                 )
             }
             unsolicited_answers = (
-                {} if intake_turn_handled or captured_report_field
-                else infer_unsolicited_report_answers(current_answers, body)
+                {}
+                if (
+                    intake_turn_handled
+                    or captured_report_field
+                    or semantic_report_number_resolution_needed
+                )
+                else infer_unsolicited_report_answers(
+                    current_answers,
+                    body,
+                    pending_field=pending_field,
+                )
             )
             for selection_key, value in unsolicited_answers.items():
                 save_user_answer(from_number, selection_key, value)
@@ -8586,7 +8627,11 @@ async def _process_whatsapp_request(request):
                             "pending_intake_question"
                         ] = "emergency"
                 elif progress.action == "ask_field":
-                    intake_response_override = progress.response
+                    if not (
+                        semantic_report_number_resolution_needed
+                        and progress.field == "selection6"
+                    ):
+                        intake_response_override = progress.response
                     with report_sessions_lock:
                         active_report_session.pop(
                             "pending_intake_question",
@@ -11058,6 +11103,161 @@ async def _process_whatsapp_request(request):
                 "Interpreta la respuesta completa del ciudadano en su contexto y "
                 "llama obligatoriamente a record_emergency_decision con 'yes' o "
                 "'no'. No repitas la pregunta ni exijas que responda una palabra exacta."
+            )
+
+        if (
+            semantic_report_number_resolution_needed
+            and not semantic_handoff_resolution_needed
+            and not semantic_emergency_resolution_needed
+        ):
+            async def record_report_number_decision(
+                decision: str,
+                number: str = "",
+            ):
+                """Interpreta la respuesta libre al número exterior pendiente.
+
+                decision (string): Usa "provided" si el ciudadano dio un número,
+                "unavailable" si comunica que el lugar no tiene número o que no lo
+                conoce, y "unclear" únicamente si el significado no permite decidir.
+                number (string, optional): Cuando decision sea "provided", envía sólo
+                los dígitos que el ciudadano proporcionó o expresó inequívocamente.
+                Nunca inventes ni tomes otro número de la conversación. En los demás
+                casos usa "".
+                """
+                structured_decision = validate_structured_report_number_decision(
+                    decision
+                )
+                if structured_decision is None:
+                    return (
+                        "VALIDATION_BLOCK: decision debe ser exactamente "
+                        "'provided', 'unavailable' o 'unclear'."
+                    )
+
+                active_session = report_sessions.get(from_number, {})
+                if (
+                    not has_confirmed_report_intent(from_number)
+                    or active_session.get("pending_finalization_field")
+                    != "selection6"
+                ):
+                    return (
+                        "VALIDATION_BLOCK: No hay una pregunta de número "
+                        "exterior pendiente para este reporte."
+                    )
+
+                if structured_decision == "unclear":
+                    logger.critical(
+                        "🧠 [REPORT NUMBER STRUCTURED] phone=%s decision=unclear "
+                        "body=%s",
+                        from_number,
+                        (body or "")[:240],
+                    )
+                    return json.dumps(
+                        {
+                            "number_decision_recorded": "unclear",
+                            "next_action": "ask_field",
+                            "next_question": (
+                                "No alcancé a identificar el número exterior. "
+                                "¿Cuál es, o el lugar no tiene número?"
+                            ),
+                            "instruction": (
+                                "Pide una sola aclaración con lenguaje natural. "
+                                "No exijas una frase exacta y no trates esta "
+                                "respuesta como descripción del problema."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                canonical_number = "0000"
+                if structured_decision == "provided":
+                    canonical_number = normalize_report_number_input(number)
+                    if (
+                        canonical_number is None
+                        or canonical_number == "0000"
+                        or not canonical_number.isdigit()
+                    ):
+                        return (
+                            "VALIDATION_BLOCK: Con decision='provided', number "
+                            "debe contener únicamente el número exterior en dígitos."
+                        )
+
+                save_user_answer(
+                    from_number,
+                    "selection6",
+                    canonical_number,
+                )
+                with report_sessions_lock:
+                    active_session.pop("pending_finalization_field", None)
+                    active_session.pop(
+                        "pending_finalization_prompted_at",
+                        None,
+                    )
+
+                current_answers = {
+                    key: get_user_answer(from_number, key)
+                    for key in (
+                        "selection1", "selection2", "selection4",
+                        "selection5", "selection6", "selection7",
+                    )
+                }
+                progress_after_decision = determine_report_progress(
+                    current_answers,
+                    declared_emergency=active_session.get(
+                        "declared_emergency"
+                    ),
+                    image_prompted=bool(active_session.get("image_prompted")),
+                    image_decision=active_session.get("image_decision"),
+                    has_images=bool(active_session.get("images")),
+                    prompt=config.get("prompt") or system_message,
+                )
+                with report_sessions_lock:
+                    if progress_after_decision.action == "ask_field":
+                        active_session["pending_finalization_field"] = (
+                            progress_after_decision.field
+                        )
+                        active_session[
+                            "pending_finalization_prompted_at"
+                        ] = datetime.now().timestamp()
+
+                logger.critical(
+                    "🧠 [REPORT NUMBER STRUCTURED] phone=%s decision=%s "
+                    "number=%s next_action=%s",
+                    from_number,
+                    structured_decision,
+                    canonical_number,
+                    progress_after_decision.action,
+                )
+                return json.dumps(
+                    {
+                        "number_decision_recorded": structured_decision,
+                        "number": canonical_number,
+                        "next_action": progress_after_decision.action,
+                        "next_question": progress_after_decision.response,
+                        "instruction": (
+                            "La respuesta de número ya quedó registrada. No la "
+                            "vuelvas a preguntar ni la agregues a la descripción. "
+                            "Continúa con next_question; si es null, sigue el "
+                            "flujo normal con las funciones existentes."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            record_report_number_decision.__name__ = (
+                "record_report_number_decision"
+            )
+            whatsapp_functions.append(record_report_number_decision)
+            if required_tool_name is None:
+                required_tool_name = "record_report_number_decision"
+            system_prompt += (
+                "\n\nNÚMERO EXTERIOR PENDIENTE: Interpreta semánticamente la "
+                "respuesta completa del ciudadano a la última pregunta sobre el "
+                "número exterior. Llama obligatoriamente a "
+                "record_report_number_decision con 'provided', 'unavailable' o "
+                "'unclear'. La persona puede expresarse de cualquier forma: no "
+                "exijas palabras exactas, no repitas una respuesta ya entendida "
+                "y no conviertas este turno en la descripción del problema. Nunca "
+                "inventes un número ni reutilices otro número ajeno a esta respuesta."
             )
 
         # A model tool call can create a CIAC folio before control returns to

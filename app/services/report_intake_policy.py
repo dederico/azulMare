@@ -398,6 +398,54 @@ def extract_catalog_location(
     return {}
 
 
+def resolve_geocoded_report_fields(
+    geocoded_location: dict | None,
+    existing: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Map trusted components from a shared pin into still-empty CIAC fields.
+
+    Citizen-provided values always win. Streets retain the geocoder wording
+    when the municipal catalog has no unique match because a valid reference
+    may be more specific than the catalog. Colonies are accepted only through
+    the official catalog, avoiding nearby districts or municipality names from
+    being saved as a neighborhood. A missing house number remains missing: it
+    can become ``0000`` only after the citizen confirms that it is unavailable.
+    """
+    geocoded_location = geocoded_location or {}
+    existing = existing or {}
+    resolved: dict[str, str] = {}
+
+    street = " ".join(str(geocoded_location.get("street") or "").split()).strip()
+    number = " ".join(str(geocoded_location.get("number") or "").split()).strip()
+    colony = " ".join(str(geocoded_location.get("colony") or "").split()).strip()
+
+    if street and not str(existing.get("selection5") or "").strip():
+        catalog_street = extract_catalog_location(
+            f"calle {street}",
+            existing,
+            expected_field="selection5",
+        ).get("selection5")
+        resolved["selection5"] = catalog_street or street
+
+    if (
+        number
+        and not str(existing.get("selection6") or "").strip()
+        and re.fullmatch(r"\d{1,8}", number)
+    ):
+        resolved["selection6"] = number
+
+    if colony and not str(existing.get("selection7") or "").strip():
+        catalog_colony = extract_catalog_location(
+            f"colonia {colony}",
+            {**existing, **resolved},
+            expected_field="selection7",
+        ).get("selection7")
+        if catalog_colony:
+            resolved["selection7"] = catalog_colony
+
+    return resolved
+
+
 def build_intake_confirmation(fields: dict[str, str]) -> str | None:
     required = ("selection1", "selection4", "selection5", "selection7")
     if not all(str(fields.get(key) or "").strip() for key in required):

@@ -8,6 +8,7 @@ from app.services.report_intake_policy import (
     extract_initial_report_bundle,
     next_question_after_intake_confirmation,
     reconcile_report_bundle_before_ciac,
+    resolve_geocoded_report_fields,
     should_request_intake_confirmation,
 )
 from app.services.report_submission_policy import (
@@ -18,6 +19,53 @@ from app.services.conversation_policy import classify_emergency_answer
 
 
 class ReportIntakePolicyTests(unittest.TestCase):
+    def test_shared_pin_fills_only_empty_report_location_fields(self):
+        self.assertEqual(
+            resolve_geocoded_report_fields(
+                {
+                    "street": "Río Balsas",
+                    "number": "303",
+                    "colony": "Del Valle",
+                },
+                {"selection5": "", "selection6": "", "selection7": ""},
+            ),
+            {
+                "selection5": "Río Balsas",
+                "selection6": "303",
+                "selection7": "Del Valle",
+            },
+        )
+
+    def test_shared_pin_never_overwrites_citizen_location(self):
+        self.assertEqual(
+            resolve_geocoded_report_fields(
+                {
+                    "street": "Río Balsas",
+                    "number": "303",
+                    "colony": "Del Valle",
+                },
+                {
+                    "selection5": "Río Suchiate",
+                    "selection6": "120",
+                    "selection7": "Fuentes del Valle",
+                },
+            ),
+            {},
+        )
+
+    def test_shared_pin_does_not_invent_number_or_accept_unknown_colony(self):
+        self.assertEqual(
+            resolve_geocoded_report_fields(
+                {
+                    "street": "Referencia junto al parque",
+                    "number": "",
+                    "colony": "Distrito no verificado",
+                },
+                {},
+            ),
+            {"selection5": "Referencia junto al parque"},
+        )
+
     def test_pre_ciac_extractor_understands_complete_message_in_any_order(self):
         message = (
             "Oye, quiero levantar otro reporte en Vasconcelos, 312, "

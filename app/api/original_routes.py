@@ -58,8 +58,7 @@ from app.services.tts.polly_service import AmazonTTSService
 from app.services.functions.function_registry import registered_functions
 from app.services.llm.config.system import system_message
 from app.services.functions.function_manager import FunctionManager
-from app.services.functions.implementations.geocoding import latlong_to_address
-from app.services.functions.implementations.nearest_office import find_nearest_government_office
+from app.services.functions.implementations.geocoding import reverse_geocode_location
 from app.services.image_analysis import (
     analyze_image_url,
     build_conversational_image_acknowledgement,
@@ -226,6 +225,7 @@ from app.services.report_intake_policy import (
     reconcile_report_bundle_before_ciac,
     extract_initial_report_bundle,
     next_question_after_intake_confirmation,
+    resolve_geocoded_report_fields,
     should_request_intake_confirmation,
 )
 from app.services.report_notification_policy import (
@@ -8973,177 +8973,160 @@ async def _process_whatsapp_request(request):
         
         # Verificación del tipo de contenido en el mensaje
         if payload.get("coordinates"):
-            # Procesamiento de ubicación
+            # A WhatsApp pin is report evidence, not an implicit request to
+            # search for an office. Resolve it once and keep its provenance so
+            # only still-empty address fields may be completed from it.
             coords = payload.get("coordinates")
-            logger.debug(f"Formato de coordenadas recibidas: {coords}")
-            
-            # Manejar tanto formato con coma como con espacio
-            if isinstance(coords, str):
-                if "," in coords:
-                    latitude, longitude = coords.split(",")
-                elif " " in coords:
-                    longitude, latitude = coords.split(" ")  # Nota: en tu payload, primero viene la longitud
-                else:
-                    logger.error(f"Formato de coordenadas desconocido: {coords}")
-                    latitude, longitude = None, None
-                    
-                if latitude and longitude:
-                    try:
-                        # Asegurarse que las coordenadas son números flotantes
-                        latitude = float(latitude.strip())
-                        longitude = float(longitude.strip())
-                        
-                        # Convertir la latitud y longitud a dirección
-                        address = await latlong_to_address(latitude, longitude)
-                        # Verificar si hay un contexto de búsqueda de oficinas gubernamentales
-                        # Esto puede ser determinado por mensajes previos del usuario o una variable de sesión
-                        office_search_context = False
-                        office_type = None
-                        
-                        # Si el usuario tiene una sesión activa, podemos verificar los mensajes recientes
-                        if from_number in user_sessions:
-                            recent_messages = user_sessions[from_number].history.messages[-5:]  # Últimos 5 mensajes
-                            for msg in recent_messages:
-                                if isinstance(msg, HumanMessage):
-                                    msg_content = msg.content.lower()
-                                    
-                                    # Buscar referencias a oficinas gubernamentales
-                                    if any(term in msg_content for term in ["registro civil", "acta", "nacimiento", "matrimonio", "defunción"]):
-                                        office_search_context = True
-                                        office_type = "registro_civil"
-                                        break
-                                        
-                                    if any(term in msg_content for term in ["centro comunitario", "comunitario", "cursos", "talleres", "actividades"]):
-                                        office_search_context = True
-                                        office_type = "centro_comunitario"
-                                        break
-                                        
-                                    # Buscar indicios de querer saber la más cercana
-                                    if any(term in msg_content for term in ["cerca", "cercana", "cercano", "próxima", "próximo", "oficina"]):
-                                        # Si no se ha identificado un tipo específico pero el usuario mencionó algo de cercanía
-                                        if "registro" in msg_content or "acta" in msg_content:
-                                            office_search_context = True
-                                            office_type = "registro_civil"
-                                            break
-                                        elif "centro" in msg_content or "comunitario" in msg_content:
-                                            office_search_context = True
-                                            office_type = "centro_comunitario"
-                                            break
-                        
-                        if office_search_context and office_type:
-                            try:
-                                result = await find_nearest_government_office(
-                                    latitude=float(latitude),
-                                    longitude=float(longitude),
-                                    office_type=office_type
-                                )
-                                
-                                if result.get("success", False):
-                                    nearest = result.get("nearest_office", {})
-                                    
-                                    # Crear respuesta con la oficina más cercana
-                                    office_type_name = "Registro Civil" if office_type == "registro_civil" else "Centro Comunitario"
-                                    body = f"He encontrado el {office_type_name} más cercano a tu ubicación:\n\n"
-                                    body += f"🏢 *{nearest.get('name', 'No disponible')}*\n"
-                                    body += f"📍 Dirección: {nearest.get('address', 'No disponible')}\n"
-                                    body += f"📞 Teléfono: {nearest.get('phone', 'No disponible')}\n"
-                                    body += f"🕒 Horario: {nearest.get('schedule', 'No disponible')}\n"
-                                    body += f"🚶 Distancia: {nearest.get('distance', 'No disponible')} km\n\n"
-                                    
-                                    # Añadir recomendaciones alternativas (las siguientes 2 más cercanas)
-                                    all_offices = result.get("all_offices", [])
-                                    if len(all_offices) > 1:
-                                        body += "Otras opciones cercanas:\n\n"
-                                        for i, office in enumerate(all_offices[1:3], 1):
-                                            if isinstance(office, dict):  # Verificar que office sea un diccionario
-                                                body += f"{i}. *{office.get('name', 'No disponible')}* - {office.get('distance', 'No disponible')} km\n"
-                                                body += f"   📍 {office.get('address', 'No disponible')}\n"
-                                    # Enviar mensaje directamente a través de Chat2Desk
-                                    api_token = os.getenv("CHAT2DESK_API_TOKEN")
-                                    chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
-                                    
-                                    headers = {
-                                        "Authorization": api_token,
-                                        "Content-Type": "application/json"
-                                    }
-                                    
-                                    data = {
-                                        "client_id": client_id,
-                                        "channel_id": channel_id,
-                                        "transport": transport,
-                                        "text": body
-                                    }
+            logger.debug("Formato de coordenadas recibidas: %s", coords)
 
-                                    log_chat2desk_outbound_attempt(
-                                        "nearest_office_direct",
-                                        data,
-                                        from_number=from_number,
-                                        message_id=message_id,
-                                    )
-                                    direct_response = await post_json_with_retry(
-                                        chat2desk_url,
-                                        json=data,
-                                        headers=headers,
-                                    )
-                                    log_chat2desk_outbound_response(
-                                        "nearest_office_direct",
-                                        direct_response,
-                                        from_number=from_number,
-                                        message_id=message_id,
-                                    )
-                                    direct_response_data = (
-                                        direct_response.json()
-                                        if direct_response.status_code == 200
-                                        else {}
-                                    )
-                                    if (
-                                        direct_response.status_code == 200
-                                        and direct_response_data.get("status") == "success"
-                                    ):
-                                        persist_bot_outbound_marker(
-                                            db,
-                                            from_number,
-                                            direct_response,
-                                            "nearest_office_direct",
-                                        )
-                                        db.Insert(
-                                            Message(
-                                                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                senderName="Assistant",
-                                                message=body,
-                                                number=from_number,
-                                                uid=uid,
-                                                direction="outbound",
-                                                mtype="text",
-                                                source="whatsapp",
-                                            )
-                                        )
-                                        await manage_message_history(db, from_number)
-                                        logger.debug(f"Información de oficina cercana enviada exitosamente a Chat2Desk")
-                                        # No continuar con el procesamiento normal del LLM
-                                        return JSONResponse(content={"status": True, "message": "Respuesta directa enviada por Chat2Desk"})
-                                    else:
-                                        logger.error(f"Error al enviar mensaje directo a Chat2Desk: {direct_response.status_code} - {direct_response.text}")
-                                        # Continuar con el flujo normal si falla el envío directo
-                                else:
-                                    body = f"Lo siento, tuve un problema al buscar la oficina más cercana. {result.get('error', '')}"
-                            except Exception as e:
-                                logger.error(f"Error al buscar oficina cercana: {str(e)}")
-                                body = f"Lo siento, ocurrió un error al buscar oficinas cercanas. Por favor, intenta de nuevo más tarde."
-                        else:
-                            # Respuesta estándar para ubicación (mantener el comportamiento actual)
-                            body = f"Ubicación recibida: {address}\nLatitud: {latitude}, Longitud: {longitude}"
-                            
-                            # Si hay un reporte en progreso, actualizar la ubicación
-                            if has_confirmed_report_intent(from_number):
-                                report_sessions[from_number]["location"] = address
-                                report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
-                            
-                    except Exception as e:
-                        logger.error(f"Error al procesar coordenadas: {str(e)}")
-                        body = f"Ubicación recibida: Latitud {latitude}, Longitud {longitude}"
-                    
-                    logger.debug(f"Mensaje con ubicación: latitude={latitude}, longitude={longitude}, address={address if 'address' in locals() else 'No disponible'}")
+            try:
+                if isinstance(coords, str):
+                    if "," in coords:
+                        coordinate_parts = [part.strip() for part in coords.split(",")]
+                        if len(coordinate_parts) != 2:
+                            raise ValueError("coordinate_count")
+                        latitude, longitude = coordinate_parts
+                    else:
+                        coordinate_parts = coords.split()
+                        if len(coordinate_parts) != 2:
+                            raise ValueError("coordinate_count")
+                        # Chat2Desk's whitespace format is longitude latitude.
+                        longitude, latitude = coordinate_parts
+                elif isinstance(coords, dict):
+                    latitude = coords.get("latitude") or coords.get("lat")
+                    longitude = coords.get("longitude") or coords.get("lon")
+                else:
+                    raise ValueError("unsupported_coordinate_format")
+
+                latitude = float(latitude)
+                longitude = float(longitude)
+                geocoded_location = await reverse_geocode_location(
+                    latitude,
+                    longitude,
+                )
+                address = str(
+                    geocoded_location.get("formatted_address") or ""
+                ).strip()
+                body = (
+                    f"Ubicación de WhatsApp compartida: {address}"
+                    if address
+                    else "Ubicación de WhatsApp compartida."
+                )
+
+                if has_confirmed_report_intent(from_number):
+                    create_or_update_report_session(from_number)
+                    existing_location_fields = {
+                        key: get_user_answer(from_number, key)
+                        for key in ("selection5", "selection6", "selection7")
+                    }
+                    geocoded_report_fields = resolve_geocoded_report_fields(
+                        geocoded_location,
+                        existing_location_fields,
+                    )
+                    for selection_key, value in geocoded_report_fields.items():
+                        # The resolver already enforces that citizen-authored
+                        # values cannot be replaced by the geocoder.
+                        save_user_answer(from_number, selection_key, value)
+
+                    active_session = report_sessions[from_number]
+                    with report_sessions_lock:
+                        active_session["location"] = address
+                        active_session["shared_location"] = {
+                            "source": "whatsapp_coordinates",
+                            "latitude": latitude,
+                            "longitude": longitude,
+                            "formatted_address": address,
+                            "geocoded_components": {
+                                key: geocoded_location.get(key) or ""
+                                for key in ("street", "number", "colony")
+                            },
+                            "applied_report_fields": dict(
+                                geocoded_report_fields
+                            ),
+                        }
+                        active_session["timestamp"] = datetime.now(
+                            pytz.timezone("America/Mexico_City")
+                        )
+                        pending_location_field = active_session.get(
+                            "pending_finalization_field"
+                        )
+                        if pending_location_field in geocoded_report_fields:
+                            active_session.pop(
+                                "pending_finalization_field", None
+                            )
+                            active_session.pop(
+                                "pending_finalization_prompted_at", None
+                            )
+
+                    current_answers = {
+                        key: get_user_answer(from_number, key)
+                        for key in (
+                            "selection1", "selection2", "selection4",
+                            "selection5", "selection6", "selection7",
+                        )
+                    }
+                    progress_after_location = determine_report_progress(
+                        current_answers,
+                        declared_emergency=active_session.get(
+                            "declared_emergency"
+                        ),
+                        image_prompted=bool(
+                            active_session.get("image_prompted")
+                        ),
+                        image_decision=active_session.get("image_decision"),
+                        has_images=bool(active_session.get("images")),
+                        prompt=config.get("prompt") or system_message,
+                    )
+                    with report_sessions_lock:
+                        if progress_after_location.action == "ask_field":
+                            active_session["pending_finalization_field"] = (
+                                progress_after_location.field
+                            )
+                            active_session[
+                                "pending_finalization_prompted_at"
+                            ] = datetime.now().timestamp()
+                        elif progress_after_location.action == "ask_image":
+                            active_session["image_prompted"] = True
+                        elif progress_after_location.action == "await_emergency_answer":
+                            active_session["pending_intake_question"] = (
+                                "emergency"
+                            )
+                    if progress_after_location.response:
+                        intake_response_override = (
+                            progress_after_location.response
+                        )
+
+                    logger.critical(
+                        "📍 [REPORT PIN RESOLVED] phone=%s fields=%s "
+                        "street=%s number=%s colony=%s next_action=%s",
+                        from_number,
+                        sorted(geocoded_report_fields),
+                        geocoded_location.get("street") or "",
+                        geocoded_location.get("number") or "",
+                        geocoded_location.get("colony") or "",
+                        progress_after_location.action,
+                    )
+                else:
+                    logger.info(
+                        "📍 [LOCATION WITHOUT REPORT] phone=%s address=%s",
+                        from_number,
+                        address,
+                    )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "Formato de coordenadas inválido para %s: %s (%s)",
+                    from_number,
+                    coords,
+                    exc,
+                )
+                body = "Recibí tu ubicación, pero no pude interpretar las coordenadas."
+
+            logger.debug(
+                "Mensaje con ubicación: latitude=%s longitude=%s address=%s",
+                latitude,
+                longitude,
+                address or "No disponible",
+            )
 
         elif payload.get("audio"):
             # Procesamiento de audio

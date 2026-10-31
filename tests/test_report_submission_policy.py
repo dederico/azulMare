@@ -33,6 +33,7 @@ from app.services.report_submission_policy import (
     select_citizen_report_description,
     should_resolve_report_number_semantically,
     validate_and_normalize_report_submission,
+    validate_structured_report_lifecycle_action,
     validate_structured_report_number_decision,
     determine_report_progress,
     deduplicate_report_media,
@@ -51,6 +52,24 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             "selection6": "321",
             "selection7": "Centro",
         }
+
+    def test_report_lifecycle_accepts_only_closed_model_actions(self):
+        self.assertEqual(
+            validate_structured_report_lifecycle_action(" continue "),
+            "continue",
+        )
+        self.assertEqual(
+            validate_structured_report_lifecycle_action("CONFIRM_EXIT"),
+            "confirm_exit",
+        )
+        self.assertEqual(
+            validate_structured_report_lifecycle_action("exit"),
+            "exit",
+        )
+        self.assertIsNone(
+            validate_structured_report_lifecycle_action("ya funciona")
+        )
+        self.assertIsNone(validate_structured_report_lifecycle_action("cancel"))
 
     def test_emergency_media_deduplication_preserves_matching_descriptions(self):
         images, descriptions = deduplicate_report_media(

@@ -204,12 +204,30 @@ HIGH_CONFIDENCE_REPORT_CATEGORIES = {
 # y puede reasignar internamente el reporte.
 UNCLASSIFIED_REPORT_CATEGORY_ID = "486"
 
+REPORT_LIFECYCLE_ACTIONS = frozenset(
+    {"continue", "confirm_exit", "exit"}
+)
+
 
 @dataclass(frozen=True)
 class ReportProgressDecision:
     action: str
     field: str | None = None
     response: str | None = None
+
+
+def validate_structured_report_lifecycle_action(
+    value: str | None,
+) -> str | None:
+    """Validate the model's closed report-lifecycle decision.
+
+    Natural-language interpretation belongs to the model.  This boundary does
+    not inspect the citizen's words and deliberately contains no phrase or
+    keyword classifier; it only validates the structured action returned by
+    the model before state can be mutated.
+    """
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in REPORT_LIFECYCLE_ACTIONS else None
 
 
 def deduplicate_report_media(

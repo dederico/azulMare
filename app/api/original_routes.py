@@ -214,6 +214,7 @@ from app.services.report_submission_policy import (
     resolve_unambiguous_catalog_category,
     should_resolve_report_number_semantically,
     sidewalk_sign_category_options,
+    validate_structured_report_lifecycle_action,
     validate_structured_report_number_decision,
     validate_and_normalize_report_submission,
     validation_error_to_user_message,
@@ -3462,6 +3463,16 @@ async def save_client_selection2_guarded(
         )
 
     session = report_sessions.get(yoga_number, {})
+    if session.get("report_cancelled"):
+        return (
+            "VALIDATION_BLOCK: El ciudadano canceló este flujo de reporte. "
+            "No llames al CIAC ni continúes solicitando datos."
+        )
+    if session.get("pending_report_exit_confirmation"):
+        return (
+            "VALIDATION_BLOCK: Está pendiente confirmar si el ciudadano desea "
+            "cancelar el reporte. No llames al CIAC hasta resolverlo."
+        )
     selection2 = session.get("trusted_reporter_name") or "Anónimo"
     if session.get("declared_emergency") is True:
         selection1 = "964"
@@ -4252,6 +4263,29 @@ def clear_local_conversation_context(phone_number: str, *, drop_session: bool = 
     finalized_report_numbers.discard(phone_number)
     if drop_session:
         user_sessions.pop(phone_number, None)
+
+
+def restore_active_report_snapshot(
+    phone_number: str,
+    report_session_snapshot,
+    answers_snapshot,
+) -> None:
+    """Undo eager intake mutations when the model pauses or exits a report.
+
+    Report fields are captured before the response is generated so ordinary
+    turns stay fast and deterministic.  A lifecycle decision must nevertheless
+    take precedence: a withdrawal message can never become a street, number,
+    colony, description, or image decision.
+    """
+    with report_sessions_lock:
+        if report_session_snapshot is None:
+            report_sessions.pop(phone_number, None)
+        else:
+            report_sessions[phone_number] = deepcopy(report_session_snapshot)
+    if answers_snapshot:
+        user_answers[phone_number] = deepcopy(answers_snapshot)
+    else:
+        user_answers.pop(phone_number, None)
 
 
 def persist_context_reset_marker(db, phone_number: str, reason: str, event_id) -> str:
@@ -8280,6 +8314,33 @@ async def _process_whatsapp_request(request):
         auto_finalize_emergency = False
         semantic_emergency_resolution_needed = False
         semantic_report_number_resolution_needed = False
+        report_active_at_turn_start = has_confirmed_report_intent(from_number)
+        report_session_before_turn = deepcopy(
+            report_sessions.get(from_number)
+        )
+        report_answers_before_turn = deepcopy(
+            user_answers.get(from_number, {})
+        )
+        report_exit_confirmation_at_turn_start = bool(
+            (report_session_before_turn or {}).get(
+                "pending_report_exit_confirmation"
+            )
+        )
+        active_report_lifecycle_review = bool(
+            report_active_at_turn_start
+            and str(body or "").strip()
+            and not evaluation_turn_active
+            and not quoted_hsm_ok
+            and not payload.get("photo")
+            and not payload.get("video")
+            and not payload.get("audio")
+        )
+        report_lifecycle_result = {
+            "decision": None,
+            "confirmation_was_pending": (
+                report_exit_confirmation_at_turn_start
+            ),
+        }
         existing_before_intake = {
             key: get_user_answer(from_number, key)
             for key in (
@@ -10739,6 +10800,14 @@ async def _process_whatsapp_request(request):
                 "conserva todos sus datos e imágenes y no vuelvas a mencionar ni abrir la "
                 "evaluación anterior."
             )
+        if report_exit_confirmation_at_turn_start:
+            # This inbound answers only the lifecycle confirmation. Eager
+            # field extraction is rolled back by the lifecycle tool; do not
+            # expose a competing emergency/number/image decision in the same
+            # model round.
+            semantic_emergency_resolution_needed = False
+            semantic_report_number_resolution_needed = False
+            semantic_optional_image_resolution_needed = False
         required_tool_name = None
         whatsapp_functions = [
             save_client_selection2_guarded
@@ -10950,6 +11019,233 @@ async def _process_whatsapp_request(request):
                 "ambigua, explícale que puedes levantar el reporte aquí y pregunta "
                 "una sola vez si desea hacerlo."
             )
+        if (
+            active_report_lifecycle_review
+            and not semantic_handoff_resolution_needed
+        ):
+            async def record_active_report_lifecycle_decision(decision: str):
+                """Decide la voluntad del ciudadano respecto al reporte activo.
+
+                Interpreta el mensaje actual dentro de toda la conversación; no
+                busques palabras ni frases exactas. Usa "continue" cuando desea
+                seguir con el reporte o está contestando el dato solicitado. Usa
+                "exit" únicamente cuando es inequívoco que ya no quiere o ya no
+                necesita levantarlo. Usa "confirm_exit" cuando parece querer
+                salir, pero existe una ambigüedad real que amerita preguntárselo
+                explícitamente. Si ya había una confirmación de salida pendiente,
+                "exit" confirma la cancelación, "continue" la rechaza y
+                "confirm_exit" significa que la respuesta sigue siendo ambigua.
+
+                decision (string): "continue", "confirm_exit" o "exit".
+                """
+                structured_decision = (
+                    validate_structured_report_lifecycle_action(decision)
+                )
+                if structured_decision is None:
+                    return (
+                        "VALIDATION_BLOCK: decision debe ser exactamente "
+                        "'continue', 'confirm_exit' o 'exit'."
+                    )
+
+                report_lifecycle_result["decision"] = structured_decision
+                report_topic = " ".join(
+                    str(
+                        report_answers_before_turn.get("selection4")
+                        or "el reporte que estamos levantando"
+                    ).split()
+                )[:240]
+
+                if structured_decision == "exit":
+                    pending_completion = get_pending_report_completion(
+                        report_session_before_turn
+                    )
+                    if pending_completion:
+                        report_lifecycle_result["decision"] = "continue"
+                        return json.dumps(
+                            {
+                                "report_lifecycle": "continue",
+                                "instruction": (
+                                    "El CIAC ya confirmó un folio para este "
+                                    "reporte. No afirmes que fue cancelado; "
+                                    "continúa con la entrega canónica del folio."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+
+                    with report_sessions_lock:
+                        # Keep a one-turn tombstone. It blocks every report tool
+                        # in this model round and is discarded by the durable
+                        # restore path before a future, genuinely new report.
+                        report_sessions[from_number] = {
+                            "report_cancelled": True,
+                            "report_intent_confirmed": False,
+                            "cancelled_at": time.time(),
+                            "cancelled_origin_uid": str(uid),
+                        }
+                    user_answers.pop(from_number, None)
+                    with reports_lock:
+                        reports_in_progress.pop(from_number, None)
+                    await asyncio.to_thread(
+                        delete_report_state,
+                        db,
+                        from_number,
+                    )
+                    logger.critical(
+                        "🛑 [REPORT LIFECYCLE] phone=%s decision=exit "
+                        "topic=%s body=%s",
+                        from_number,
+                        report_topic,
+                        (body or "")[:240],
+                    )
+                    return json.dumps(
+                        {
+                            "report_lifecycle": "exit",
+                            "report_topic": report_topic,
+                            "instruction": (
+                                "La captura quedó cancelada y no se creó un "
+                                "folio. Confírmalo brevemente en el mismo idioma "
+                                "del ciudadano. No pidas calle, número, colonia "
+                                "ni imagen, y no llames ninguna otra función."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                if structured_decision == "confirm_exit":
+                    restore_active_report_snapshot(
+                        from_number,
+                        report_session_before_turn,
+                        report_answers_before_turn,
+                    )
+                    with report_sessions_lock:
+                        active_session = report_sessions.get(from_number)
+                        if active_session is not None:
+                            active_session[
+                                "pending_report_exit_confirmation"
+                            ] = {
+                                "topic": report_topic,
+                                "asked_at": time.time(),
+                                "origin_uid": str(uid),
+                            }
+                    logger.critical(
+                        "⏸️ [REPORT LIFECYCLE] phone=%s "
+                        "decision=confirm_exit topic=%s body=%s",
+                        from_number,
+                        report_topic,
+                        (body or "")[:240],
+                    )
+                    return json.dumps(
+                        {
+                            "report_lifecycle": "confirm_exit",
+                            "report_topic": report_topic,
+                            "instruction": (
+                                "Pregunta una sola vez y en el mismo idioma si "
+                                "desea cancelar este reporte. Menciona brevemente "
+                                "el tema para que la pregunta sea clara. No "
+                                "consumas este mensaje como dato del reporte, no "
+                                "hagas otra pregunta y no llames otra función."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                # A negative answer to a pending exit confirmation is control
+                # input, not a report field. Restore the pre-turn snapshot and
+                # resume from the first genuinely missing datum.
+                if report_exit_confirmation_at_turn_start:
+                    restore_active_report_snapshot(
+                        from_number,
+                        report_session_before_turn,
+                        report_answers_before_turn,
+                    )
+                    with report_sessions_lock:
+                        active_session = report_sessions.get(from_number, {})
+                        active_session.pop(
+                            "pending_report_exit_confirmation",
+                            None,
+                        )
+                    restored_answers = {
+                        key: get_user_answer(from_number, key)
+                        for key in (
+                            "selection1", "selection2", "selection4",
+                            "selection5", "selection6", "selection7",
+                        )
+                    }
+                    resume_progress = determine_report_progress(
+                        restored_answers,
+                        declared_emergency=active_session.get(
+                            "declared_emergency"
+                        ),
+                        image_prompted=bool(
+                            active_session.get("image_prompted")
+                        ),
+                        image_decision=active_session.get("image_decision"),
+                        has_images=bool(active_session.get("images")),
+                        prompt=config.get("prompt") or system_message,
+                    )
+                    logger.critical(
+                        "▶️ [REPORT LIFECYCLE] phone=%s "
+                        "decision=continue_after_confirmation next=%s",
+                        from_number,
+                        resume_progress.action,
+                    )
+                    return json.dumps(
+                        {
+                            "report_lifecycle": "continue",
+                            "next_action": resume_progress.action,
+                            "next_question": resume_progress.response,
+                            "instruction": (
+                                "El ciudadano decidió continuar. Confírmalo "
+                                "brevemente y retoma únicamente next_question. "
+                                "No interpretes su respuesta de control como "
+                                "calle, número, colonia o descripción."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                logger.critical(
+                    "▶️ [REPORT LIFECYCLE] phone=%s decision=continue "
+                    "body=%s",
+                    from_number,
+                    (body or "")[:240],
+                )
+                return json.dumps(
+                    {
+                        "report_lifecycle": "continue",
+                        "instruction": (
+                            "Continúa el mismo reporte. Respeta los datos que "
+                            "el sistema ya capturó en este turno. Si existe otra "
+                            "decisión estructurada pendiente, resuélvela con su "
+                            "función; no reinicies el flujo."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            record_active_report_lifecycle_decision.__name__ = (
+                "record_active_report_lifecycle_decision"
+            )
+            whatsapp_functions.append(
+                record_active_report_lifecycle_decision
+            )
+            required_tool_name = (
+                "record_active_report_lifecycle_decision"
+            )
+            system_prompt += (
+                "\n\nDECISIÓN DE CONTINUIDAD DEL REPORTE ACTIVO: Antes de "
+                "interpretar el mensaje como respuesta a problema, calle, "
+                "número, colonia o imagen, llama obligatoriamente a "
+                "record_active_report_lifecycle_decision. Decide por la "
+                "voluntad comunicada en el mensaje completo y su contexto, no "
+                "por palabras clave, frases exactas ni idioma. Usa 'exit' sólo "
+                "cuando sea inequívoco que ya no quiere o ya no necesita el "
+                "reporte; usa 'confirm_exit' cuando parezca querer salir pero "
+                "haya ambigüedad real; en cualquier otro caso usa 'continue'. "
+                "Si la función devuelve exit o confirm_exit, su instrucción es "
+                "terminal para este turno y no debes llamar otra función."
+            )
         if semantic_handoff_resolution_needed:
             async def record_handoff_decision(decision: str):
                 """Interpreta semánticamente si el ciudadano solicita atención humana.
@@ -11048,6 +11344,13 @@ async def _process_whatsapp_request(request):
                     return (
                         "VALIDATION_BLOCK: decision debe ser exactamente "
                         "'yes' o 'no'."
+                    )
+                if report_lifecycle_result.get("decision") in {
+                    "confirm_exit", "exit"
+                }:
+                    return (
+                        "VALIDATION_BLOCK: La decisión de continuidad tiene "
+                        "prioridad; no resuelvas emergencia en este turno."
                     )
 
                 active_session = report_sessions.get(from_number, {})
@@ -11163,6 +11466,13 @@ async def _process_whatsapp_request(request):
                     return (
                         "VALIDATION_BLOCK: decision debe ser exactamente "
                         "'provided', 'unavailable' o 'unclear'."
+                    )
+                if report_lifecycle_result.get("decision") in {
+                    "confirm_exit", "exit"
+                }:
+                    return (
+                        "VALIDATION_BLOCK: La decisión de continuidad tiene "
+                        "prioridad; no captures el número en este turno."
                     )
 
                 active_session = report_sessions.get(from_number, {})
@@ -11313,6 +11623,13 @@ async def _process_whatsapp_request(request):
                     return (
                         "VALIDATION_BLOCK: decision debe ser exactamente "
                         "'yes', 'no' o 'unclear'."
+                    )
+                if report_lifecycle_result.get("decision") in {
+                    "confirm_exit", "exit"
+                }:
+                    return (
+                        "VALIDATION_BLOCK: La decisión de continuidad tiene "
+                        "prioridad; no resuelvas la imagen en este turno."
                     )
 
                 active_session = report_sessions.get(from_number, {})
@@ -11496,11 +11813,31 @@ async def _process_whatsapp_request(request):
         }
 
         fixed_phone_response = resolve_fixed_security_phone_response(body)
-        if semantic_handoff_resolution_needed:
+        if (
+            semantic_handoff_resolution_needed
+            or active_report_lifecycle_review
+        ):
             model_response = llm_service.generate_response(user_input=body)
             response_content = ""
             async for response in model_response:
                 response_content += str(response)
+            if (
+                active_report_lifecycle_review
+                and report_lifecycle_result.get("decision") == "continue"
+                and intake_response_override
+                and not report_lifecycle_result.get(
+                    "confirmation_was_pending"
+                )
+            ):
+                # The model owns only the lifecycle decision. Once it confirms
+                # continuation, retain the existing deterministic next question
+                # so report accuracy and field ordering do not regress.
+                response_content = intake_response_override
+                logger.critical(
+                    "🧭 [LIFECYCLE CONTINUE OVERRIDE] phone=%s response=%s",
+                    from_number,
+                    response_content,
+                )
         elif intake_response_override:
             response_content = intake_response_override
             logger.critical(

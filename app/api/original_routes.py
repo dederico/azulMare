@@ -248,6 +248,18 @@ from app.services.webhook_jobs import (
     fail_webhook_job,
     has_newer_pending_inbound_job,
 )
+from app.services.whatsapp_failover import (
+    activate_failover_and_list_pending,
+    build_failover_hsm_text,
+    build_failover_replay_payload,
+    is_failover_candidate,
+    list_pending_for_active_route,
+    load_whatsapp_failover_config,
+    mark_failover_hsm_result,
+    mark_pending_replayed,
+    resolve_failover_outbound,
+    stage_primary_inbound,
+)
 from app.services.report_state import (
     delete_report_state,
     ensure_report_state_storage,
@@ -1366,6 +1378,13 @@ async def send_chat2desk_message_direct(client_id, channel_id, text, transport="
     Envía mensaje directamente via Chat2Desk API.
     Supports both wa_direct (WhatsApp) and widget (web chat).
     """
+    client_id, channel_id = await asyncio.to_thread(
+        resolve_failover_outbound,
+        LocalStorage(),
+        client_id=client_id,
+        channel_id=channel_id,
+        transport=transport,
+    )
     normalized_text = re.sub(r"\s+", " ", (text or "").strip())
     dedup_key = None
     if normalized_text:
@@ -1431,6 +1450,13 @@ async def send_chat2desk_attachment_direct(
 ):
     """Envía una imagen o documento conservando su nombre y tipo de archivo."""
     try:
+        client_id, channel_id = await asyncio.to_thread(
+            resolve_failover_outbound,
+            LocalStorage(),
+            client_id=client_id,
+            channel_id=channel_id,
+            transport=transport,
+        )
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         payload = {
             "client_id": client_id,
@@ -1496,6 +1522,13 @@ async def send_attachment_base64_with_filename(
 ):
     """Descarga un adjunto y lo reenvía como data URL sin convertir su tipo."""
     try:
+        client_id, channel_id = await asyncio.to_thread(
+            resolve_failover_outbound,
+            LocalStorage(),
+            client_id=client_id,
+            channel_id=channel_id,
+            transport=transport,
+        )
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -4881,6 +4914,14 @@ async def notify_user_timeout(phone_number, folio, image_count):
             response_data = response.json()
             if response_data.get("status") == "success" and response_data.get("data"):
                 client_id = response_data["data"][0]["id"]
+                client_id, timeout_channel_id = await asyncio.to_thread(
+                    resolve_failover_outbound,
+                    storage,
+                    client_id=client_id,
+                    channel_id=43906,
+                    transport="wa_direct",
+                    phone_number=phone_number,
+                )
                 
                 # Mensaje básico simple
                 folio_clean = folio.replace("Folio: ", "") if folio.startswith("Folio: ") else folio
@@ -4889,7 +4930,7 @@ async def notify_user_timeout(phone_number, folio, image_count):
                 # Enviar mensaje
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43906,
+                    "channel_id": timeout_channel_id,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -4928,6 +4969,14 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
             response_data = response.json()
             if response_data.get("status") == "success" and response_data.get("data"):
                 client_id = response_data["data"][0]["id"]
+                client_id, timeout_channel_id = await asyncio.to_thread(
+                    resolve_failover_outbound,
+                    storage,
+                    client_id=client_id,
+                    channel_id=43906,
+                    transport="wa_direct",
+                    phone_number=phone_number,
+                )
                 
                 folio_clean = folio.replace("Folio: ", "") if folio.startswith("Folio: ") else folio
                 message = build_report_completion_message(
@@ -4937,7 +4986,7 @@ async def notify_user_timeout_flexible(phone_number, folio, image_count):
                 
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43906,
+                    "channel_id": timeout_channel_id,
                     "transport": "wa_direct", 
                     "text": message
                 }
@@ -4994,6 +5043,14 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
             response_data = response.json()
             if response_data.get("status") == "success" and response_data.get("data"):
                 client_id = response_data["data"][0]["id"]
+                client_id, timeout_channel_id = await asyncio.to_thread(
+                    resolve_failover_outbound,
+                    storage,
+                    client_id=client_id,
+                    channel_id=43906,
+                    transport="wa_direct",
+                    phone_number=phone_number,
+                )
                 
                 # 🎯 MENSAJE SÚPER DETALLADO con todos los datos
                 message = f"⏰ **Hola {sender_name}!**\n\n"
@@ -5008,7 +5065,7 @@ async def send_timeout_notification_with_real_data(phone_number, folio, image_co
                 # Enviar mensaje
                 message_data = {
                     "client_id": client_id,
-                    "channel_id": 43906,  # Canal fijo
+                    "channel_id": timeout_channel_id,
                     "transport": "wa_direct",
                     "text": message
                 }
@@ -5738,6 +5795,15 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text, tran
             )
             return False
 
+        client_id, channel_id = await asyncio.to_thread(
+            resolve_failover_outbound,
+            storage,
+            client_id=client_id,
+            channel_id=channel_id,
+            transport=transport,
+            phone_number=phone_number,
+        )
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         chat2desk_url = "https://api.chat2desk.com.mx/v1/messages"
 
@@ -6315,13 +6381,21 @@ async def _deliver_greeting_job(job, storage) -> bool:
         if get_active_takeover(job["phone_number"], storage=storage):
             raise RuntimeError("takeover humano activo")
 
+        greeting_client_id, greeting_channel_id = await asyncio.to_thread(
+            resolve_failover_outbound,
+            storage,
+            client_id=job["client_id"],
+            channel_id=job["channel_id"],
+            transport=job["transport"],
+            phone_number=job["phone_number"],
+        )
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
             response = await http_client.post(
                 "https://api.chat2desk.com.mx/v1/messages",
                 json={
-                    "client_id": job["client_id"],
-                    "channel_id": job["channel_id"],
+                    "client_id": greeting_client_id,
+                    "channel_id": greeting_channel_id,
                     "transport": job["transport"],
                     "text": job["message"],
                 },
@@ -6850,6 +6924,218 @@ def get_images_from_payload(payload):
     return fotos_urls
 
 
+async def _send_whatsapp_failover_hsm(
+    *,
+    storage,
+    phone_number,
+    client_id,
+    config,
+):
+    """Open the temporary channel using the approved utility template."""
+    response = await post_json_with_retry(
+        "https://api.chat2desk.com.mx/v1/messages",
+        headers={
+            "Authorization": os.getenv("CHAT2DESK_API_TOKEN"),
+            "Content-Type": "application/json",
+        },
+        json={
+            "client_id": client_id,
+            "channel_id": config.failover_channel_id,
+            "transport": "wa_direct",
+            "text": build_failover_hsm_text(config),
+        },
+    )
+    response_data = response.json() if response.status_code == 200 else {}
+    accepted = (
+        response.status_code == 200
+        and response_data.get("status") == "success"
+    )
+    if accepted:
+        persist_bot_outbound_marker(
+            storage,
+            phone_number,
+            response,
+            "whatsapp_failover_hsm",
+        )
+    if not accepted:
+        logger.error(
+            "🚧 [WHATSAPP FAILOVER HSM] Chat2Desk rechazó la apertura temporal: "
+            "status=%s body=%s",
+            response.status_code,
+            response.text[:400],
+        )
+    return accepted
+
+
+async def _enqueue_whatsapp_failover_replays(
+    *,
+    storage,
+    phone_number,
+    pending_messages,
+    failover_client_id,
+    config,
+):
+    replayed = 0
+    for pending in pending_messages:
+        original_message_id = str(pending["original_message_id"])
+        replay_payload = build_failover_replay_payload(
+            pending["payload"],
+            failover_client_id=failover_client_id,
+            failover_channel_id=config.failover_channel_id,
+        )
+        await asyncio.to_thread(
+            enqueue_webhook_job,
+            storage,
+            replay_payload,
+            {},
+        )
+        await asyncio.to_thread(
+            mark_pending_replayed,
+            storage,
+            phone_number=phone_number,
+            original_message_id=original_message_id,
+        )
+        replayed += 1
+    return replayed
+
+
+async def _handle_temporary_whatsapp_failover(
+    *,
+    storage,
+    payload,
+    from_number,
+    client_id,
+    channel_id,
+    message_type,
+    transport,
+):
+    """Intercept transport handoff events before they enter the conversation."""
+    config = load_whatsapp_failover_config()
+    if not is_failover_candidate(
+        config=config,
+        message_type=message_type,
+        transport=transport,
+        channel_id=channel_id,
+        replay=bool(payload.get("_sam_failover_replay")),
+    ):
+        return None
+    if not from_number or client_id in (None, ""):
+        logger.error(
+            "🚧 [WHATSAPP FAILOVER] inbound sin phone/client_id channel_id=%s",
+            channel_id,
+        )
+        return JSONResponse(
+            content={
+                "status": False,
+                "error": "Evento incompleto para el canal temporal",
+            },
+            status_code=503,
+        )
+
+    normalized_channel_id = int(channel_id)
+    if normalized_channel_id == config.primary_channel_id:
+        decision = await asyncio.to_thread(
+            stage_primary_inbound,
+            storage,
+            phone_number=from_number,
+            primary_client_id=client_id,
+            payload=payload,
+            config=config,
+        )
+        action = decision.get("action")
+        if action == "send_hsm":
+            sent = await _send_whatsapp_failover_hsm(
+                storage=storage,
+                phone_number=from_number,
+                client_id=client_id,
+                config=config,
+            )
+            await asyncio.to_thread(
+                mark_failover_hsm_result,
+                storage,
+                phone_number=from_number,
+                success=sent,
+            )
+            if not sent:
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": "No se pudo abrir el canal temporal de WhatsApp",
+                    },
+                    status_code=503,
+                )
+            logger.critical(
+                "🚧 [WHATSAPP FAILOVER] HSM temporal aceptado phone=%s "
+                "primary_channel=%s failover_channel=%s",
+                from_number,
+                config.primary_channel_id,
+                config.failover_channel_id,
+            )
+            return JSONResponse(
+                content={"status": True, "message": "Canal temporal solicitado"}
+            )
+
+        if action == "replay":
+            pending_messages = await asyncio.to_thread(
+                list_pending_for_active_route,
+                storage,
+                phone_number=from_number,
+            )
+            replayed = await _enqueue_whatsapp_failover_replays(
+                storage=storage,
+                phone_number=from_number,
+                pending_messages=pending_messages,
+                failover_client_id=decision["failover_client_id"],
+                config=config,
+            )
+            logger.info(
+                "🚧 [WHATSAPP FAILOVER] inbound primario redirigido phone=%s "
+                "replayed=%s",
+                from_number,
+                replayed,
+            )
+            return JSONResponse(
+                content={"status": True, "message": "Mensaje redirigido al canal temporal"}
+            )
+
+        return JSONResponse(
+            content={
+                "status": True,
+                "message": "Mensaje reservado hasta confirmar el canal temporal",
+            }
+        )
+
+    pending_messages = await asyncio.to_thread(
+        activate_failover_and_list_pending,
+        storage,
+        phone_number=from_number,
+        failover_client_id=client_id,
+        config=config,
+    )
+    if not pending_messages:
+        # The temporary channel is already active. This is ordinary citizen
+        # content and must continue through the normal conversation flow.
+        return None
+
+    replayed = await _enqueue_whatsapp_failover_replays(
+        storage=storage,
+        phone_number=from_number,
+        pending_messages=pending_messages,
+        failover_client_id=client_id,
+        config=config,
+    )
+    logger.critical(
+        "🚧 [WHATSAPP FAILOVER] canal temporal confirmado phone=%s replayed=%s",
+        from_number,
+        replayed,
+    )
+    # The quick reply is transport control, not a citizen answer. The saved
+    # original messages now continue through the ordinary SAM flow.
+    return JSONResponse(
+        content={"status": True, "message": "Canal temporal confirmado"}
+    )
+
+
 async def _process_whatsapp_request(request):
     logger.debug("Iniciando procesamiento del mensaje de WhatsApp.")
     # Configuración de base de datos y demás servicios
@@ -6883,6 +7169,18 @@ async def _process_whatsapp_request(request):
         message_id = payload.get('message_id')
         transport = payload.get('transport', 'wa_direct')  # Extract transport: wa_direct or widget
         request_id = payload.get('request_id')
+
+        failover_response = await _handle_temporary_whatsapp_failover(
+            storage=db,
+            payload=payload,
+            from_number=from_number,
+            client_id=client_id,
+            channel_id=channel_id,
+            message_type=message_type,
+            transport=transport,
+        )
+        if failover_response is not None:
+            return failover_response
 
         if hook_type == 'dialog_transferred':
             # Este evento no es autoritativo por sí solo, porque Chat2Desk lo
@@ -12766,9 +13064,20 @@ async def report_status_update(request: Request):
                 status_code=500
             )
             
-        # En lugar de consultar los canales, usar un valor fijo
-        channel_id = 43906  # Valor fijo conocido para el canal de WhatsApp
-        logger.debug(f"Cliente identificado: client_id={client_id}, usando channel_id fijo={channel_id}")
+        db = LocalStorage()
+        client_id, channel_id = await asyncio.to_thread(
+            resolve_failover_outbound,
+            db,
+            client_id=client_id,
+            channel_id=43906,
+            transport="wa_direct",
+            phone_number=phone_number,
+        )
+        logger.debug(
+            "Cliente identificado: client_id=%s, usando channel_id=%s",
+            client_id,
+            channel_id,
+        )
         
         # Preparar y enviar el mensaje al cliente
         message_url = f"{chat2desk_base_url}/messages"
@@ -12801,7 +13110,6 @@ async def report_status_update(request: Request):
                 status_code=500
             )
 
-        db = LocalStorage()
         persist_bot_outbound_marker(db, phone_number, response, "report_status_update")
             
         # Almacenar el mensaje en la base de datos local

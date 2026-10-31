@@ -6925,6 +6925,50 @@ def get_images_from_payload(payload):
     return fotos_urls
 
 
+async def _ensure_chat2desk_failover_client(
+    *,
+    phone_number,
+    nickname,
+    config,
+):
+    """Attach an existing phone to SAM 2 using Chat2Desk Write First."""
+    params = {
+        "phone": str(phone_number),
+        "transport": "wa_direct",
+        "channel_id": config.failover_channel_id,
+    }
+    if str(nickname or "").strip():
+        params["nickname"] = str(nickname).strip()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            "https://api.chat2desk.com.mx/v1/clients",
+            params=params,
+            headers={
+                "Authorization": os.getenv("CHAT2DESK_API_TOKEN"),
+                "Content-Type": "application/json",
+            },
+        )
+    response_data = response.json() if response.status_code == 200 else {}
+    client_data = response_data.get("data") or {}
+    failover_client_id = client_data.get("id")
+    if (
+        response.status_code != 200
+        or response_data.get("status") != "success"
+        or failover_client_id in (None, "")
+    ):
+        raise RuntimeError(
+            "Chat2Desk no pudo vincular el cliente con SAM 2: "
+            f"status={response.status_code} body={response.text[:400]}"
+        )
+    logger.info(
+        "🚧 [WHATSAPP FAILOVER CLIENT] phone=%s client_id=%s channel_id=%s",
+        phone_number,
+        failover_client_id,
+        config.failover_channel_id,
+    )
+    return failover_client_id
+
+
 async def _send_whatsapp_failover_hsm(
     *,
     storage,
@@ -7047,10 +7091,15 @@ async def _handle_temporary_whatsapp_failover(
         )
         action = decision.get("action")
         if action == "send_hsm":
+            failover_client_id = await _ensure_chat2desk_failover_client(
+                phone_number=from_number,
+                nickname=(payload.get("client") or {}).get("name"),
+                config=config,
+            )
             sent = await _send_whatsapp_failover_hsm(
                 storage=storage,
                 phone_number=from_number,
-                client_id=client_id,
+                client_id=failover_client_id,
                 config=config,
             )
             await asyncio.to_thread(

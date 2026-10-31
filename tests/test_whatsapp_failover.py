@@ -49,6 +49,17 @@ def test_failover_is_disabled_by_default():
     assert config.enabled is False
     assert config.primary_channel_id == 43906
     assert config.failover_channel_id == 43943
+    assert config.allowed_phone_numbers == frozenset()
+
+
+def test_optional_phone_allowlist_normalizes_common_formats():
+    config = enabled_config(
+        WHATSAPP_FAILOVER_ALLOWED_PHONES="+52 1 81 1234 5678, 5218187654321"
+    )
+
+    assert failover.is_phone_allowed_for_failover("52-1-81-1234-5678", config)
+    assert failover.is_phone_allowed_for_failover("5218187654321", config)
+    assert not failover.is_phone_allowed_for_failover("5218111111111", config)
 
 
 def test_builds_chat2desk_hsm_command():
@@ -219,4 +230,3 @@ def test_widget_routing_is_never_changed():
         phone_number="5218112345678",
         config=config,
     ) == (101, 123)
-

@@ -43,6 +43,7 @@ class WhatsAppFailoverConfig:
     template_name: str
     template_language: str
     active_ttl_seconds: int = DEFAULT_ACTIVE_TTL_SECONDS
+    allowed_phone_numbers: frozenset[str] = frozenset()
 
 
 def _as_bool(value: Any) -> bool:
@@ -54,6 +55,18 @@ def _as_int(value: Any, default: int) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def normalize_failover_phone(value: Any) -> str:
+    return "".join(character for character in str(value or "") if character.isdigit())
+
+
+def _phone_allowlist(value: Any) -> frozenset[str]:
+    return frozenset(
+        phone
+        for item in str(value or "").split(",")
+        if (phone := normalize_failover_phone(item))
+    )
 
 
 def load_whatsapp_failover_config(
@@ -85,6 +98,19 @@ def load_whatsapp_failover_config(
                 DEFAULT_ACTIVE_TTL_SECONDS,
             ),
         ),
+        allowed_phone_numbers=_phone_allowlist(
+            env.get("WHATSAPP_FAILOVER_ALLOWED_PHONES", "")
+        ),
+    )
+
+
+def is_phone_allowed_for_failover(
+    phone_number: Any,
+    config: WhatsAppFailoverConfig,
+) -> bool:
+    return (
+        not config.allowed_phone_numbers
+        or normalize_failover_phone(phone_number) in config.allowed_phone_numbers
     )
 
 

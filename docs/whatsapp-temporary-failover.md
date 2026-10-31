@@ -26,11 +26,17 @@ WHATSAPP_FAILOVER_CHANNEL_ID=43943
 WHATSAPP_FAILOVER_TEMPLATE=continuidad_canal_temporal
 WHATSAPP_FAILOVER_TEMPLATE_LANGUAGE=es_mx
 WHATSAPP_FAILOVER_ACTIVE_TTL_SECONDS=82800
+WHATSAPP_FAILOVER_ALLOWED_PHONES=
 ```
 
 Desplegar primero con `WHATSAPP_FAILOVER_ENABLED=false`. Cambiarla a `true`
 únicamente después de confirmar que el HSM aprobado aparece sincronizado en el
 canal `SAM 2` y que el webhook temporal está habilitado.
+
+Para la primera prueba, establecer `WHATSAPP_FAILOVER_ALLOWED_PHONES` con el
+número completo del teléfono de prueba. Se pueden indicar varios números
+separados por comas. Un valor vacío habilita el failover para todos los
+ciudadanos.
 
 ## Webhook temporal de Chat2Desk
 

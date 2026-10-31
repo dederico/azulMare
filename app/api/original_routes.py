@@ -253,6 +253,7 @@ from app.services.whatsapp_failover import (
     build_failover_hsm_text,
     build_failover_replay_payload,
     is_failover_candidate,
+    is_phone_allowed_for_failover,
     list_pending_for_active_route,
     load_whatsapp_failover_config,
     mark_failover_hsm_result,
@@ -7018,6 +7019,8 @@ async def _handle_temporary_whatsapp_failover(
         channel_id=channel_id,
         replay=bool(payload.get("_sam_failover_replay")),
     ):
+        return None
+    if not is_phone_allowed_for_failover(from_number, config):
         return None
     if not from_number or client_id in (None, ""):
         logger.error(

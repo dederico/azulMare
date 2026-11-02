@@ -26,6 +26,8 @@ WHATSAPP_FAILOVER_CHANNEL_ID=43943
 WHATSAPP_FAILOVER_TEMPLATE=continuidad_canal_temporal
 WHATSAPP_FAILOVER_TEMPLATE_LANGUAGE=es_mx
 WHATSAPP_FAILOVER_ACTIVE_TTL_SECONDS=82800
+WHATSAPP_FAILOVER_CONFIRMATION_RETRY_SECONDS=300
+WHATSAPP_FAILOVER_PENDING_REPLAY_WINDOW_SECONDS=1800
 WHATSAPP_FAILOVER_ALLOWED_PHONES=
 ```
 
@@ -37,6 +39,13 @@ Para la primera prueba, establecer `WHATSAPP_FAILOVER_ALLOWED_PHONES` con el
 número completo del teléfono de prueba. Se pueden indicar varios números
 separados por comas. Un valor vacío habilita el failover para todos los
 ciudadanos.
+
+Si el ciudadano no confirma el primer HSM, un nuevo mensaje recibido después de
+`WHATSAPP_FAILOVER_CONFIRMATION_RETRY_SECONDS` vuelve a abrir el canal temporal.
+Al confirmar, se reproducen los mensajes pendientes de los últimos
+`WHATSAPP_FAILOVER_PENDING_REPLAY_WINDOW_SECONDS`; cuando todos son más antiguos,
+se conserva al menos el mensaje pendiente más reciente para que el ciudadano no
+tenga que repetirlo.
 
 ## Webhook temporal de Chat2Desk
 

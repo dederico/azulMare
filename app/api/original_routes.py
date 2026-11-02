@@ -253,6 +253,7 @@ from app.services.whatsapp_failover import (
     build_failover_hsm_text,
     build_failover_replay_payload,
     is_failover_candidate,
+    is_failover_confirmation_text,
     is_phone_allowed_for_failover,
     list_pending_for_active_route,
     load_whatsapp_failover_config,
@@ -7091,6 +7092,13 @@ async def _handle_temporary_whatsapp_failover(
         )
         action = decision.get("action")
         if action == "send_hsm":
+            if decision.get("reason") == "confirmation_timeout":
+                logger.warning(
+                    "♻️ [WHATSAPP FAILOVER RETRY] Reenviando HSM por falta de "
+                    "confirmación phone=%s expired_pending=%s",
+                    from_number,
+                    decision.get("expired_pending", 0),
+                )
             failover_client_id = await _ensure_chat2desk_failover_client(
                 phone_number=from_number,
                 nickname=(payload.get("client") or {}).get("name"),
@@ -7132,6 +7140,7 @@ async def _handle_temporary_whatsapp_failover(
                 list_pending_for_active_route,
                 storage,
                 phone_number=from_number,
+                config=config,
             )
             replayed = await _enqueue_whatsapp_failover_replays(
                 storage=storage,
@@ -7157,16 +7166,33 @@ async def _handle_temporary_whatsapp_failover(
             }
         )
 
-    pending_messages = await asyncio.to_thread(
+    activation = await asyncio.to_thread(
         activate_failover_and_list_pending,
         storage,
         phone_number=from_number,
         failover_client_id=client_id,
         config=config,
     )
+    pending_messages = activation["pending_messages"]
     if not pending_messages:
         # The temporary channel is already active. This is ordinary citizen
-        # content and must continue through the normal conversation flow.
+        # content and must continue through the normal conversation flow. A
+        # late HSM quick reply, however, is transport control even when older
+        # pending rows have expired.
+        if (
+            activation["activated"]
+            and activation.get("previous_status") == "awaiting_confirmation"
+            and is_failover_confirmation_text(payload.get("text"), config)
+        ):
+            logger.critical(
+                "🚧 [WHATSAPP FAILOVER] confirmación tardía consumida "
+                "phone=%s expired_pending=%s",
+                from_number,
+                activation.get("expired_pending", 0),
+            )
+            return JSONResponse(
+                content={"status": True, "message": "Canal temporal confirmado"}
+            )
         return None
 
     replayed = await _enqueue_whatsapp_failover_replays(

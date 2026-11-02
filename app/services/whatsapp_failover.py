@@ -27,6 +27,8 @@ from app.util.logger import logger
 ROUTES_TABLE = "whatsapp_failover_routes"
 PENDING_TABLE = "whatsapp_failover_pending_messages"
 DEFAULT_ACTIVE_TTL_SECONDS = 23 * 60 * 60
+DEFAULT_CONFIRMATION_RETRY_SECONDS = 5 * 60
+DEFAULT_PENDING_REPLAY_WINDOW_SECONDS = 30 * 60
 
 _schema_lock = threading.Lock()
 _schema_ready = False
@@ -43,6 +45,8 @@ class WhatsAppFailoverConfig:
     template_name: str
     template_language: str
     active_ttl_seconds: int = DEFAULT_ACTIVE_TTL_SECONDS
+    confirmation_retry_seconds: int = DEFAULT_CONFIRMATION_RETRY_SECONDS
+    pending_replay_window_seconds: int = DEFAULT_PENDING_REPLAY_WINDOW_SECONDS
     allowed_phone_numbers: frozenset[str] = frozenset()
 
 
@@ -98,6 +102,20 @@ def load_whatsapp_failover_config(
                 DEFAULT_ACTIVE_TTL_SECONDS,
             ),
         ),
+        confirmation_retry_seconds=max(
+            30,
+            _as_int(
+                env.get("WHATSAPP_FAILOVER_CONFIRMATION_RETRY_SECONDS"),
+                DEFAULT_CONFIRMATION_RETRY_SECONDS,
+            ),
+        ),
+        pending_replay_window_seconds=max(
+            60,
+            _as_int(
+                env.get("WHATSAPP_FAILOVER_PENDING_REPLAY_WINDOW_SECONDS"),
+                DEFAULT_PENDING_REPLAY_WINDOW_SECONDS,
+            ),
+        ),
         allowed_phone_numbers=_phone_allowlist(
             env.get("WHATSAPP_FAILOVER_ALLOWED_PHONES", "")
         ),
@@ -141,6 +159,20 @@ def is_failover_candidate(
 def build_failover_hsm_text(config: WhatsAppFailoverConfig) -> str:
     """Build Chat2Desk's HSM command for a template without variables."""
     return f"@HSM@\n{config.template_name}|{config.template_language}"
+
+
+def is_failover_confirmation_text(
+    text: Any,
+    config: WhatsAppFailoverConfig,
+) -> bool:
+    """Recognize Chat2Desk's quick-reply echo without using it as citizen text."""
+    normalized = " ".join(str(text or "").strip().casefold().split())
+    if normalized.rstrip(".!") == "continuar":
+        return True
+    template_marker = (
+        f"{config.template_name}|{config.template_language}".casefold()
+    )
+    return "@hsm@" in normalized and template_marker in normalized
 
 
 def build_failover_replay_payload(
@@ -265,6 +297,84 @@ def _message_id(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _confirmation_retry_due(
+    hsm_sent_at: Any,
+    *,
+    now: float,
+    config: WhatsAppFailoverConfig,
+) -> bool:
+    try:
+        sent_at = float(hsm_sent_at or 0)
+    except (TypeError, ValueError):
+        sent_at = 0
+    return sent_at <= 0 or now - sent_at >= config.confirmation_retry_seconds
+
+
+def _expire_stale_memory_pending(
+    phone_number: str,
+    *,
+    now: float,
+    config: WhatsAppFailoverConfig,
+) -> int:
+    """Expire old pending rows while always retaining the newest citizen turn."""
+    pending_items = [
+        (key, row)
+        for key, row in _memory_pending.items()
+        if key[0] == phone_number and row.get("status") == "pending"
+    ]
+    if not pending_items:
+        return 0
+    newest_key, _ = max(
+        pending_items,
+        key=lambda item: (
+            float(item[1].get("created_at") or 0),
+            str(item[1].get("original_message_id") or ""),
+        ),
+    )
+    cutoff = now - config.pending_replay_window_seconds
+    expired = 0
+    for key, row in pending_items:
+        if key == newest_key or float(row.get("created_at") or 0) >= cutoff:
+            continue
+        row.update(status="expired", updated_at=now)
+        expired += 1
+    return expired
+
+
+def _expire_stale_database_pending(
+    cursor,
+    phone_number: str,
+    *,
+    now: float,
+    config: WhatsAppFailoverConfig,
+) -> int:
+    """Database equivalent of ``_expire_stale_memory_pending``."""
+    cursor.execute(
+        f"""
+        UPDATE {PENDING_TABLE}
+        SET status = 'expired', updated_at = %s
+        WHERE phone_number = %s
+          AND status = 'pending'
+          AND created_at < %s
+          AND id <> COALESCE((
+              SELECT newest.id
+              FROM {PENDING_TABLE} AS newest
+              WHERE newest.phone_number = %s
+                AND newest.status = 'pending'
+              ORDER BY newest.id DESC
+              LIMIT 1
+          ), -1)
+        """,
+        (
+            now,
+            phone_number,
+            now - config.pending_replay_window_seconds,
+            phone_number,
+        ),
+    )
+    return int(cursor.rowcount or 0)
+
+
 def stage_primary_inbound(
     storage,
     *,
@@ -303,9 +413,34 @@ def stage_primary_inbound(
                     "failover_client_id": route["failover_client_id"],
                 }
             if route and route.get("status") == "awaiting_confirmation":
-                return {"action": "wait"}
+                if not _confirmation_retry_due(
+                    route.get("hsm_sent_at"),
+                    now=now,
+                    config=config,
+                ):
+                    return {"action": "wait"}
+                expired_count = _expire_stale_memory_pending(
+                    phone,
+                    now=now,
+                    config=config,
+                )
+                route.update(
+                    status="hsm_sending",
+                    primary_client_id=str(primary_client_id or ""),
+                    updated_at=now,
+                )
+                return {
+                    "action": "send_hsm",
+                    "reason": "confirmation_timeout",
+                    "expired_pending": expired_count,
+                }
             if route and route.get("status") == "hsm_sending":
-                return {"action": "send_hsm"}
+                return {"action": "send_hsm", "reason": "hsm_pending_retry"}
+            expired_count = _expire_stale_memory_pending(
+                phone,
+                now=now,
+                config=config,
+            )
             _memory_routes[phone] = {
                 "phone_number": phone,
                 "status": "hsm_sending",
@@ -319,7 +454,11 @@ def stage_primary_inbound(
                 "created_at": now,
                 "updated_at": now,
             }
-            return {"action": "send_hsm"}
+            return {
+                "action": "send_hsm",
+                "reason": "new_or_expired_route",
+                "expired_pending": expired_count,
+            }
 
     conn = None
     try:
@@ -335,18 +474,55 @@ def stage_primary_inbound(
                 (phone, message_id, Json(dict(payload)), now, now),
             )
             cursor.execute(
-                f"SELECT status, failover_client_id, expires_at FROM {ROUTES_TABLE} "
+                f"SELECT status, failover_client_id, expires_at, hsm_sent_at "
+                f"FROM {ROUTES_TABLE} "
                 "WHERE phone_number = %s FOR UPDATE",
                 (phone,),
             )
             row = cursor.fetchone()
             if row and row[0] == "active" and float(row[2] or 0) > now and row[1]:
                 result = {"action": "replay", "failover_client_id": row[1]}
-            elif row and row[0] == "awaiting_confirmation":
+            elif (
+                row
+                and row[0] == "awaiting_confirmation"
+                and not _confirmation_retry_due(
+                    row[3],
+                    now=now,
+                    config=config,
+                )
+            ):
                 result = {"action": "wait"}
+            elif row and row[0] == "awaiting_confirmation":
+                expired_count = _expire_stale_database_pending(
+                    cursor,
+                    phone,
+                    now=now,
+                    config=config,
+                )
+                cursor.execute(
+                    f"""
+                    UPDATE {ROUTES_TABLE}
+                    SET status = 'hsm_sending',
+                        primary_client_id = %s,
+                        updated_at = %s
+                    WHERE phone_number = %s
+                    """,
+                    (str(primary_client_id or ""), now, phone),
+                )
+                result = {
+                    "action": "send_hsm",
+                    "reason": "confirmation_timeout",
+                    "expired_pending": expired_count,
+                }
             elif row and row[0] == "hsm_sending":
-                result = {"action": "send_hsm"}
+                result = {"action": "send_hsm", "reason": "hsm_pending_retry"}
             else:
+                expired_count = _expire_stale_database_pending(
+                    cursor,
+                    phone,
+                    now=now,
+                    config=config,
+                )
                 cursor.execute(
                     f"""
                     INSERT INTO {ROUTES_TABLE}
@@ -375,7 +551,11 @@ def stage_primary_inbound(
                         now,
                     ),
                 )
-                result = {"action": "send_hsm"}
+                result = {
+                    "action": "send_hsm",
+                    "reason": "new_or_expired_route",
+                    "expired_pending": expired_count,
+                }
         conn.commit()
         return result
     finally:
@@ -428,12 +608,21 @@ def activate_failover_and_list_pending(
     phone_number: str,
     failover_client_id: Any,
     config: WhatsAppFailoverConfig,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     phone = str(phone_number or "").strip()
     now = time.time()
     expires_at = now + config.active_ttl_seconds
     if _use_memory_or_require_durable_storage(storage):
         with _memory_lock:
+            existing_route = _memory_routes.get(phone)
+            previous_status = (
+                existing_route.get("status") if existing_route else None
+            )
+            was_active = bool(
+                existing_route
+                and existing_route.get("status") == "active"
+                and float(existing_route.get("expires_at") or 0) > now
+            )
             route = _memory_routes.setdefault(
                 phone,
                 {
@@ -451,7 +640,12 @@ def activate_failover_and_list_pending(
                 expires_at=expires_at,
                 updated_at=now,
             )
-            return [
+            expired_count = _expire_stale_memory_pending(
+                phone,
+                now=now,
+                config=config,
+            )
+            pending_messages = [
                 copy.deepcopy(row)
                 for (row_phone, _), row in sorted(
                     _memory_pending.items(),
@@ -459,11 +653,28 @@ def activate_failover_and_list_pending(
                 )
                 if row_phone == phone and row.get("status") == "pending"
             ]
+            return {
+                "activated": not was_active,
+                "previous_status": previous_status,
+                "expired_pending": expired_count,
+                "pending_messages": pending_messages,
+            }
 
     conn = None
     try:
         conn = _connect(storage)
         with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT status, expires_at FROM {ROUTES_TABLE} "
+                "WHERE phone_number = %s FOR UPDATE",
+                (phone,),
+            )
+            existing_route = cursor.fetchone()
+            was_active = bool(
+                existing_route
+                and existing_route[0] == "active"
+                and float(existing_route[1] or 0) > now
+            )
             cursor.execute(
                 f"""
                 INSERT INTO {ROUTES_TABLE}
@@ -490,6 +701,12 @@ def activate_failover_and_list_pending(
                     now,
                 ),
             )
+            expired_count = _expire_stale_database_pending(
+                cursor,
+                phone,
+                now=now,
+                config=config,
+            )
             cursor.execute(
                 f"""
                 SELECT id, original_message_id, payload
@@ -501,19 +718,36 @@ def activate_failover_and_list_pending(
             )
             rows = cursor.fetchall()
         conn.commit()
-        return [
+        pending_messages = [
             {"id": row[0], "original_message_id": row[1], "payload": row[2]}
             for row in rows
         ]
+        return {
+            "activated": not was_active,
+            "previous_status": existing_route[0] if existing_route else None,
+            "expired_pending": expired_count,
+            "pending_messages": pending_messages,
+        }
     finally:
         if conn is not None:
             conn.close()
 
 
-def list_pending_for_active_route(storage, *, phone_number: str) -> list[dict[str, Any]]:
+def list_pending_for_active_route(
+    storage,
+    *,
+    phone_number: str,
+    config: WhatsAppFailoverConfig,
+) -> list[dict[str, Any]]:
     phone = str(phone_number or "").strip()
+    now = time.time()
     if _use_memory_or_require_durable_storage(storage):
         with _memory_lock:
+            _expire_stale_memory_pending(
+                phone,
+                now=now,
+                config=config,
+            )
             return [
                 copy.deepcopy(row)
                 for (row_phone, _), row in sorted(
@@ -526,6 +760,12 @@ def list_pending_for_active_route(storage, *, phone_number: str) -> list[dict[st
     try:
         conn = _connect(storage)
         with conn.cursor() as cursor:
+            _expire_stale_database_pending(
+                cursor,
+                phone,
+                now=now,
+                config=config,
+            )
             cursor.execute(
                 f"""
                 SELECT id, original_message_id, payload
@@ -536,6 +776,7 @@ def list_pending_for_active_route(storage, *, phone_number: str) -> list[dict[st
                 (phone,),
             )
             rows = cursor.fetchall()
+        conn.commit()
         return [
             {"id": row[0], "original_message_id": row[1], "payload": row[2]}
             for row in rows

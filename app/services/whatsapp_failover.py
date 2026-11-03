@@ -7,6 +7,7 @@ the existing Chat2Desk routing remains unchanged.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import threading
 import time
@@ -63,6 +64,40 @@ def _as_int(value: Any, default: int) -> int:
 
 def normalize_failover_phone(value: Any) -> str:
     return "".join(character for character in str(value or "") if character.isdigit())
+
+
+def existing_chat2desk_client_id(response_data: Any) -> Any | None:
+    """Return the reusable id from Chat2Desk's duplicate-client response.
+
+    ``POST /v1/clients`` returns HTTP 400 when a phone is already attached to
+    the requested channel, but includes the client id in ``errors.client``.
+    Only that explicit response is accepted; unrelated errors fail closed.
+    """
+    if not isinstance(response_data, Mapping):
+        return None
+    errors = response_data.get("errors")
+    if not isinstance(errors, Mapping):
+        return None
+    client_errors = errors.get("client")
+    if not isinstance(client_errors, (list, tuple)):
+        return None
+    if not any(
+        str(item or "").strip().casefold() == "client already exist"
+        for item in client_errors
+    ):
+        return None
+    for item in client_errors:
+        candidate = item
+        if isinstance(item, str):
+            try:
+                candidate = json.loads(item)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        if isinstance(candidate, Mapping):
+            client_id = candidate.get("id")
+            if client_id not in (None, ""):
+                return client_id
+    return None
 
 
 def _phone_allowlist(value: Any) -> frozenset[str]:

@@ -42,6 +42,9 @@ ciudadanos.
 
 Si el ciudadano no confirma el primer HSM, un nuevo mensaje recibido después de
 `WHATSAPP_FAILOVER_CONFIRMATION_RETRY_SECONDS` vuelve a abrir el canal temporal.
+Si Chat2Desk indica durante ese reintento que el cliente ya existe en `SAM 2`,
+se reutiliza el identificador devuelto y se continúa con el HSM de forma
+idempotente.
 Al confirmar, se reproducen los mensajes pendientes de los últimos
 `WHATSAPP_FAILOVER_PENDING_REPLAY_WINDOW_SECONDS`; cuando todos son más antiguos,
 se conserva al menos el mensaje pendiente más reciente para que el ciudadano no

@@ -252,6 +252,7 @@ from app.services.whatsapp_failover import (
     activate_failover_and_list_pending,
     build_failover_hsm_text,
     build_failover_replay_payload,
+    existing_chat2desk_client_id,
     is_failover_candidate,
     is_failover_confirmation_text,
     is_phone_allowed_for_failover,
@@ -6949,23 +6950,33 @@ async def _ensure_chat2desk_failover_client(
                 "Content-Type": "application/json",
             },
         )
-    response_data = response.json() if response.status_code == 200 else {}
+    try:
+        response_data = response.json()
+    except (TypeError, ValueError):
+        response_data = {}
     client_data = response_data.get("data") or {}
     failover_client_id = client_data.get("id")
-    if (
-        response.status_code != 200
-        or response_data.get("status") != "success"
-        or failover_client_id in (None, "")
-    ):
+    created = (
+        response.status_code == 200
+        and response_data.get("status") == "success"
+        and failover_client_id not in (None, "")
+    )
+    reused = False
+    if not created:
+        failover_client_id = existing_chat2desk_client_id(response_data)
+        reused = failover_client_id not in (None, "")
+    if not created and not reused:
         raise RuntimeError(
             "Chat2Desk no pudo vincular el cliente con SAM 2: "
             f"status={response.status_code} body={response.text[:400]}"
         )
     logger.info(
-        "🚧 [WHATSAPP FAILOVER CLIENT] phone=%s client_id=%s channel_id=%s",
+        "🚧 [WHATSAPP FAILOVER CLIENT] phone=%s client_id=%s channel_id=%s "
+        "result=%s",
         phone_number,
         failover_client_id,
         config.failover_channel_id,
+        "reused" if reused else "created",
     )
     return failover_client_id
 

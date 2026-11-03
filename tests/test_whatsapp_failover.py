@@ -71,6 +71,31 @@ def test_builds_chat2desk_hsm_command():
     )
 
 
+def test_extracts_existing_chat2desk_client_id_from_idempotent_error():
+    response_data = {
+        "message": "bad_request",
+        "errors": {
+            "client": ["Client already exist", '{"id":307599064}'],
+        },
+        "status": "error",
+    }
+
+    assert failover.existing_chat2desk_client_id(response_data) == 307599064
+
+
+@pytest.mark.parametrize(
+    "response_data",
+    [
+        {},
+        {"errors": {"client": ["Client already exist"]}},
+        {"errors": {"client": ["Another error", '{"id":307599064}']}},
+        {"errors": {"client": ["Client already exist", "not-json"]}},
+    ],
+)
+def test_does_not_reuse_client_id_from_unrelated_or_incomplete_error(response_data):
+    assert failover.existing_chat2desk_client_id(response_data) is None
+
+
 @pytest.mark.parametrize(
     "text",
     [

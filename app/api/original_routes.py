@@ -9455,7 +9455,6 @@ async def _process_whatsapp_request(request):
         
         # Extraer información del payload de Chat2Desk
         chat_id = payload.get('chat_id')
-        from_number = payload.get('client', {}).get('phone')
         sender_name = payload.get('client', {}).get('name', 'Usuario')
         message_id = payload.get('message_id')
         body = payload.get('text', '')

@@ -1,4 +1,6 @@
+import ast
 import unittest
+from pathlib import Path
 
 from app.services.chat2desk_channel_identity import (
     extract_chat2desk_channel_identity,
@@ -9,6 +11,45 @@ from app.services.chat2desk_channel_identity import (
 
 
 class Chat2DeskChannelIdentityTests(unittest.TestCase):
+    def test_process_request_never_replaces_platform_conversation_key_with_client_phone(self):
+        source = Path("app/api/original_routes.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+        handler = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_process_whatsapp_request"
+        )
+        assignments = [
+            node
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "from_number"
+                for target in node.targets
+            )
+        ]
+        canonical_assignment = next(
+            node
+            for node in assignments
+            if ast.unparse(node.value) == "channel_identity.conversation_key"
+        )
+        raw_phone_reassignments = [
+            node.lineno
+            for node in assignments
+            if node.lineno > canonical_assignment.lineno
+            and "payload" in ast.unparse(node.value)
+            and "client" in ast.unparse(node.value)
+            and "phone" in ast.unparse(node.value)
+        ]
+
+        self.assertEqual(
+            raw_phone_reassignments,
+            [],
+            "Facebook/Telegram must retain channel_identity.conversation_key; "
+            "payload.client.phone cannot replace it later in the handler.",
+        )
+
     def test_whatsapp_preserves_phone_as_conversation_key(self):
         identity = extract_chat2desk_channel_identity(
             {

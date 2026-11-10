@@ -23,6 +23,10 @@ class ConversationControlTests(unittest.TestCase):
     def test_phone_normalization(self):
         self.assertEqual(normalize_phone_key(self.phone), "5218112345678")
 
+    def test_multichannel_identity_keeps_transport_namespace(self):
+        key = "chat2desk:telegram:channel:10:client:123"
+        self.assertEqual(normalize_phone_key(key), key)
+
     def test_active_takeover_is_shared_through_canonical_key(self):
         activate_human_control(
             self.phone,

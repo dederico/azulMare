@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - production installs psycopg2
     Json = None
 
 from app.util.logger import logger
+from app.services.chat2desk_channel_identity import webhook_conversation_key
 
 
 WEBHOOK_JOBS_TABLE = "chat2desk_webhook_jobs"
@@ -102,12 +103,7 @@ def enqueue_webhook_job(storage, payload: dict[str, Any], query_params=None) -> 
     if not ensure_webhook_job_storage(storage):
         raise RuntimeError("cola durable no disponible")
     event_key = build_webhook_event_key(payload)
-    conversation_key = str(
-        (payload.get("client") or {}).get("phone")
-        or payload.get("client_id")
-        or payload.get("dialog_id")
-        or "unknown"
-    )
+    conversation_key = webhook_conversation_key(payload)
     timestamp = time.time()
     stored_payload = dict(payload)
     stored_payload["_sam_webhook_received_at"] = timestamp

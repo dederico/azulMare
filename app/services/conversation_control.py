@@ -25,8 +25,13 @@ _schema_ready = False
 
 
 def normalize_phone_key(phone_number: str | None) -> str:
-    digits = re.sub(r"\D", "", str(phone_number or ""))
-    return digits or str(phone_number or "").strip()
+    raw = str(phone_number or "").strip()
+    if raw.casefold().startswith("chat2desk:"):
+        # Facebook/Telegram identities are namespaced because their numeric
+        # provider IDs are not phone numbers and may overlap across channels.
+        return raw.casefold()
+    digits = re.sub(r"\D", "", raw)
+    return digits or raw
 
 
 def _connect(storage):

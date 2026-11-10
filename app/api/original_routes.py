@@ -248,6 +248,12 @@ from app.services.webhook_jobs import (
     fail_webhook_job,
     has_newer_pending_inbound_job,
 )
+from app.services.chat2desk_channel_identity import (
+    extract_chat2desk_channel_identity,
+    is_phone_transport,
+    normalize_contact_phone,
+    resolve_report_contact_phone,
+)
 from app.services.whatsapp_failover import (
     activate_failover_and_list_pending,
     build_failover_hsm_text,
@@ -2787,10 +2793,14 @@ def create_or_update_report_session(from_number):
                 "citizen_report_messages": [],
                 "report_intent_confirmed": False,
             }
+            channel_context = chat2desk_channel_contexts.get(from_number) or {}
+            report_sessions[from_number].update(channel_context)
             logger.critical(f"🎯 [NEW SESSION] Sesión de reporte creada para {from_number}")
         else:
             # Actualizar timestamp si ya existe
             report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+            channel_context = chat2desk_channel_contexts.get(from_number) or {}
+            report_sessions[from_number].update(channel_context)
             logger.critical(f"🎯 [UPDATE SESSION] Timestamp actualizado para {from_number}")
 
 
@@ -3302,6 +3312,20 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             "un reporte. No se creó ningún folio."
         )
 
+    ciac_contact_phone = resolve_report_contact_phone(yoga_number, session)
+    if not ciac_contact_phone:
+        logger.warning(
+            "🚫 [REPORT CONTACT REQUIRED] No se enviará a CIAC una identidad "
+            "de canal como teléfono. conversation=%s transport=%s",
+            yoga_number,
+            session.get("channel_transport"),
+        )
+        return (
+            "VALIDATION_BLOCK: Antes de crear el reporte solicita al ciudadano "
+            "un número telefónico real de contacto y regístralo con "
+            "record_report_contact_phone. No se creó ningún folio."
+        )
+
     # The model does not own reporter identity. Chat2Desk metadata was stored
     # when the inbound message entered the report flow; anonymous is the safe
     # fallback for restored/legacy sessions that predate that marker.
@@ -3393,7 +3417,7 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
         
         # LLAMAR A LA FUNCIÓN ORIGINAL
         folio = await save_client_selection2(
-            yoga_number=yoga_number,
+            yoga_number=ciac_contact_phone,
             selection1=selection_data["selection1"],
             selection2=selection_data["selection2"],
             selection3="",
@@ -5254,6 +5278,40 @@ async def websocket_endpoint(ws: WebSocket):
 # En vez de user_histories, usamos user_sessions para incluir la marca de última actividad.
 user_sessions = {}  # key: from_number, value: WhatsAppSession
 
+# Metadata de transporte separada de la identidad conversacional. Facebook y
+# Telegram no exponen un teléfono hasta que el ciudadano decide compartirlo.
+# La sesión durable de reporte absorbe estos datos al iniciar el flujo.
+chat2desk_channel_contexts = {}
+
+
+def remember_chat2desk_channel_context(
+    conversation_key: str,
+    *,
+    contact_phone: str | None,
+    transport: str,
+    client_id,
+    channel_id,
+    uses_platform_identity: bool,
+) -> None:
+    context = {
+        "contact_phone": normalize_contact_phone(contact_phone),
+        "channel_transport": str(transport or "unknown"),
+        "channel_client_id": str(client_id) if client_id not in (None, "") else None,
+        "channel_id": str(channel_id) if channel_id not in (None, "") else None,
+        "uses_platform_identity": bool(uses_platform_identity),
+    }
+    previous = chat2desk_channel_contexts.get(conversation_key) or {}
+    with report_sessions_lock:
+        active_report = report_sessions.get(conversation_key)
+        if not context["contact_phone"]:
+            context["contact_phone"] = (
+                previous.get("contact_phone")
+                or (active_report or {}).get("contact_phone")
+            )
+        chat2desk_channel_contexts[conversation_key] = context
+        if active_report is not None:
+            active_report.update(context)
+
 # Tiempo de inactividad (en segundos) antes de desconectar la sesión (15 minutos)
 INACTIVITY_THRESHOLD = 15 * 60
 INACTIVITY_DELIVERY_GRACE_SECONDS = int(
@@ -6282,23 +6340,24 @@ class QueuedWebhookRequest:
 
 
 def _restore_durable_report_context(storage, payload):
-    phone_number = (payload.get("client") or {}).get("phone")
-    if not phone_number:
+    channel_identity = extract_chat2desk_channel_identity(payload)
+    conversation_key = channel_identity.conversation_key
+    if not conversation_key:
         return None
-    persisted = load_report_state(storage, phone_number)
+    persisted = load_report_state(storage, conversation_key)
     current_epoch = int(
-        (get_lifecycle_state(phone_number, storage=storage) or {}).get(
+        (get_lifecycle_state(conversation_key, storage=storage) or {}).get(
             "conversation_epoch", 0
         )
     )
     if persisted and int(persisted.get("conversation_epoch") or 0) != current_epoch:
         logger.warning(
             "🚫 [STALE REPORT STATE] phone=%s persisted_epoch=%s current_epoch=%s",
-            phone_number,
+            conversation_key,
             persisted.get("conversation_epoch"),
             current_epoch,
         )
-        delete_report_state(storage, phone_number)
+        delete_report_state(storage, conversation_key)
         persisted = None
     discard_unconfirmed = False
     with report_sessions_lock:
@@ -6306,39 +6365,39 @@ def _restore_durable_report_context(storage, payload):
             restored_session = persisted["report_session"]
             if report_session_has_confirmed_intent(restored_session):
                 restored_session["report_intent_confirmed"] = True
-                report_sessions[phone_number] = restored_session
+                report_sessions[conversation_key] = restored_session
             elif should_preserve_unconfirmed_image_context(restored_session):
                 # Pending media is safe to retain but does not itself activate
                 # a report. The next turn/model decision must still resolve
                 # the citizen's intent before CIAC can be called.
                 restored_session["report_intent_confirmed"] = False
-                report_sessions[phone_number] = restored_session
+                report_sessions[conversation_key] = restored_session
                 logger.info(
                     "🖼️ [PENDING IMAGE STATE RESTORED] phone=%s pending=%s awaiting=%s",
-                    phone_number,
+                    conversation_key,
                     len(restored_session.get("pending_images") or []),
                     bool(restored_session.get("awaiting_report_image")),
                 )
             else:
                 # State created only by media/emergency/location in older
                 # deployments is unsafe and must not survive a worker hop.
-                report_sessions.pop(phone_number, None)
-                user_answers.pop(phone_number, None)
+                report_sessions.pop(conversation_key, None)
+                user_answers.pop(conversation_key, None)
                 discard_unconfirmed = True
                 persisted = None
                 logger.warning(
                     "🧹 [UNCONFIRMED REPORT STATE] discarded for phone=%s",
-                    phone_number,
+                    conversation_key,
                 )
         else:
-            report_sessions.pop(phone_number, None)
+            report_sessions.pop(conversation_key, None)
     if discard_unconfirmed:
-        delete_report_state(storage, phone_number)
+        delete_report_state(storage, conversation_key)
     if persisted and persisted.get("user_answers"):
-        user_answers[phone_number] = persisted["user_answers"]
+        user_answers[conversation_key] = persisted["user_answers"]
     else:
-        user_answers.pop(phone_number, None)
-    return phone_number
+        user_answers.pop(conversation_key, None)
+    return conversation_key
 
 
 def _persist_durable_report_context(storage, phone_number):
@@ -7245,31 +7304,49 @@ async def _process_whatsapp_request(request):
         # IMPORTANTE: Verificar si es un mensaje de un cliente o una respuesta del sistema
         # Extraer información del payload de Chat2Desk
         chat_id = payload.get('chat_id')
-        from_number = payload.get('client', {}).get('phone')
+        channel_identity = extract_chat2desk_channel_identity(payload)
+        from_number = channel_identity.conversation_key
+        contact_phone = channel_identity.contact_phone
         sender_name = payload.get('client', {}).get('name', 'Usuario')
         body = payload.get('text', '')
         message_type = payload.get('type', '')
         uid = payload.get('message_id', '')
         message_text = payload.get('text', '')
-        channel_id = payload.get('channel_id')
-        client_id = payload.get('client_id')
+        channel_id = payload.get('channel_id') or channel_identity.channel_id
+        client_id = payload.get('client_id') or channel_identity.client_id
         hook_type = payload.get('hook_type', '')
         operator_id = payload.get('operator_id', '')
         message_id = payload.get('message_id')
-        transport = payload.get('transport', 'wa_direct')  # Extract transport: wa_direct or widget
+        transport = channel_identity.transport
         request_id = payload.get('request_id')
 
-        failover_response = await _handle_temporary_whatsapp_failover(
-            storage=db,
-            payload=payload,
-            from_number=from_number,
+        remember_chat2desk_channel_context(
+            from_number,
+            contact_phone=contact_phone,
+            transport=transport,
             client_id=client_id,
             channel_id=channel_id,
-            message_type=message_type,
-            transport=transport,
+            uses_platform_identity=channel_identity.uses_platform_identity,
         )
-        if failover_response is not None:
-            return failover_response
+        contact_phone = (
+            chat2desk_channel_contexts.get(from_number, {}).get("contact_phone")
+            or contact_phone
+        )
+
+        # El failover temporal pertenece exclusivamente a WhatsApp. Nunca debe
+        # interceptar eventos nativos de Telegram, Facebook o el widget.
+        if is_phone_transport(transport) and contact_phone:
+            failover_response = await _handle_temporary_whatsapp_failover(
+                storage=db,
+                payload=payload,
+                from_number=from_number,
+                client_id=client_id,
+                channel_id=channel_id,
+                message_type=message_type,
+                transport=transport,
+            )
+            if failover_response is not None:
+                return failover_response
 
         if hook_type == 'dialog_transferred':
             # Este evento no es autoritativo por sí solo, porque Chat2Desk lo
@@ -11088,7 +11165,7 @@ async def _process_whatsapp_request(request):
             # Guardar todos los datos que el LLM tiene disponibles
             session["llm_context"] = {
                 "message_id": message_id,
-                "yoga_number": from_number,
+                "yoga_number": contact_phone or "No disponible en este canal",
                 "sender_name": sender_name,
                 "address": address if 'address' in locals() else "Ubicación no disponible",
                 "fotos_string": fotos_string,
@@ -11112,7 +11189,7 @@ async def _process_whatsapp_request(request):
         customer_name=sender_name,
         call_sid=uid,
         date2=date_string,
-        yoga_number=from_number,
+        yoga_number=contact_phone or "No disponible en este canal",
         now=hour,
         folio="Pendiente de generar",
         address=address if 'address' in locals() else "No he recibido ubicación",
@@ -11127,7 +11204,7 @@ async def _process_whatsapp_request(request):
     try:
         # Crear el prompt con el historial de mensajes
         system_prompt = prompt_template.format(customer_name=sender_name,call_sid=uid,date2=date_string,
-            yoga_number=user_message.number,
+            yoga_number=contact_phone or "No disponible en este canal",
             now=hour,
             folio="Pendiente de generar",
             address=address if 'address' in locals() else "No he recibido ubicación",
@@ -11146,6 +11223,26 @@ async def _process_whatsapp_request(request):
             f"{trusted_reporter!r}. Este valor proviene de Chat2Desk. Nunca preguntes "
             "el nombre y nunca uses otro mensaje del ciudadano como selection2."
         )
+        if channel_identity.uses_platform_identity:
+            if contact_phone:
+                system_prompt += (
+                    "\n\nIDENTIDAD DEL CANAL: Esta conversación llega por "
+                    f"{transport}. El teléfono de contacto {contact_phone!r} fue "
+                    "compartido explícitamente y puede utilizarse al crear un reporte. "
+                    "Nunca muestres ni presentes el identificador interno de la plataforma "
+                    "como si fuera un teléfono."
+                )
+            else:
+                system_prompt += (
+                    "\n\nIDENTIDAD DEL CANAL: Esta conversación llega por "
+                    f"{transport} y el identificador interno del usuario NO es un "
+                    "teléfono. Responde consultas informativas normalmente y no pidas "
+                    "teléfono si no hace falta. Únicamente cuando el ciudadano esté "
+                    "levantando un reporte que se enviará a CIAC, solicita un número "
+                    "telefónico real de contacto, una sola pregunta a la vez, y llama a "
+                    "record_report_contact_phone cuando lo proporcione. Nunca inventes, "
+                    "deduzcas ni muestres el identificador interno de Facebook o Telegram."
+                )
         system_prompt += (
             "\n\nPOLÍTICA DE TRANSFERENCIA: Interpreta la intención del ciudadano por el significado "
             "de la conversación; nunca le exijas repetir una frase exacta. Solicita transfer_to_group "
@@ -11204,6 +11301,52 @@ async def _process_whatsapp_request(request):
             else func
             for func in registered_functions
         ]
+        if channel_identity.uses_platform_identity and not resolve_report_contact_phone(
+            from_number,
+            report_sessions.get(from_number),
+        ):
+            async def record_report_contact_phone(phone_number: str):
+                """Registra el teléfono real que el ciudadano comparte para su reporte.
+
+                Úsala únicamente dentro de un flujo de reporte cuando el ciudadano
+                proporcione de forma explícita su número de contacto. No interpretes el
+                identificador de Facebook o Telegram como teléfono y no inventes dígitos.
+
+                phone_number (string): Número telefónico real compartido por el ciudadano.
+                """
+                normalized_phone = normalize_contact_phone(phone_number)
+                if not normalized_phone:
+                    return (
+                        "VALIDATION_BLOCK: El dato no tiene formato de número "
+                        "telefónico real. Solicítalo nuevamente con una sola pregunta."
+                    )
+
+                remember_chat2desk_channel_context(
+                    from_number,
+                    contact_phone=normalized_phone,
+                    transport=transport,
+                    client_id=client_id,
+                    channel_id=channel_id,
+                    uses_platform_identity=True,
+                )
+                logger.info(
+                    "☎️ [REPORT CONTACT CAPTURED] conversation=%s transport=%s",
+                    from_number,
+                    transport,
+                )
+                return json.dumps(
+                    {
+                        "contact_phone_recorded": True,
+                        "instruction": (
+                            "El teléfono quedó registrado para el reporte. "
+                            "Continúa desde el dato pendiente y no lo solicites otra vez."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            record_report_contact_phone.__name__ = "record_report_contact_phone"
+            whatsapp_functions.append(record_report_contact_phone)
         semantic_report_start_available = bool(
             body
             and not has_confirmed_report_intent(from_number)

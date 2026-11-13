@@ -300,6 +300,44 @@ def normalize_report_text(value: str | None) -> str:
     return " ".join(text.casefold().split())
 
 
+_EXPLICIT_NO_IMAGE_SUFFIXES = (
+    "sin imagen",
+    "sin imagenes",
+    "sin foto",
+    "sin fotos",
+    "no tengo imagen",
+    "no tengo imagenes",
+    "no tengo foto",
+    "no tengo fotos",
+)
+
+
+def extract_explicit_report_image_decision(value: str | None) -> str | None:
+    """Capture an explicit trailing no-image choice in an all-in-one report."""
+    normalized = _normalized_location_search_text(value)
+    if any(
+        normalized == phrase or normalized.endswith(f" {phrase}")
+        for phrase in _EXPLICIT_NO_IMAGE_SUFFIXES
+    ):
+        return "no"
+    return None
+
+
+def strip_explicit_no_image_suffix(value: str | None) -> str:
+    """Remove only the terminal operational choice from report evidence."""
+    compact = " ".join(str(value or "").split()).strip()
+    suffix_pattern = "|".join(
+        re.escape(phrase).replace(r"\ ", r"\s+")
+        for phrase in _EXPLICIT_NO_IMAGE_SUFFIXES
+    )
+    return re.sub(
+        rf"(?:[,;.-]\s*|\s+)(?:{suffix_pattern})[.!?]*\s*$",
+        "",
+        compact,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
 def _location_catalog(values) -> dict[str, str]:
     return {
         normalize_report_text(value): value
@@ -310,6 +348,24 @@ def _location_catalog(values) -> dict[str, str]:
 
 STREET_CATALOG = _location_catalog(SAN_PEDRO_STREETS_REAL)
 COLONY_CATALOG = _location_catalog(SAN_PEDRO_COLONIES)
+
+
+# Chat2Desk citizens frequently use the public/neighborhood name while CIAC's
+# catalog contains a more formal spelling.  Keep this list explicit: accepting
+# arbitrary fuzzy colony text here would silently submit the wrong location.
+_COLONY_ALIAS_TARGETS = {
+    "casco de san pedro": "Casco",
+    "casco urbano de san pedro": "Casco Urbano",
+    "centro de san pedro": "San Pedro Garza Garcia Centro",
+    "centro de san pedro garza garcia": "San Pedro Garza Garcia Centro",
+    "residencial chipinque": "Zona Residencia Chipinque",
+    "zona residencial chipinque": "Zona Residencia Chipinque",
+}
+COLONY_ALIASES = {
+    normalize_report_text(alias): COLONY_CATALOG[normalize_report_text(target)]
+    for alias, target in _COLONY_ALIAS_TARGETS.items()
+    if normalize_report_text(target) in COLONY_CATALOG
+}
 
 
 _LOCATION_REJECTION_MARKERS = (
@@ -325,6 +381,98 @@ _LOCATION_REJECTION_MARKERS = (
     "me haces perder el tiempo",
     "me hiciste perder el tiempo",
 )
+
+
+def _normalized_location_search_text(value: str | None) -> str:
+    """Normalize punctuation too, so catalog phrases can be found in prose."""
+    return " ".join(
+        re.sub(r"[^a-z0-9 ]+", " ", normalize_report_text(value)).split()
+    )
+
+
+def _strip_colony_answer_wrappers(value: str | None) -> str:
+    """Remove labels and conversational wrappers, never colony content."""
+    candidate = _normalized_location_search_text(value)
+    candidate = re.sub(
+        r"^(?:colonia|fraccionamiento|fracc|col)\s+",
+        "",
+        candidate,
+    )
+    candidate = re.sub(r"^(?:en\s+)+(?:el|la)?\s*", "", candidate)
+    return candidate.strip()
+
+
+def canonical_report_colony_value(value: str | None) -> str | None:
+    """Resolve one complete citizen colony answer to the CIAC catalog."""
+    candidate = _strip_colony_answer_wrappers(value)
+    if not candidate:
+        return None
+    return COLONY_CATALOG.get(candidate) or COLONY_ALIASES.get(candidate)
+
+
+def _unique_location_catalog_mention(
+    value: str | None,
+    catalog: dict[str, str],
+) -> str | None:
+    """Return the longest single catalog location mentioned in free prose."""
+    normalized = _normalized_location_search_text(value)
+    if not normalized:
+        return None
+    matches = [
+        (name, canonical)
+        for name, canonical in catalog.items()
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", normalized)
+        # In a postal address this phrase identifies the municipality, not a
+        # street or neighborhood named "San Pedro".
+        and not (
+            name == "san pedro"
+            and "san pedro garza garcia" in normalized
+        )
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda item: len(item[0]), reverse=True)
+    best_name, best_value = matches[0]
+    if any(
+        other_name not in best_name and best_name not in other_name
+        for other_name, _ in matches[1:]
+    ):
+        return None
+    return best_value
+
+
+def find_canonical_report_colony_mention(value: str | None) -> str | None:
+    """Find one official colony or explicit alias inside a longer address."""
+    alias_or_catalog = {**COLONY_CATALOG, **COLONY_ALIASES}
+    return _unique_location_catalog_mention(value, alias_or_catalog)
+
+
+def find_canonical_report_street_mention(value: str | None) -> str | None:
+    """Find one unambiguous official street inside citizen-authored prose."""
+    return _unique_location_catalog_mention(value, STREET_CATALOG)
+
+
+def extract_report_number_after_street(
+    value: str | None,
+    street: str | None,
+) -> str | None:
+    """Read only the exterior number adjacent to a recognized street.
+
+    This deliberately ignores later postal codes and other numbers in a full
+    address.  It is safer than selecting an arbitrary number from the message.
+    """
+    if not street:
+        return None
+    tokens = [re.escape(token) for token in str(street).split()]
+    if not tokens:
+        return None
+    street_pattern = r"\s+".join(tokens)
+    match = re.search(
+        rf"{street_pattern}\s*(?:#|n[uú]m(?:ero)?\.?|n[oº]\.?)?\s*(\d{{1,8}})(?!\w)",
+        str(value or ""),
+        flags=re.IGNORECASE,
+    )
+    return match.group(1) if match else None
 
 
 def canonical_report_location_value(
@@ -356,16 +504,19 @@ def canonical_report_location_value(
             catalog_candidate,
         )
     else:
-        catalog_candidate = re.sub(
-            r"^(?:colonia|fraccionamiento|fracc\.?|col\.?)\s+",
-            "",
-            catalog_candidate,
-        )
+        canonical_colony = canonical_report_colony_value(compact)
+        if canonical_colony:
+            return canonical_colony
+        catalog_candidate = _strip_colony_answer_wrappers(compact)
     canonical = catalog.get(catalog_candidate)
     if canonical:
         return canonical
     if key == "selection7":
         return None
+
+    catalog_mention = find_canonical_report_street_mention(compact)
+    if catalog_mention:
+        return catalog_mention
 
     # Crossings and landmarks may not be a single street catalog entry. Keep
     # only concise street-like values, never conversational prose.
@@ -987,10 +1138,33 @@ def extract_pending_report_answers(
     if field == "selection4":
         return {field: compact} if is_meaningful_report_description(compact) else {}
     if field == "selection7":
-        colony = canonical_report_location_value(field, compact)
+        colony = (
+            canonical_report_location_value(field, compact)
+            or find_canonical_report_colony_mention(compact)
+        )
         return {field: colony} if colony else {}
     if field != "selection5":
         return {}
+
+    # A citizen may answer with a full sentence or complete postal address.
+    # Prefer the recognized catalog fragments over storing that prose as the
+    # street (the production Alma incident did exactly that).
+    catalog_street = find_canonical_report_street_mention(compact)
+    catalog_colony = find_canonical_report_colony_mention(compact)
+    if catalog_street:
+        answers = {"selection5": catalog_street}
+        adjacent_number = extract_report_number_after_street(
+            compact,
+            catalog_street,
+        )
+        if adjacent_number:
+            answers["selection6"] = adjacent_number
+        if catalog_colony:
+            answers["selection7"] = catalog_colony
+        return {
+            key: value for key, value in answers.items()
+            if value and not str(existing_fields.get(key) or "").strip()
+        }
 
     # Citizens frequently send street, exterior number and neighborhood in one
     # message. Preserve all three instead of asking for information already sent.

@@ -6,10 +6,16 @@ from difflib import SequenceMatcher
 from app.api.colonies_array import SAN_PEDRO_COLONIES
 from app.api.streets_array import SAN_PEDRO_STREETS_REAL
 from app.services.report_submission_policy import (
+    canonical_report_colony_value,
+    extract_explicit_report_image_decision,
+    extract_report_number_after_street,
+    find_canonical_report_colony_mention,
+    find_canonical_report_street_mention,
     infer_high_confidence_report_category,
     is_likely_report_description,
     is_meaningful_report_description,
     normalize_report_number_input,
+    strip_explicit_no_image_suffix,
 )
 
 
@@ -116,6 +122,8 @@ def extract_initial_report_bundle(
         raw,
         flags=re.IGNORECASE,
     ).strip()
+    if extract_explicit_report_image_decision(location_source) == "no":
+        location_source = strip_explicit_no_image_suffix(location_source)
 
     location_intro = re.search(
         r"\b(?:"
@@ -198,7 +206,7 @@ def extract_initial_report_bundle(
     if raw_colony:
         normalized_colony = _normalize(raw_colony)
         canonical_colony = (
-            COLONY_INDEX.get(normalized_colony)
+            canonical_report_colony_value(raw_colony)
             or _unique_colony_typo_match(normalized_colony)
             or ""
         )
@@ -325,6 +333,30 @@ def extract_catalog_location(
         location_raw = f"{raw[:start]} {raw[end:]}"
         location_raw = " ".join(location_raw.split()).strip(" ,.;:-")
 
+    # Full addresses may contain neither a ``calle`` nor ``colonia`` label.
+    # Resolve only when both official fragments are unambiguous.  The exterior
+    # number must be adjacent to the recognized street so a postal code cannot
+    # be mistaken for it (the live LouJay case contained both 900 and 66254).
+    compound_street = find_canonical_report_street_mention(location_raw)
+    compound_colony = find_canonical_report_colony_mention(location_raw)
+    compound_number = (
+        embedded_number
+        or extract_report_number_after_street(location_raw, compound_street)
+    )
+    if compound_street and compound_colony and compound_number:
+        result = {}
+        if not str(existing.get("selection5") or "").strip():
+            result["selection5"] = compound_street
+        if (
+            compound_number
+            and not str(existing.get("selection6") or "").strip()
+        ):
+            result["selection6"] = compound_number
+        if not str(existing.get("selection7") or "").strip():
+            result["selection7"] = compound_colony
+        if result:
+            return result
+
     explicit_street = bool(re.match(r"^(?:calle|avenida|av\.?|boulevard)\s+", location_raw, re.I))
     explicit_colony = bool(re.match(r"^(?:en\s+)?(?:colonia|col\.?|fraccionamiento)\s+", location_raw, re.I))
     prefixed_en = bool(re.match(r"^en\s+", location_raw, re.I))
@@ -342,7 +374,7 @@ def extract_catalog_location(
         colony_candidate = inline_colony.group(1).strip()
         colony_normalized = _normalize(colony_candidate)
         colony = (
-            COLONY_INDEX.get(colony_normalized)
+            canonical_report_colony_value(colony_candidate)
             or _unique_colony_typo_match(colony_normalized)
         )
         if colony:
@@ -377,14 +409,18 @@ def extract_catalog_location(
     # When a field is explicit/requested, never fall through to the other
     # catalog: e.g. "Col. General Lázaro Garza Ayala" must not become a street.
     if explicit_colony or (expected_field == "selection7" and not explicit_street):
-        colony = COLONY_INDEX.get(normalized) or _unique_colony_typo_match(normalized)
+        colony = (
+            canonical_report_colony_value(candidate)
+            or find_canonical_report_colony_mention(candidate)
+            or _unique_colony_typo_match(normalized)
+        )
         return {"selection7": colony} if colony else {}
     if explicit_street or (expected_field == "selection5" and not explicit_colony):
         street = STREET_INDEX.get(normalized) or _unique_street_typo_match(normalized)
         return {"selection5": street} if street else {}
 
     street = STREET_INDEX.get(normalized) or _unique_street_typo_match(normalized)
-    colony = COLONY_INDEX.get(normalized)
+    colony = canonical_report_colony_value(candidate)
 
     if street and not colony:
         return {"selection5": street}
@@ -605,8 +641,12 @@ def extract_complete_report_evidence_any_order(
     if not raw:
         return {}
     street = _unique_catalog_mention(raw, STREET_INDEX)
-    colony = _unique_catalog_mention(raw, COLONY_INDEX)
-    number = _single_report_number(raw)
+    colony = find_canonical_report_colony_mention(raw)
+    number = (
+        extract_report_number_after_street(raw, street)
+        if street
+        else None
+    ) or _single_report_number(raw)
     if not street or not colony or number is None:
         return {}
 
@@ -686,7 +726,7 @@ def reconcile_report_bundle_before_ciac(
             changes["selection6"] = (current_number, evidence["selection6"])
 
         current_colony = str(reconciled.get("selection7") or "").strip()
-        if _normalize(current_colony) not in COLONY_INDEX:
+        if canonical_report_colony_value(current_colony) is None:
             changes["selection7"] = (current_colony, evidence["selection7"])
 
         inferred_category = evidence.get("selection1")

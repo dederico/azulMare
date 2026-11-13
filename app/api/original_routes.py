@@ -200,6 +200,7 @@ from app.services.report_submission_policy import (
     deduplicate_report_media,
     determine_report_progress,
     establishes_report_intent,
+    extract_explicit_report_image_decision,
     extract_pending_report_answers,
     extract_report_field_answer,
     extract_citizen_reply_text,
@@ -9261,6 +9262,21 @@ async def _process_whatsapp_request(request):
                 )
             if has_confirmed_report_intent(from_number):
                 persist_trusted_reporter_name(from_number, sender_name)
+                explicit_image_decision = (
+                    extract_explicit_report_image_decision(body)
+                )
+                if explicit_image_decision:
+                    with report_sessions_lock:
+                        image_session = report_sessions[from_number]
+                        image_session["image_prompted"] = True
+                        image_session["image_decision"] = (
+                            explicit_image_decision
+                        )
+                    logger.critical(
+                        "🖼️ [IMAGE DECISION INITIAL REPORT] phone=%s decision=%s",
+                        from_number,
+                        explicit_image_decision,
+                    )
                 bundled_fields, original_fields = extract_initial_report_bundle(
                     body,
                     existing_before_intake,
@@ -10741,18 +10757,30 @@ async def _process_whatsapp_request(request):
                                 from_number,
                                 category,
                             )
-                    missing_field = next_missing_report_field(
-                        selections,
-                        prompt=config.get("prompt") or system_message,
-                        declared_emergency=(
-                            report_sessions[from_number].get("declared_emergency")
-                            is True
-                        ),
+                    declared_emergency = report_sessions[from_number].get(
+                        "declared_emergency"
+                    )
+                    missing_field = (
+                        (
+                            "emergency",
+                            "¿Esta situación representa una emergencia?",
+                        )
+                        if declared_emergency is None
+                        else next_missing_report_field(
+                            selections,
+                            prompt=config.get("prompt") or system_message,
+                            declared_emergency=declared_emergency is True,
+                        )
                     )
                     if missing_field:
                         field_key, question = missing_field
-                        prior_pending = report_sessions[from_number].get(
-                            "pending_finalization_field"
+                        prior_pending = (
+                            report_sessions[from_number].get(
+                                "pending_finalization_field"
+                            )
+                            or report_sessions[from_number].get(
+                                "pending_intake_question"
+                            )
                         )
                         prompted_at = float(
                             report_sessions[from_number].get(
@@ -10784,7 +10812,22 @@ async def _process_whatsapp_request(request):
                                     "message": "Control repetido de cierre ignorado",
                                 }
                             )
-                        report_sessions[from_number]["pending_finalization_field"] = field_key
+                        if field_key == "emergency":
+                            report_sessions[from_number].pop(
+                                "pending_finalization_field",
+                                None,
+                            )
+                            report_sessions[from_number][
+                                "pending_intake_question"
+                            ] = "emergency"
+                        else:
+                            report_sessions[from_number].pop(
+                                "pending_intake_question",
+                                None,
+                            )
+                            report_sessions[from_number][
+                                "pending_finalization_field"
+                            ] = field_key
                         report_sessions[from_number][
                             "pending_finalization_prompted_at"
                         ] = datetime.now().timestamp()
@@ -10972,6 +11015,38 @@ async def _process_whatsapp_request(request):
                                 "status": True,
                                 "message": "Reporte creado y folio entregado",
                                 "folio": folio,
+                            }
+                        )
+
+                    current_webhook_job_id = payload.get("_sam_webhook_job_id")
+                    if (
+                        result["status"] == "needs_input"
+                        and current_webhook_job_id
+                        and await asyncio.to_thread(
+                            has_newer_pending_inbound_job,
+                            db,
+                            conversation_key=from_number,
+                            current_job_id=int(current_webhook_job_id),
+                        )
+                    ):
+                        logger.info(
+                            "🧾 [REPORT FINALIZATION QUEUE COALESCED] "
+                            "Pregunta omitida para %s uid=%s job_id=%s",
+                            from_number,
+                            uid,
+                            current_webhook_job_id,
+                        )
+                        mark_inbound_processing_delivered(
+                            uid,
+                            inbound_claim_token,
+                            storage=db,
+                        )
+                        return JSONResponse(
+                            content={
+                                "status": True,
+                                "message": (
+                                    "Dato acumulado; pregunta intermedia omitida"
+                                ),
                             }
                         )
 
@@ -11964,6 +12039,14 @@ async def _process_whatsapp_request(request):
                         active_session["declared_emergency"] = False
                     else:
                         active_session["declared_emergency"] = None
+                    explicit_image_decision = (
+                        extract_explicit_report_image_decision(body)
+                    )
+                    if explicit_image_decision:
+                        active_session["image_prompted"] = True
+                        active_session["image_decision"] = (
+                            explicit_image_decision
+                        )
 
                 if structured_emergency == "yes":
                     save_user_answer(from_number, "selection1", "964")

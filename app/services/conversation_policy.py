@@ -185,12 +185,13 @@ def should_enter_legacy_report_finalization(
     semantic_number_resolution_needed: bool = False,
     semantic_optional_image_resolution_needed: bool = False,
 ) -> bool:
-    """Keep semantic field decisions ahead of the legacy closing branch.
+    """Reserve the legacy branch for an actual request to submit the report.
 
-    The legacy branch sends its response and returns from the webhook.  If it
-    owns a free-language turn first, the model's forced decision tool is
-    unreachable.  Definitive/canonical answers continue through the existing
-    finalization path unchanged.
+    A pending field is an intake turn, not a finalization turn. Sending it into
+    the legacy branch bypasses queue coalescing and the report-loop circuit
+    breaker because that branch contacts Chat2Desk and returns immediately.
+    Canonical and semantic field answers now stay in the deterministic intake
+    path; only FIN (or a completed no-image decision) enters this branch.
     """
     if (
         semantic_number_resolution_needed
@@ -199,7 +200,6 @@ def should_enter_legacy_report_finalization(
         return False
     return bool(
         explicit_finalization
-        or str(pending_field or "").strip()
         or str(image_decision or "").strip().casefold() == "no"
     )
 

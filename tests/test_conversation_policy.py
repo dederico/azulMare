@@ -504,8 +504,8 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             )
         )
 
-    def test_canonical_pending_answer_keeps_legacy_finalization(self):
-        self.assertTrue(
+    def test_canonical_pending_answer_stays_in_guarded_intake_path(self):
+        self.assertFalse(
             should_enter_legacy_report_finalization(
                 explicit_finalization=False,
                 pending_field="selection7",
@@ -517,6 +517,15 @@ class AutomaticReportPolicyTests(unittest.TestCase):
                 explicit_finalization=False,
                 pending_field=None,
                 image_decision="no",
+            )
+        )
+
+    def test_explicit_fin_still_enters_legacy_submission_path(self):
+        self.assertTrue(
+            should_enter_legacy_report_finalization(
+                explicit_finalization=True,
+                pending_field=None,
+                image_decision=None,
             )
         )
 

@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from app.services import conversation_policy
 from app.services.conversation_policy import (
     assistant_asked_if_emergency,
     assistant_asked_for_optional_image,
@@ -15,6 +16,7 @@ from app.services.conversation_policy import (
     classify_emergency_turn,
     classify_optional_image_answer,
     classify_handoff_signal,
+    consume_report_prompt_attempt,
     context_reset_marker_uid,
     dialog_transfer_confirms_pending_control,
     event_precedes_context_boundary,
@@ -213,6 +215,72 @@ class AutomaticReportPolicyTests(unittest.TestCase):
                 "¿En qué colonia se encuentra el problema?",
                 report_progress_made=True,
             )
+        )
+
+    def test_same_report_question_allows_only_one_retry(self):
+        question = "¿En qué colonia se encuentra el problema?"
+
+        self.assertFalse(
+            should_suppress_repeated_report_question(
+                question,
+                question,
+                report_progress_made=False,
+                repeated_count=0,
+            )
+        )
+        self.assertTrue(
+            should_suppress_repeated_report_question(
+                question,
+                question,
+                report_progress_made=False,
+                repeated_count=1,
+            )
+        )
+        session = {}
+        self.assertTrue(consume_report_prompt_attempt(session, "ask_field:selection7"))
+        self.assertTrue(consume_report_prompt_attempt(session, "ask_field:selection7"))
+        self.assertFalse(consume_report_prompt_attempt(session, "ask_field:selection7"))
+
+    def test_post_folio_continuity_distinguishes_followup_from_new_report(self):
+        completion = {
+            "folio": "482932",
+            "completed_at": 100.0,
+            "report_snapshot": {
+                "selection4": "Vehículo abandonado que obstruye la vialidad",
+                "selection5": "Río Guadalquivir",
+                "selection6": "136",
+                "selection7": "Villas de Santa Engracia",
+                "image_count": 1,
+            },
+        }
+
+        self.assertEqual(
+            conversation_policy.classify_post_folio_continuity(
+                "También necesito que manden una grúa para ese mismo vehículo",
+                completion,
+            ),
+            "same_incident",
+        )
+        self.assertEqual(
+            conversation_policy.classify_post_folio_continuity(
+                "Quiero levantar otro reporte por un bache en otra calle",
+                completion,
+            ),
+            "new_report",
+        )
+        self.assertEqual(
+            conversation_policy.classify_post_folio_continuity(
+                "La grúa tiró un poste en Gómez Morín",
+                completion,
+            ),
+            "unrelated",
+        )
+        self.assertEqual(
+            conversation_policy.classify_post_folio_continuity(
+                "Quiero reportar ese mismo problema en otra ubicación",
+                completion,
+            ),
+            "new_report",
         )
 
     def test_report_burst_coalesces_only_intermediate_questions(self):
@@ -1322,6 +1390,83 @@ class TransferAuthorizationTests(unittest.TestCase):
             "Quiero que me atienda una persona",
             "¿Me comunican con un asesor por favor?",
             "Necesito hablar con alguien de Atención Ciudadana",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(classify_handoff_signal(message, ""), "yes")
+
+    def test_loop_frustration_is_a_deterministic_handoff_request(self):
+        for message in (
+            "Estás en un loop",
+            "¿Cuántas veces más me vas a preguntar lo mismo?",
+            "Quiero reportarte porque sigues repitiendo lo mismo",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(classify_handoff_signal(message, ""), "yes")
+                self.assertFalse(should_resolve_handoff_semantically(message, ""))
+
+        self.assertEqual(
+            classify_handoff_signal(
+                "Quiero reportarte un bache en Vasconcelos",
+                "",
+            ),
+            "unclear",
+        )
+        self.assertEqual(
+            classify_handoff_signal("No quiero reportarte a ti", ""),
+            "no",
+        )
+        self.assertEqual(
+            classify_handoff_signal("No estás en un loop, ya funciona", ""),
+            "unclear",
+        )
+        self.assertEqual(
+            classify_handoff_signal("« Quiero reportarte a ti » No", ""),
+            "unclear",
+        )
+        for message in (
+            "No necesito hablar con una persona",
+            "No me transfieras con un humano",
+            "Nunca quiero reportarte a ti",
+            "No puedes transferirme con un humano",
+            "No hace falta hablar con una persona",
+            "No es necesario hablar con un asesor",
+            "Jamás deberías transferirme con un humano",
+            "Por favor no me transfieras con un humano",
+            "Gracias, pero no necesito hablar con una persona",
+            "Definitivamente no quiero hablar con un agente",
+            "En este momento no quiero hablar con una persona",
+            "Sin transferirme con un humano, quiero seguir aquí",
+            "Evita transferirme con un humano",
+            "Prefiero evitar hablar con una persona",
+            "Quiero continuar sin hablar con un agente",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(classify_handoff_signal(message, ""), "no")
+        self.assertEqual(
+            classify_handoff_signal(
+                "No puedo resolver esto, pero necesito hablar con una persona",
+                "",
+            ),
+            "yes",
+        )
+        self.assertEqual(
+            classify_handoff_signal(
+                "No puedo resolver esto y necesito hablar con una persona",
+                "",
+            ),
+            "yes",
+        )
+        self.assertEqual(
+            classify_handoff_signal(
+                "No necesito hablar con una persona, pero sí quiero un humano",
+                "",
+            ),
+            "yes",
+        )
+        for message in (
+            "Necesito hablar con una persona porque el bot no responde",
+            "Quiero hablar con un humano que no sea SAM",
+            "Necesito un agente ya que SAM no me ayuda",
         ):
             with self.subTest(message=message):
                 self.assertEqual(classify_handoff_signal(message, ""), "yes")

@@ -6,6 +6,8 @@ import httpx
 from app.services.report_submission_policy import (
     build_ciac_report_summary,
     canonical_report_image_urls,
+    captured_report_question_field,
+    classify_report_correction_field,
     classify_sidewalk_sign_answer,
     contains_complete_report_phrase,
     establishes_report_intent,
@@ -25,6 +27,7 @@ from app.services.report_submission_policy import (
     parse_report_catalog,
     choose_report_description_for_submission,
     report_catalog_contains,
+    report_correction_question,
     report_session_has_confirmed_intent,
     reconcile_with_citizen_evidence,
     resolve_unambiguous_catalog_category,
@@ -904,6 +907,67 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             },
         )
 
+    def test_pending_location_rejects_frustration_and_uses_colony_catalog(self):
+        self.assertEqual(
+            extract_pending_report_answers(
+                "selection7",
+                "Villas de Santa Engracia",
+            ),
+            {"selection7": "Villas de Santa Engracia"},
+        )
+
+        for field in ("selection5", "selection7"):
+            for answer in (
+                "¿Cuántas más veces?",
+                "¿Cuántas veces tengo que decirte lo mismo?",
+                "Estás en un loop",
+            ):
+                with self.subTest(field=field, answer=answer):
+                    self.assertEqual(
+                        extract_pending_report_answers(field, answer),
+                        {},
+                    )
+
+    def test_pending_location_never_overwrites_a_valid_captured_value(self):
+        existing = {
+            "selection5": "Río Guadalquivir",
+            "selection6": "136",
+            "selection7": "Villas de Santa Engracia",
+        }
+
+        for field, answer in (
+            ("selection5", "2"),
+            ("selection5", "¿Cuántas veces más?"),
+            ("selection7", "2"),
+            ("selection7", "¿Cuántas veces más?"),
+        ):
+            with self.subTest(field=field, answer=answer):
+                self.assertEqual(
+                    extract_pending_report_answers(
+                        field,
+                        answer,
+                        existing_fields=existing,
+                    ),
+                    {},
+                )
+
+    def test_explicit_correction_selects_a_field_and_accepts_its_new_value(self):
+        self.assertEqual(
+            classify_report_correction_field("La calle está equivocada"),
+            "selection5",
+        )
+        self.assertEqual(
+            report_correction_question("selection5"),
+            "¿Cuál es la calle correcta?",
+        )
+        self.assertEqual(
+            extract_pending_report_answers(
+                "selection5",
+                "Lázaro Cárdenas",
+            ),
+            {"selection5": "Lázaro Cárdenas"},
+        )
+
     def test_brenda_address_extracts_street_and_number_before_landmark(self):
         self.assertEqual(
             extract_pending_report_answers(
@@ -939,6 +1003,44 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
 
         fields["selection6"] = "136"
         self.assertIsNone(next_missing_report_detail_before_image(fields))
+
+    def test_same_incident_snapshot_images_are_not_requested_again(self):
+        decision = determine_report_progress(
+            self.valid_fields(),
+            declared_emergency=False,
+            image_prompted=False,
+            image_decision=None,
+            has_images=False,
+            incident_snapshot={
+                "image_count": 1,
+            },
+        )
+
+        self.assertEqual(decision.action, "continue")
+
+    def test_model_cannot_reask_an_already_captured_location_field(self):
+        fields = self.valid_fields()
+
+        self.assertEqual(
+            captured_report_question_field(
+                "Gracias. ¿Cuál es la calle exacta donde se encuentran?",
+                fields,
+            ),
+            "selection5",
+        )
+        self.assertEqual(
+            captured_report_question_field(
+                "¿Cuál es el número exterior?",
+                fields,
+            ),
+            "selection6",
+        )
+        self.assertIsNone(
+            captured_report_question_field(
+                "Puedes enviar otra imagen o responder FIN.",
+                fields,
+            )
+        )
 
     def test_pending_state_does_not_treat_controls_as_field_answers(self):
         self.assertEqual(extract_pending_report_answers("selection5", "FIN"), {})

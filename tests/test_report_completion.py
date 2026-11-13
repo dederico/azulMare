@@ -6,6 +6,7 @@ from app.services.report_completion import (
     is_delayed_pre_completion_event,
     is_queued_before_completion,
     mark_report_completion_notified,
+    purge_expired_report_completions,
     record_report_completion,
     report_session_supersedes_completion,
 )
@@ -52,6 +53,50 @@ class DurableReportCompletionTests(unittest.TestCase):
 
         self.assertIsNone(completion)
 
+    def test_completion_snapshot_expires_after_continuity_window(self):
+        record_report_completion(
+            None,
+            "5218112345678",
+            "472626",
+            now=100,
+            report_snapshot={
+                "selection5": "Vasconcelos",
+                "selection6": "321",
+                "selection7": "Centro",
+                "image_count": 1,
+            },
+        )
+
+        self.assertIsNone(
+            get_recent_report_completion(
+                None,
+                "5218112345678",
+                max_age_seconds=10_000,
+                now=1900,
+            )
+        )
+
+    def test_periodic_purge_removes_expired_memory_snapshot(self):
+        record_report_completion(
+            None,
+            "5218112345678",
+            "472626",
+            now=100,
+        )
+
+        self.assertEqual(
+            purge_expired_report_completions(None, now=1900),
+            1,
+        )
+        self.assertIsNone(
+            get_recent_report_completion(
+                None,
+                "5218112345678",
+                max_age_seconds=10_000,
+                now=1900,
+            )
+        )
+
     def test_unnotified_completion_preserves_delivery_recovery_payload(self):
         record_report_completion(
             None,
@@ -92,6 +137,37 @@ class DurableReportCompletionTests(unittest.TestCase):
             now=220,
         )
         self.assertEqual(notified["notified_at"], 210)
+
+    def test_completion_preserves_incident_location_and_images_snapshot(self):
+        snapshot = {
+            "selection4": "Vehículo abandonado que obstruye la vialidad",
+            "selection5": "Río Guadalquivir",
+            "selection6": "136",
+            "selection7": "Villas de Santa Engracia",
+            "images": ["https://cdn.example/reporte-lety.jpg"],
+        }
+
+        record_report_completion(
+            None,
+            "5218112345678",
+            "482932",
+            now=100,
+            report_snapshot=snapshot,
+        )
+
+        completion = get_recent_report_completion(
+            None,
+            "5218112345678",
+            max_age_seconds=300,
+            now=200,
+        )
+        self.assertEqual(
+            completion["report_snapshot"]["selection5"],
+            "Río Guadalquivir",
+        )
+        self.assertEqual(completion["report_snapshot"]["image_count"], 1)
+        self.assertNotIn("images", completion["report_snapshot"])
+        self.assertNotIn("selection2", completion["report_snapshot"])
 
     def test_only_events_clearly_before_folio_are_stale(self):
         completion = {"folio": "472626", "completed_at": 100.0}

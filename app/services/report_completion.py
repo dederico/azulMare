@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from typing import Any
@@ -12,6 +13,7 @@ from app.util.logger import logger
 
 
 REPORT_COMPLETION_TABLE = "conversation_report_completions"
+REPORT_COMPLETION_RETENTION_SECONDS = 30 * 60
 
 _memory_completions: dict[str, dict[str, Any]] = {}
 _memory_lock = threading.RLock()
@@ -58,7 +60,9 @@ def ensure_report_completion_storage(storage) -> bool:
                         client_id TEXT,
                         channel_id TEXT,
                         transport TEXT,
-                        notified_at DOUBLE PRECISION
+                        notified_at DOUBLE PRECISION,
+                        report_snapshot TEXT,
+                        expires_at DOUBLE PRECISION
                     )
                     """
                 )
@@ -71,11 +75,29 @@ def ensure_report_completion_storage(storage) -> bool:
                     ("channel_id", "TEXT"),
                     ("transport", "TEXT"),
                     ("notified_at", "DOUBLE PRECISION"),
+                    ("report_snapshot", "TEXT"),
+                    ("expires_at", "DOUBLE PRECISION"),
                 ):
                     cursor.execute(
                         f"ALTER TABLE {REPORT_COMPLETION_TABLE} "
                         f"ADD COLUMN IF NOT EXISTS {column} {definition}"
                     )
+                cursor.execute(
+                    f"UPDATE {REPORT_COMPLETION_TABLE} "
+                    "SET expires_at = completed_at + %s "
+                    "WHERE expires_at IS NULL",
+                    (REPORT_COMPLETION_RETENTION_SECONDS,),
+                )
+                cursor.execute(
+                    f"DELETE FROM {REPORT_COMPLETION_TABLE} "
+                    "WHERE expires_at <= %s",
+                    (time.time(),),
+                )
+                cursor.execute(
+                    f"CREATE INDEX IF NOT EXISTS "
+                    f"idx_{REPORT_COMPLETION_TABLE}_expires_at "
+                    f"ON {REPORT_COMPLETION_TABLE} (expires_at)"
+                )
             conn.commit()
             _schema_ready = True
             return True
@@ -85,6 +107,35 @@ def ensure_report_completion_storage(storage) -> bool:
         finally:
             if conn is not None:
                 conn.close()
+
+
+def _minimize_report_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Retain only the 30-minute continuity facts, never names or media URLs."""
+    source = snapshot or {}
+
+    def safe_nonnegative_int(value, fallback=0) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return max(0, int(fallback))
+
+    minimized = {
+        key: str(source.get(key) or "")[:500]
+        for key in (
+            "selection1", "selection4", "selection5", "selection6",
+            "selection7",
+        )
+    }
+    minimized["image_count"] = safe_nonnegative_int(
+        source.get("image_count"),
+        len(source.get("images") or []),
+    )
+    minimized["followup_count"] = safe_nonnegative_int(
+        source.get("followup_count"),
+    )
+    if source.get("last_followup_at") is not None:
+        minimized["last_followup_at"] = float(source["last_followup_at"])
+    return minimized
 
 
 def record_report_completion(
@@ -100,9 +151,11 @@ def record_report_completion(
     client_id: str | int | None = None,
     channel_id: str | int | None = None,
     transport: str | None = None,
+    report_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = normalize_phone_key(phone_number)
     timestamp = float(now if now is not None else time.time())
+    expires_at = timestamp + REPORT_COMPLETION_RETENTION_SECONDS
     completion = {
         "phone_number": key,
         "folio": str(folio).strip(),
@@ -115,6 +168,8 @@ def record_report_completion(
         "channel_id": None if channel_id is None else str(channel_id),
         "transport": transport,
         "notified_at": None,
+        "report_snapshot": _minimize_report_snapshot(report_snapshot),
+        "expires_at": expires_at,
         "durable": False,
     }
     with _memory_lock:
@@ -133,8 +188,8 @@ def record_report_completion(
                     (phone_number, folio, completed_at, updated_at,
                      notification_message, request_id, origin_uid,
                      origin_message_id, client_id, channel_id, transport,
-                     notified_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                     notified_at, report_snapshot, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s)
                 ON CONFLICT (phone_number) DO UPDATE SET
                     folio = EXCLUDED.folio,
                     completed_at = EXCLUDED.completed_at,
@@ -146,7 +201,9 @@ def record_report_completion(
                     client_id = EXCLUDED.client_id,
                     channel_id = EXCLUDED.channel_id,
                     transport = EXCLUDED.transport,
-                    notified_at = NULL
+                    notified_at = NULL,
+                    report_snapshot = EXCLUDED.report_snapshot,
+                    expires_at = EXCLUDED.expires_at
                 """,
                 (
                     key, completion["folio"], timestamp, timestamp,
@@ -154,6 +211,8 @@ def record_report_completion(
                     origin_message_id,
                     completion["client_id"], completion["channel_id"],
                     transport,
+                    json.dumps(completion["report_snapshot"], ensure_ascii=False),
+                    expires_at,
                 ),
             )
         conn.commit()
@@ -189,11 +248,12 @@ def get_recent_report_completion(
                     SELECT phone_number, folio, completed_at,
                            notification_message, request_id, origin_uid,
                            origin_message_id, client_id, channel_id, transport,
-                           notified_at
+                           notified_at, report_snapshot, expires_at
                     FROM {REPORT_COMPLETION_TABLE}
                     WHERE phone_number = %s AND completed_at >= %s
+                      AND expires_at > %s
                     """,
-                    (key, cutoff),
+                    (key, cutoff, timestamp),
                 )
                 row = cursor.fetchone()
             if row:
@@ -209,6 +269,12 @@ def get_recent_report_completion(
                     "channel_id": row[8],
                     "transport": row[9],
                     "notified_at": row[10],
+                    "report_snapshot": (
+                        _minimize_report_snapshot(
+                            json.loads(row[11]) if row[11] else {}
+                        )
+                    ),
+                    "expires_at": float(row[12]),
                     "durable": True,
                 }
                 with _memory_lock:
@@ -222,9 +288,116 @@ def get_recent_report_completion(
 
     with _memory_lock:
         completion = _memory_completions.get(key)
-        if completion and float(completion.get("completed_at") or 0) >= cutoff:
+        if (
+            completion
+            and float(completion.get("completed_at") or 0) >= cutoff
+            and float(completion.get("expires_at") or 0) > timestamp
+        ):
             return completion.copy()
+        if completion and float(completion.get("expires_at") or 0) <= timestamp:
+            _memory_completions.pop(key, None)
     return None
+
+
+def purge_expired_report_completions(
+    storage,
+    *,
+    now: float | None = None,
+) -> int:
+    """Physically purge expired continuity snapshots on a periodic cadence."""
+    timestamp = float(now if now is not None else time.time())
+    purged = 0
+    with _memory_lock:
+        expired_keys = [
+            key for key, completion in _memory_completions.items()
+            if float(completion.get("expires_at") or 0) <= timestamp
+        ]
+        for key in expired_keys:
+            _memory_completions.pop(key, None)
+        purged += len(expired_keys)
+
+    if storage is None or not ensure_report_completion_storage(storage):
+        return purged
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM {REPORT_COMPLETION_TABLE} "
+                "WHERE expires_at <= %s OR expires_at IS NULL",
+                (timestamp,),
+            )
+            purged += max(0, int(cursor.rowcount or 0))
+        conn.commit()
+    except Exception as error:
+        logger.error("No se pudieron purgar folios expirados: %s", error)
+    finally:
+        if conn is not None:
+            conn.close()
+    return purged
+
+
+def append_report_completion_followup(
+    storage,
+    phone_number: str,
+    message: str,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Attach post-folio context to the durable incident snapshot."""
+    key = normalize_phone_key(phone_number)
+    compact = " ".join(str(message or "").split()).strip()
+    if not compact:
+        return False
+    timestamp = float(now if now is not None else time.time())
+    completion = None
+
+    with _memory_lock:
+        completion = _memory_completions.get(key)
+        if completion:
+            snapshot = _minimize_report_snapshot(completion.get("report_snapshot"))
+            snapshot["followup_count"] = int(snapshot.get("followup_count") or 0) + 1
+            snapshot["last_followup_at"] = timestamp
+            completion["report_snapshot"] = snapshot
+
+    if storage is None or not ensure_report_completion_storage(storage):
+        return completion is not None
+
+    conn = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT report_snapshot FROM {REPORT_COMPLETION_TABLE} "
+                "WHERE phone_number = %s AND expires_at > %s FOR UPDATE",
+                (key, timestamp),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            snapshot = _minimize_report_snapshot(
+                json.loads(row[0]) if row[0] else {}
+            )
+            snapshot["followup_count"] = int(snapshot.get("followup_count") or 0) + 1
+            snapshot["last_followup_at"] = timestamp
+            cursor.execute(
+                f"UPDATE {REPORT_COMPLETION_TABLE} "
+                "SET report_snapshot = %s, updated_at = %s "
+                "WHERE phone_number = %s",
+                (json.dumps(snapshot, ensure_ascii=False), timestamp, key),
+            )
+        conn.commit()
+        with _memory_lock:
+            if key in _memory_completions:
+                _memory_completions[key]["report_snapshot"] = snapshot
+        return True
+    except Exception as error:
+        logger.error("No se pudo anexar seguimiento al folio para %s: %s", key, error)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def mark_report_completion_notified(

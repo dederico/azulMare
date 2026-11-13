@@ -22,6 +22,63 @@ OUT_OF_SCOPE_REDIRECT = (
 )
 
 
+def classify_post_folio_continuity(
+    message: str | None,
+    completion: dict | None,
+) -> str:
+    """Classify a turn after a folio without reopening the completed report."""
+    normalized = normalize_policy_text(message)
+    if not normalized or not completion or not completion.get("folio"):
+        return "unrelated"
+
+    if any(
+        marker in normalized
+        for marker in (
+            "otro reporte", "nuevo reporte", "reporte nuevo",
+            "otra situacion", "otro problema", "en otra calle",
+            "otra ubicacion", "otro domicilio", "otro lugar",
+            "quiero reportar", "quiero levantar", "necesito reportar",
+        )
+    ):
+        return "new_report"
+
+    snapshot = completion.get("report_snapshot") or {}
+    snapshot_text = normalize_policy_text(
+        " ".join(
+            str(snapshot.get(field) or "")
+            for field in ("selection4", "selection5", "selection7")
+        )
+    )
+    meaningful_words = {
+        word for word in snapshot_text.split()
+        if len(word) >= 5 and word not in {"calle", "colonia", "reporte"}
+    }
+    shared_words = meaningful_words.intersection(normalized.split())
+    explicit_reference = any(
+        marker in normalized
+        for marker in (
+            "ese mismo", "esa misma", "los mismos", "las mismas",
+            "se lo lleve", "se los lleve", "se la lleve", "se las lleve",
+            "sobre ese reporte", "sobre el folio", "del mismo reporte",
+        )
+    )
+    continuation_with_overlap = bool(
+        shared_words
+        and any(
+            marker in normalized
+            for marker in (
+                "sigue", "siguen", "continua", "continuan", "todavia",
+                "aun", "tambien", "ademas", "ya llego", "ya llegaron",
+            )
+        )
+    )
+    return (
+        "same_incident"
+        if explicit_reference or continuation_with_overlap
+        else "unrelated"
+    )
+
+
 def should_suppress_recent_post_folio_input(
     completion: dict | None,
     *,
@@ -393,14 +450,34 @@ def should_suppress_repeated_report_question(
     proposed_outbound: str | None,
     *,
     report_progress_made: bool,
+    repeated_count: int = 0,
 ) -> bool:
-    """Do not echo an already-visible question after accepting burst data."""
-    if not report_progress_made:
-        return False
+    """Allow one retry, then suppress the same unanswered report question."""
     previous = normalize_policy_text(previous_outbound)
     proposed = normalize_policy_text(proposed_outbound)
     is_question = str(proposed_outbound or "").strip().endswith("?")
-    return bool(previous and proposed and previous == proposed and is_question)
+    return bool(
+        previous
+        and proposed
+        and previous == proposed
+        and is_question
+        and (report_progress_made or int(repeated_count or 0) >= 1)
+    )
+
+
+def consume_report_prompt_attempt(
+    session: dict,
+    prompt_key: str,
+    *,
+    max_attempts: int = 2,
+) -> bool:
+    """Allow the initial prompt plus one retry in durable session state."""
+    prompt_counts = session.setdefault("report_prompt_counts", {})
+    prompt_count = int(prompt_counts.get(prompt_key) or 0)
+    if prompt_count >= max(1, int(max_attempts)):
+        return False
+    prompt_counts[prompt_key] = prompt_count + 1
+    return True
 
 
 def should_coalesce_pending_report_question(
@@ -651,6 +728,79 @@ def _assistant_mentions_handoff(value: str | None) -> bool:
     )
 
 
+def _explicit_handoff_polarity(raw_message: str) -> str | None:
+    """Return the last explicit yes/no handoff clause in a citizen message."""
+    clauses = re.split(
+        r"[,;.!?]+|\bpero\b|\bsin embargo\b|\by\b",
+        str(raw_message or ""),
+        flags=re.IGNORECASE,
+    )
+    polarity = None
+    desire_stems = ("quier", "necesit", "dese", "quisier", "prefer", "gustaria")
+    for raw_clause in clauses:
+        clause = normalize_policy_text(raw_clause)
+        if not clause:
+            continue
+        clause_words = set(clause.split())
+        has_person = bool(clause_words & _HANDOFF_PERSON_WORDS)
+        has_action = any(stem in clause for stem in _HANDOFF_ACTION_STEMS)
+        has_desire = any(stem in clause for stem in desire_stems)
+        directed_transfer = (
+            any(stem in clause for stem in ("transfer", "trasfier", "transfier"))
+            and any(
+                marker in clause_words
+                for marker in {"me", "nos", "puedes", "podrias", "deberias"}
+            )
+        )
+        targeted_bot_complaint = any(
+            marker in clause
+            for marker in (
+                "reportarte a ti",
+                "reportar a sam",
+                "reportar al bot",
+                "quejarme de ti",
+            )
+        )
+        if not (
+            (has_person and (has_action or has_desire))
+            or directed_transfer
+            or targeted_bot_complaint
+        ):
+            continue
+
+        predicate_positions = []
+        for stem in _HANDOFF_ACTION_STEMS:
+            match = re.search(rf"\b{re.escape(stem)}\w*", clause)
+            if match:
+                predicate_positions.append(match.start())
+        for marker in (
+            "reportarte a ti",
+            "reportar a sam",
+            "reportar al bot",
+            "quejarme de ti",
+        ):
+            position = clause.find(marker)
+            if position >= 0:
+                predicate_positions.append(position)
+        if not predicate_positions:
+            for stem in desire_stems:
+                match = re.search(rf"\b{re.escape(stem)}\w*", clause)
+                if match:
+                    predicate_positions.append(match.start())
+        first_predicate = min(predicate_positions) if predicate_positions else 0
+        negated = any(
+            match.start() < first_predicate
+            for match in re.finditer(
+                r"\b(?:no|nunca|jamas|sin|evit\w*)\b",
+                clause,
+            )
+        )
+        if "no solo" in clause:
+            negated = False
+        polarity = "no" if negated else "yes"
+    return polarity
+
+
 def classify_handoff_signal(
     current_message: str | None,
     previous_assistant_message: str | None = None,
@@ -662,9 +812,84 @@ def classify_handoff_signal(
     can interpret it in context instead of forcing the citizen to repeat a
     prescribed sentence.
     """
-    current = normalize_policy_text(current_message)
+    raw_current = str(current_message or "").strip()
+    # Chat2Desk prefixes replies with a quoted assistant block. Only the text
+    # after the balanced quote belongs to the citizen and may authorize a
+    # transfer. Handle nested quotes produced by repeatedly quoted replies.
+    while raw_current.startswith("«"):
+        depth = 0
+        closing_index = None
+        for index, character in enumerate(raw_current):
+            if character == "«":
+                depth += 1
+            elif character == "»":
+                depth -= 1
+                if depth == 0:
+                    closing_index = index
+                    break
+        if closing_index is None:
+            break
+        raw_current = raw_current[closing_index + 1:].strip()
+
+    current = normalize_policy_text(raw_current)
     if not current:
         return "unclear"
+
+    negated_loop_or_complaint = any(
+        marker in current
+        for marker in (
+            "no estas en un loop",
+            "ya no estas en un loop",
+            "no sigues en un loop",
+            "no me haces perder el tiempo",
+            "no me estas haciendo perder el tiempo",
+        )
+    )
+    if negated_loop_or_complaint:
+        return "unclear"
+
+    explicit_handoff_polarity = _explicit_handoff_polarity(raw_current)
+    if explicit_handoff_polarity is not None:
+        return explicit_handoff_polarity
+
+    # A citizen explicitly reporting SAM, identifying a loop, or protesting
+    # repeated questions needs a human immediately. Keeping these phrases in
+    # the deterministic layer prevents the same broken flow from asking yet
+    # another question before the transfer.
+    if (
+        "estas en un loop" in current
+        or "sigues en un loop" in current
+        or (
+            not current.startswith(("no quiero", "no deseo"))
+            and any(
+                marker in current
+                for marker in (
+                    "quiero reportarte a ti",
+                    "quiero reportar a sam",
+                    "quiero reportar al bot",
+                    "quiero quejarme de ti",
+                )
+            )
+        )
+        or (
+            not current.startswith(("no quiero", "no deseo"))
+            and "quiero reportarte" in current
+            and any(
+                marker in current
+                for marker in (
+                    "sigues repitiendo", "estas en un loop",
+                    "me haces perder el tiempo",
+                )
+            )
+        )
+        or "me haces perder el tiempo" in current
+        or "me estas haciendo perder el tiempo" in current
+        or (
+            ("cuantas veces" in current or "cuantas mas veces" in current)
+            and any(marker in current for marker in ("preguntar", "decir", "repetir"))
+        )
+    ):
+        return "yes"
 
     if current in _HANDOFF_CONTROL_WORDS:
         return "yes"

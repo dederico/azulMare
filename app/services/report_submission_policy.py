@@ -3,6 +3,9 @@ import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 
+from app.api.colonies_array import SAN_PEDRO_COLONIES
+from app.api.streets_array import SAN_PEDRO_STREETS_REAL
+
 
 INVALID_REQUIRED_VALUES = {
     "",
@@ -295,6 +298,134 @@ def normalize_report_text(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(char for char in text if not unicodedata.combining(char))
     return " ".join(text.casefold().split())
+
+
+def _location_catalog(values) -> dict[str, str]:
+    return {
+        normalize_report_text(value): value
+        for value in values
+        if normalize_report_text(value)
+    }
+
+
+STREET_CATALOG = _location_catalog(SAN_PEDRO_STREETS_REAL)
+COLONY_CATALOG = _location_catalog(SAN_PEDRO_COLONIES)
+
+
+_LOCATION_REJECTION_MARKERS = (
+    "cuantas veces",
+    "cuantas mas veces",
+    "otra vez",
+    "por enesima vez",
+    "estas en un loop",
+    "sigues repitiendo",
+    "ya te la puse",
+    "ya te lo puse",
+    "ya te dije",
+    "me haces perder el tiempo",
+    "me hiciste perder el tiempo",
+)
+
+
+def canonical_report_location_value(
+    field: str | None,
+    value: str | None,
+) -> str | None:
+    """Validate location fields without treating frustration as an address."""
+    key = str(field or "").strip()
+    compact = " ".join(str(value or "").split()).strip()
+    normalized = normalize_report_text(compact)
+    if key not in {"selection5", "selection7"} or not compact:
+        return None
+    if (
+        normalized in REPORT_CONTROL_MESSAGES
+        or any(marker in normalized for marker in _LOCATION_REJECTION_MARKERS)
+        or compact.endswith("?")
+        or "http://" in compact.casefold()
+        or "https://" in compact.casefold()
+        or not re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", compact)
+    ):
+        return None
+
+    catalog = STREET_CATALOG if key == "selection5" else COLONY_CATALOG
+    catalog_candidate = normalized
+    if key == "selection5":
+        catalog_candidate = re.sub(
+            r"^(?:calle|avenida|ave\.?|av\.?)\s+",
+            "",
+            catalog_candidate,
+        )
+    else:
+        catalog_candidate = re.sub(
+            r"^(?:colonia|fraccionamiento|fracc\.?|col\.?)\s+",
+            "",
+            catalog_candidate,
+        )
+    canonical = catalog.get(catalog_candidate)
+    if canonical:
+        return canonical
+    if key == "selection7":
+        return None
+
+    # Crossings and landmarks may not be a single street catalog entry. Keep
+    # only concise street-like values, never conversational prose.
+    if len(compact) > 120 or len(compact.split()) > 14:
+        return None
+    return compact
+
+
+def classify_report_correction_field(value: str | None) -> str | None:
+    """Resolve the field named after SAM explicitly offers a correction."""
+    normalized = normalize_report_text(value)
+    if re.search(r"\b(?:calle|direccion)\b", normalized):
+        return "selection5"
+    if re.search(r"\b(?:numero|numero exterior)\b", normalized):
+        return "selection6"
+    if re.search(r"\b(?:colonia|fraccionamiento)\b", normalized):
+        return "selection7"
+    if re.search(r"\b(?:problema|descripcion|asunto)\b", normalized):
+        return "selection4"
+    return None
+
+
+def report_correction_question(field: str | None) -> str:
+    return {
+        "selection4": "¿Cuál es la descripción correcta del problema?",
+        "selection5": "¿Cuál es la calle correcta?",
+        "selection6": "¿Cuál es el número exterior correcto?",
+        "selection7": "¿Cuál es la colonia correcta?",
+    }.get(str(field or ""), "¿Qué dato deseas corregir?")
+
+
+def captured_report_question_field(
+    response: str | None,
+    selections: dict[str, str] | None,
+) -> str | None:
+    """Identify an LLM question that asks for an already captured field."""
+    normalized = normalize_report_text(response)
+    if not normalized or "?" not in str(response or ""):
+        return None
+    field_markers = {
+        "selection4": (
+            "que problema", "que deseas reportar", "describe el problema",
+        ),
+        "selection5": (
+            "cual es la calle", "en que calle", "calle exacta",
+        ),
+        "selection6": (
+            "numero exterior", "cual es el numero",
+        ),
+        "selection7": (
+            "cual es la colonia", "en que colonia", "nombre de la colonia",
+        ),
+    }
+    stored = selections or {}
+    for field, markers in field_markers.items():
+        if str(stored.get(field) or "").strip() and any(
+            marker in normalized for marker in markers
+        ):
+            return field
+    return None
 
 
 def extract_citizen_reply_text(value: str | None) -> str:
@@ -772,6 +903,38 @@ def normalize_report_number_input(value: str | None) -> str | None:
     return None
 
 
+def apply_report_field_update(
+    answers: dict[str, str],
+    field: str,
+    value,
+    *,
+    allow_overwrite: bool = False,
+) -> tuple[bool, str | None]:
+    """Validate and atomically apply one monotonic report field update."""
+    normalized_value = value
+    if field in {"selection5", "selection7"}:
+        normalized_value = canonical_report_location_value(field, value)
+    elif field == "selection6":
+        normalized_value = normalize_report_number_input(value)
+    if normalized_value is None or (
+        field in {"selection5", "selection6", "selection7"}
+        and not str(normalized_value).strip()
+    ):
+        previous = answers.get(field)
+        return False, str(previous) if previous is not None else None
+
+    previous = answers.get(field)
+    if (
+        field in {"selection5", "selection6", "selection7"}
+        and str(previous or "").strip()
+        and str(previous) != str(normalized_value)
+        and not allow_overwrite
+    ):
+        return False, str(previous)
+    answers[field] = normalized_value
+    return True, str(normalized_value)
+
+
 def validate_structured_report_number_decision(value: str | None) -> str | None:
     """Validate the model's closed interpretation of a free-language answer."""
     decision = normalize_report_text(value)
@@ -795,6 +958,8 @@ def should_resolve_report_number_semantically(
 def extract_pending_report_answers(
     pending_field: str | None,
     citizen_message: str | None,
+    *,
+    existing_fields: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Parse the requested field from durable state, independent of prompt wording."""
     field = str(pending_field or "").strip()
@@ -802,6 +967,11 @@ def extract_pending_report_answers(
     compact = " ".join(raw.split()).strip()
     normalized = normalize_report_text(compact)
     if not field or not compact:
+        return {}
+    existing_fields = existing_fields or {}
+    if str(existing_fields.get(field) or "").strip():
+        # Captured fields are monotonic. A correction must enter through an
+        # explicit correction path instead of an ordinary pending answer.
         return {}
     if normalized in REPORT_CONTROL_MESSAGES and field != "selection2":
         return {}
@@ -817,7 +987,8 @@ def extract_pending_report_answers(
     if field == "selection4":
         return {field: compact} if is_meaningful_report_description(compact) else {}
     if field == "selection7":
-        return {field: compact} if is_meaningful_report_description(compact) else {}
+        colony = canonical_report_location_value(field, compact)
+        return {field: colony} if colony else {}
     if field != "selection5":
         return {}
 
@@ -829,10 +1000,18 @@ def extract_pending_report_answers(
         flags=re.IGNORECASE,
     )
     if one_line:
-        return {
-            "selection5": one_line.group(1).strip(),
+        answers = {
+            "selection5": canonical_report_location_value(
+                "selection5", one_line.group(1).strip()
+            ),
             "selection6": one_line.group(2),
-            "selection7": one_line.group(3).strip(),
+            "selection7": canonical_report_location_value(
+                "selection7", one_line.group(3).strip()
+            ),
+        }
+        return {
+            key: value for key, value in answers.items()
+            if value and not str(existing_fields.get(key) or "").strip()
         }
 
     # Preserve the structured part of addresses that include a landmark after
@@ -845,16 +1024,27 @@ def extract_pending_report_answers(
         flags=re.IGNORECASE,
     )
     if street_number_reference:
-        return {
-            "selection5": street_number_reference.group(1).strip(),
+        answers = {
+            "selection5": canonical_report_location_value(
+                "selection5", street_number_reference.group(1).strip()
+            ),
             "selection6": street_number_reference.group(2),
+        }
+        return {
+            key: value for key, value in answers.items()
+            if value and not str(existing_fields.get(key) or "").strip()
         }
 
     lines = [" ".join(line.split()).strip() for line in raw.splitlines() if line.strip()]
     if lines:
         first = re.fullmatch(r"(.+?)\s+(\d{1,8})", lines[0])
         if first:
-            answers = {"selection5": first.group(1).strip(), "selection6": first.group(2)}
+            answers = {
+                "selection5": canonical_report_location_value(
+                    "selection5", first.group(1).strip()
+                ),
+                "selection6": first.group(2),
+            }
             if len(lines) > 1:
                 neighborhood = re.sub(
                     r"^(?:colonia|fraccionamiento|fracc\.?|col\.?)\s+",
@@ -863,10 +1053,16 @@ def extract_pending_report_answers(
                     flags=re.IGNORECASE,
                 ).strip()
                 if neighborhood:
-                    answers["selection7"] = neighborhood
-            return answers
+                    answers["selection7"] = canonical_report_location_value(
+                        "selection7", neighborhood
+                    )
+            return {
+                key: value for key, value in answers.items()
+                if value and not str(existing_fields.get(key) or "").strip()
+            }
 
-    return {"selection5": compact} if is_meaningful_report_description(compact) else {}
+    street = canonical_report_location_value("selection5", compact)
+    return {"selection5": street} if street else {}
 
 
 def extract_report_field_answer(
@@ -890,9 +1086,11 @@ def extract_report_field_answer(
         number = normalize_report_number_input(answer)
         return ("selection6", number) if number is not None else None
     if any(phrase in previous for phrase in ("en que calle", "cual es la calle", "nombre de la calle")):
-        return ("selection5", answer) if is_meaningful_report_description(answer) else None
+        street = canonical_report_location_value("selection5", answer)
+        return ("selection5", street) if street else None
     if any(phrase in previous for phrase in ("en que colonia", "cual es la colonia", "nombre de la colonia")):
-        return ("selection7", answer) if is_meaningful_report_description(answer) else None
+        colony = canonical_report_location_value("selection7", answer)
+        return ("selection7", colony) if colony else None
     if asks_for_name:
         # Legacy prompts may still be visible in an existing conversation, but
         # their answer must never overwrite the trusted Chat2Desk identity.
@@ -1208,6 +1406,7 @@ def determine_report_progress(
     image_decision: str | None,
     has_images: bool,
     prompt: str | None = None,
+    incident_snapshot: dict | None = None,
 ) -> ReportProgressDecision:
     """Choose the next report transition from authoritative stored fields.
 
@@ -1233,7 +1432,11 @@ def determine_report_progress(
     if declared_emergency:
         return ReportProgressDecision("submit_emergency")
 
-    if not has_images and not image_prompted and image_decision is None:
+    snapshot_has_images = bool(
+        (incident_snapshot or {}).get("image_count")
+        or (incident_snapshot or {}).get("images")
+    )
+    if not (has_images or snapshot_has_images) and not image_prompted and image_decision is None:
         return ReportProgressDecision(
             "ask_image",
             response=(

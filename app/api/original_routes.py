@@ -144,6 +144,8 @@ from app.services.conversation_policy import (
     classify_emergency_declaration,
     classify_emergency_turn,
     classify_handoff_signal,
+    classify_post_folio_continuity,
+    consume_report_prompt_attempt,
     classify_optional_image_answer,
     build_pending_report_evaluation_notice,
     context_reset_marker_uid,
@@ -186,7 +188,10 @@ from app.services.conversation_policy import (
     validate_structured_report_start_emergency,
 )
 from app.services.report_submission_policy import (
+    apply_report_field_update,
+    captured_report_question_field,
     classify_sidewalk_sign_answer,
+    classify_report_correction_field,
     choose_report_description_for_submission,
     contains_complete_report_phrase,
     deduplicate_report_media,
@@ -209,6 +214,7 @@ from app.services.report_submission_policy import (
     parse_report_catalog,
     reconcile_with_citizen_evidence,
     report_catalog_contains,
+    report_correction_question,
     report_session_has_confirmed_intent,
     resolve_trusted_reporter_name,
     resolve_unambiguous_catalog_category,
@@ -283,12 +289,14 @@ from app.services.greeting_outbox import (
     get_greeting_status,
 )
 from app.services.report_completion import (
+    append_report_completion_followup,
     clear_report_completion,
     ensure_report_completion_storage,
     get_recent_report_completion,
     is_delayed_pre_completion_event,
     is_queued_before_completion,
     mark_report_completion_notified,
+    purge_expired_report_completions,
     record_report_completion,
     report_session_supersedes_completion,
 )
@@ -2804,6 +2812,20 @@ def create_or_update_report_session(from_number):
             logger.critical(f"🎯 [UPDATE SESSION] Timestamp actualizado para {from_number}")
 
 
+def allow_report_prompt_attempt(from_number: str, prompt_key: str) -> bool:
+    """Allow an initial report question and one retry, then open the circuit."""
+    with report_sessions_lock:
+        session = report_sessions.setdefault(from_number, {})
+        allowed = consume_report_prompt_attempt(session, prompt_key)
+        if not allowed:
+            logger.error(
+                "🛑 [REPORT LOOP CIRCUIT BREAKER] phone=%s prompt=%s",
+                from_number,
+                prompt_key,
+            )
+        return allowed
+
+
 def has_confirmed_report_intent(from_number: str) -> bool:
     """Return True only for a report grounded in citizen-authored evidence."""
     session = report_sessions.get(from_number)
@@ -3027,13 +3049,34 @@ def normalize_selection_key(question_key):
 
     return key
 
-def save_user_answer(from_number, question_number, selection_text):
+def save_user_answer(
+    from_number,
+    question_number,
+    selection_text,
+    *,
+    allow_overwrite=False,
+):
     """Guarda respuesta del usuario para una pregunta específica"""
     if from_number not in user_answers:
         user_answers[from_number] = {}
     normalized_key = normalize_selection_key(question_number)
-    user_answers[from_number][normalized_key] = selection_text
-    logger.debug(f"💾 [SAVE] {from_number} - {normalized_key}: {selection_text}")
+    accepted, normalized_value = apply_report_field_update(
+        user_answers[from_number],
+        normalized_key,
+        selection_text,
+        allow_overwrite=allow_overwrite,
+    )
+    if not accepted:
+        logger.warning(
+            "🔒 [REPORT FIELD REJECTED] phone=%s field=%s kept=%s rejected=%s",
+            from_number,
+            normalized_key,
+            str(normalized_value or "")[:120],
+            str(selection_text or "")[:120],
+        )
+        return False
+    logger.debug(f"💾 [SAVE] {from_number} - {normalized_key}: {normalized_value}")
+    return True
     
     # 🎯 NUEVA LÍNEA: Crear sesión de reporte automáticamente
     #create_or_update_report_session(from_number)
@@ -3231,7 +3274,12 @@ def reconcile_pre_ciac_report_fields(
     }
     if applied_changes:
         for field, (_, repaired) in applied_changes.items():
-            save_user_answer(yoga_number, field, repaired)
+            save_user_answer(
+                yoga_number,
+                field,
+                repaired,
+                allow_overwrite=True,
+            )
         logger.warning(
             "🧾 [PRE-CIAC RECONCILIATION] phone=%s changes=%s",
             yoga_number,
@@ -3448,6 +3496,17 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
                 client_id=delivery_context.get("client_id"),
                 channel_id=delivery_context.get("channel_id"),
                 transport=delivery_context.get("transport"),
+                report_snapshot={
+                    **{
+                        key: selection_data.get(key, "")
+                        for key in (
+                            "selection1", "selection4", "selection5",
+                            "selection6", "selection7",
+                        )
+                    },
+                    "image_count": len(images_list or []),
+                    "followup_count": 0,
+                },
             )
             if not completion.get("durable"):
                 logger.critical(
@@ -6378,6 +6437,29 @@ def _restore_durable_report_context(storage, payload):
                     len(restored_session.get("pending_images") or []),
                     bool(restored_session.get("awaiting_report_image")),
                 )
+            elif isinstance(restored_session.get("declared_emergency"), bool):
+                # The greeting asks about emergency before the citizen has
+                # necessarily described a report. Preserve that authoritative
+                # answer across workers without reviving stale location/media.
+                safe_session = {
+                    "declared_emergency": restored_session[
+                        "declared_emergency"
+                    ],
+                    "report_intent_confirmed": False,
+                }
+                for safe_key in (
+                    "client_id", "channel_id", "transport",
+                    "contact_phone", "uses_platform_identity",
+                ):
+                    if restored_session.get(safe_key) is not None:
+                        safe_session[safe_key] = restored_session[safe_key]
+                report_sessions[conversation_key] = safe_session
+                persisted["user_answers"] = {}
+                logger.info(
+                    "🚨 [PRE-REPORT EMERGENCY STATE RESTORED] phone=%s decision=%s",
+                    conversation_key,
+                    restored_session.get("declared_emergency"),
+                )
             else:
                 # State created only by media/emergency/location in older
                 # deployments is unsafe and must not survive a worker hop.
@@ -6693,6 +6775,26 @@ async def process_pending_evaluation_report_resumptions():
         await asyncio.sleep(1)
 
 
+async def cleanup_expired_report_completions():
+    """Purge short-lived post-folio snapshots without scanning every inbound."""
+    while True:
+        try:
+            purged = await asyncio.to_thread(
+                purge_expired_report_completions,
+                LocalStorage(),
+            )
+            if purged:
+                logger.info(
+                    "🧹 [REPORT COMPLETION TTL] snapshots purgados=%s",
+                    purged,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Error purgando snapshots post-folio expirados")
+        await asyncio.sleep(5 * 60)
+
+
 # ------------------------------
 # Función de ciclo de vida (lifespan)
 # ------------------------------
@@ -6721,6 +6823,7 @@ async def lifespan(app: FastAPI):
     ensure_pending_evaluation_report_storage(LocalStorage())
     asyncio.create_task(process_chat2desk_webhook_jobs())
     asyncio.create_task(process_pending_evaluation_report_resumptions())
+    asyncio.create_task(cleanup_expired_report_completions())
     asyncio.create_task(process_greeting_outbox())
     # Startup: se lanzan las tareas de verificación
     asyncio.create_task(check_inactivity())
@@ -8504,6 +8607,14 @@ async def _process_whatsapp_request(request):
                 uid,
             )
 
+        last_outbound_message = next(
+            (
+                msg.message
+                for msg in reversed(preloaded_messages_db)
+                if msg.direction == "outbound" and msg.message
+            ),
+            "",
+        )
         recent_completion = get_recent_report_completion(
             db,
             from_number,
@@ -8583,6 +8694,130 @@ async def _process_whatsapp_request(request):
                     status_code=503,
                 )
             pending_delivered_before_current = True
+
+        post_folio_continuity = classify_post_folio_continuity(
+            body,
+            recent_completion,
+        )
+        if (
+            recent_completion
+            and recent_completion.get("notified_at")
+            and not pending_delivered_before_current
+            and not durable_evaluation_answer
+            and not quoted_hsm_ok
+            and not bool(payload.get("is_new_request"))
+            and not newer_report_active
+            and classify_emergency_declaration(body, prompted=False) is not True
+            and classify_handoff_signal(body, last_outbound_message) != "yes"
+            and post_folio_continuity == "same_incident"
+            and not is_queued_before_completion(
+                recent_completion,
+                webhook_received_timestamp,
+            )
+        ):
+            # A follow-up belongs to the completed incident. Keep its facts and
+            # media visible to operators without silently opening a second
+            # CIAC report or asking the citizen to repeat the address/photos.
+            followup_saved = append_report_completion_followup(
+                db,
+                from_number,
+                body,
+            )
+            if not followup_saved:
+                release_inbound_processing_claim(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": "No se pudo conservar el seguimiento del folio",
+                    },
+                    status_code=503,
+                )
+            snapshot = recent_completion.get("report_snapshot") or {}
+            location_parts = [
+                str(snapshot.get("selection5") or "").strip(),
+                str(snapshot.get("selection6") or "").strip(),
+                str(snapshot.get("selection7") or "").strip(),
+            ]
+            location_label = ", ".join(
+                part for part in location_parts if part
+            )
+            image_count = int(snapshot.get("image_count") or 0)
+            continuity_response = (
+                f"Tomé este mensaje como seguimiento del folio "
+                f"*{recent_completion['folio']}*. Conservo la ubicación"
+                f"{f' ({location_label})' if location_label else ''} y "
+                f"{image_count} imagen{'es' if image_count != 1 else ''}; "
+                "no necesitas repetir esos datos. El seguimiento quedó "
+                "asociado en esta conversación."
+            )
+            sent = await send_chat2desk_message(
+                from_number,
+                client_id,
+                channel_id,
+                continuity_response,
+                transport,
+            )
+            if not sent:
+                release_inbound_processing_claim(
+                    uid,
+                    inbound_claim_token,
+                    storage=db,
+                )
+                return JSONResponse(
+                    content={
+                        "status": False,
+                        "error": "No se pudo entregar el seguimiento del folio",
+                    },
+                    status_code=503,
+                )
+            try:
+                persist_successful_delivery_marker(
+                    db,
+                    from_number,
+                    uid,
+                    message_id,
+                )
+                db.Insert(
+                    Message(
+                        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        senderName="Assistant",
+                        message=continuity_response,
+                        number=from_number,
+                        uid=f"report-followup-{uid}",
+                        direction="outbound",
+                        mtype="text",
+                        source=transport or "whatsapp",
+                    )
+                )
+            except Exception:
+                # Chat2Desk already accepted the response. Never retry solely
+                # because local history/audit persistence failed.
+                logger.exception(
+                    "No se pudo persistir localmente el seguimiento del folio %s",
+                    recent_completion.get("folio"),
+                )
+            mark_inbound_processing_delivered(
+                uid,
+                inbound_claim_token,
+                storage=db,
+            )
+            logger.critical(
+                "🧾 [POST-FOLIO CONTINUITY] phone=%s folio=%s images=%s",
+                from_number,
+                recent_completion.get("folio"),
+                image_count,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "message": "Seguimiento asociado al folio reciente",
+                    "folio": recent_completion.get("folio"),
+                }
+            )
 
         if (
             recent_completion
@@ -8704,14 +8939,6 @@ async def _process_whatsapp_request(request):
         # Capture the citizen's answer before any media/finalization branch can
         # return. This is especially important for image flows: a later "FIN"
         # must finalize the existing state, never become a name or description.
-        last_outbound_message = next(
-            (
-                msg.message
-                for msg in reversed(preloaded_messages_db)
-                if msg.direction == "outbound" and msg.message
-            ),
-            "",
-        )
         semantic_optional_image_resolution_needed = False
         # Resolve the answer from the visible image question before any intake
         # or finalization decision. The previous late update allowed the model
@@ -8778,6 +9005,7 @@ async def _process_whatsapp_request(request):
         auto_finalize_emergency = False
         semantic_emergency_resolution_needed = False
         semantic_report_number_resolution_needed = False
+        forced_report_handoff = False
         report_active_at_turn_start = has_confirmed_report_intent(from_number)
         report_session_before_turn = deepcopy(
             report_sessions.get(from_number)
@@ -8922,6 +9150,82 @@ async def _process_whatsapp_request(request):
                 )
             }
             active_report_session = report_sessions.get(from_number, {})
+            pending_correction_field = active_report_session.get(
+                "pending_report_correction"
+            )
+            if pending_correction_field:
+                corrected_answers = extract_pending_report_answers(
+                    pending_correction_field,
+                    body,
+                )
+                corrected_value = corrected_answers.get(
+                    pending_correction_field
+                )
+                if corrected_value:
+                    save_user_answer(
+                        from_number,
+                        pending_correction_field,
+                        corrected_value,
+                        allow_overwrite=True,
+                    )
+                    with report_sessions_lock:
+                        active_report_session.pop(
+                            "pending_report_correction", None
+                        )
+                        active_report_session.pop(
+                            "intake_confirmation_rejected", None
+                        )
+                    captured_report_field = (
+                        pending_correction_field,
+                        corrected_value,
+                    )
+                    existing_answers[pending_correction_field] = (
+                        corrected_value
+                    )
+                    logger.critical(
+                        "✏️ [REPORT FIELD CORRECTED] phone=%s field=%s",
+                        from_number,
+                        pending_correction_field,
+                    )
+                else:
+                    if allow_report_prompt_attempt(
+                        from_number,
+                        f"correct_field:{pending_correction_field}",
+                    ):
+                        intake_response_override = report_correction_question(
+                            pending_correction_field
+                        )
+                    else:
+                        forced_report_handoff = True
+                    intake_turn_handled = True
+            elif active_report_session.get("intake_confirmation_rejected"):
+                correction_field = classify_report_correction_field(body)
+                if correction_field:
+                    with report_sessions_lock:
+                        active_report_session["pending_report_correction"] = (
+                            correction_field
+                        )
+                    if allow_report_prompt_attempt(
+                        from_number,
+                        f"correct_field:{correction_field}",
+                    ):
+                        intake_response_override = report_correction_question(
+                            correction_field
+                        )
+                    else:
+                        forced_report_handoff = True
+                else:
+                    if allow_report_prompt_attempt(
+                        from_number,
+                        "choose_correction_field",
+                    ):
+                        intake_response_override = (
+                            "Indícame qué dato deseas corregir: el problema, "
+                            "la calle, el número o la colonia."
+                        )
+                    else:
+                        forced_report_handoff = True
+                intake_turn_handled = True
             pending_intake = active_report_session.get("pending_intake_confirmation")
             if pending_intake:
                 confirmation = classify_intake_confirmation(body)
@@ -8942,10 +9246,16 @@ async def _process_whatsapp_request(request):
                     with report_sessions_lock:
                         active_report_session.pop("pending_intake_confirmation", None)
                         active_report_session["intake_confirmation_rejected"] = True
-                    intake_response_override = (
-                        "Entendido. ¿Qué dato deseas corregir: el problema, la calle "
-                        "o la colonia?"
-                    )
+                    if allow_report_prompt_attempt(
+                        from_number,
+                        "choose_correction_field",
+                    ):
+                        intake_response_override = (
+                            "Entendido. ¿Qué dato deseas corregir: el problema, "
+                            "la calle, el número o la colonia?"
+                        )
+                    else:
+                        forced_report_handoff = True
                     intake_turn_handled = True
                     logger.critical(
                         "🧭 [INTAKE REJECTED] phone=%s", from_number
@@ -9003,7 +9313,11 @@ async def _process_whatsapp_request(request):
             )
             pending_answers = (
                 {} if intake_turn_handled or captured_report_field
-                else extract_pending_report_answers(pending_field, body)
+                else extract_pending_report_answers(
+                    pending_field,
+                    body,
+                    existing_fields=existing_answers,
+                )
             )
             semantic_report_number_resolution_needed = bool(
                 not intake_turn_handled
@@ -9166,7 +9480,13 @@ async def _process_whatsapp_request(request):
                         )
                     )
                     if not semantic_emergency_resolution_needed:
-                        intake_response_override = progress.response
+                        if allow_report_prompt_attempt(
+                            from_number,
+                            "await_emergency_answer:await_emergency_answer",
+                        ):
+                            intake_response_override = progress.response
+                        else:
+                            forced_report_handoff = True
                     with report_sessions_lock:
                         active_report_session[
                             "pending_intake_question"
@@ -9176,7 +9496,13 @@ async def _process_whatsapp_request(request):
                         semantic_report_number_resolution_needed
                         and progress.field == "selection6"
                     ):
-                        intake_response_override = progress.response
+                        if allow_report_prompt_attempt(
+                            from_number,
+                            f"ask_field:{progress.field}",
+                        ):
+                            intake_response_override = progress.response
+                        else:
+                            forced_report_handoff = True
                     with report_sessions_lock:
                         active_report_session.pop(
                             "pending_intake_question",
@@ -9190,7 +9516,13 @@ async def _process_whatsapp_request(request):
                         ] = datetime.now().timestamp()
                 elif progress.action == "ask_image":
                     if not semantic_optional_image_resolution_needed:
-                        intake_response_override = progress.response
+                        if allow_report_prompt_attempt(
+                            from_number,
+                            "ask_image:ask_image",
+                        ):
+                            intake_response_override = progress.response
+                        else:
+                            forced_report_handoff = True
                     with report_sessions_lock:
                         active_report_session.pop(
                             "pending_intake_question",
@@ -9206,6 +9538,21 @@ async def _process_whatsapp_request(request):
                             "pending_intake_question",
                             None,
                         )
+                        active_report_session.pop(
+                            "pending_finalization_field", None
+                        )
+                elif (
+                    progress.action == "continue"
+                    and active_report_session.get("images")
+                ):
+                    image_count = len(active_report_session.get("images") or [])
+                    intake_response_override = (
+                        "Actualicé la información y conservo "
+                        f"{image_count} imagen{'es' if image_count != 1 else ''}. "
+                        "Puedes enviar otra imagen o responder FIN para "
+                        "generar el reporte; no necesitas repetir la ubicación."
+                    )
+                    with report_sessions_lock:
                         active_report_session.pop(
                             "pending_finalization_field", None
                         )
@@ -10862,7 +11209,7 @@ async def _process_whatsapp_request(request):
         )
 
     handoff_signal = classify_handoff_signal(body, last_outbound_message)
-    direct_handoff_request = handoff_signal == "yes"
+    direct_handoff_request = handoff_signal == "yes" or forced_report_handoff
     contextual_handoff_request = is_contextual_handoff_request(
         body,
         last_outbound_message,
@@ -10890,6 +11237,9 @@ async def _process_whatsapp_request(request):
             storage=db,
             group_id=None,
             reason=(
+                "Circuit breaker: SAM repitió una pregunta de reporte"
+                if forced_report_handoff
+                else
                 "Confirmación del usuario a una transferencia humana ofrecida"
                 if contextual_handoff_request
                 else "Solicitud inequívoca del usuario para atención humana"
@@ -12490,6 +12840,51 @@ async def _process_whatsapp_request(request):
             customer_phone=from_number,
             trusted_reference_texts=getattr(llm_service, "trusted_tool_outputs", []),
         )
+        if has_confirmed_report_intent(from_number):
+            authoritative_answers = {
+                key: get_user_answer(from_number, key)
+                for key in (
+                    "selection1", "selection2", "selection4",
+                    "selection5", "selection6", "selection7",
+                )
+            }
+            repeated_captured_field = captured_report_question_field(
+                response_content,
+                authoritative_answers,
+            )
+            if repeated_captured_field:
+                active_session = report_sessions.get(from_number, {})
+                authoritative_progress = determine_report_progress(
+                    authoritative_answers,
+                    declared_emergency=active_session.get(
+                        "declared_emergency"
+                    ),
+                    image_prompted=bool(active_session.get("image_prompted")),
+                    image_decision=active_session.get("image_decision"),
+                    has_images=bool(active_session.get("images")),
+                    prompt=config.get("prompt") or system_message,
+                )
+                if authoritative_progress.response:
+                    response_content = authoritative_progress.response
+                else:
+                    image_count = len(active_session.get("images") or [])
+                    response_content = (
+                        "Ya conservo el problema y la ubicación"
+                        f"{f', además de {image_count} imágenes' if image_count else ''}. "
+                        + (
+                            "Puedes enviar otra imagen o responder FIN para "
+                            "generar el reporte."
+                            if image_count
+                            else
+                            "¿Deseas adjuntar una imagen o prefieres continuar "
+                            "sin ella?"
+                        )
+                    )
+                logger.error(
+                    "🛑 [CAPTURED FIELD REPROMPT BLOCKED] phone=%s field=%s",
+                    from_number,
+                    repeated_captured_field,
+                )
         if (
             assistant_asked_for_optional_image(response_content)
             and not has_confirmed_report_intent(from_number)

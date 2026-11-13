@@ -44,6 +44,7 @@ def ensure_greeting_outbox_storage(storage) -> bool:
                         id BIGSERIAL PRIMARY KEY,
                         greeting_key TEXT UNIQUE NOT NULL,
                         phone_number TEXT NOT NULL,
+                        contact_phone TEXT,
                         client_id TEXT NOT NULL,
                         channel_id TEXT NOT NULL,
                         transport TEXT NOT NULL,
@@ -58,6 +59,12 @@ def ensure_greeting_outbox_storage(storage) -> bool:
                         created_at DOUBLE PRECISION NOT NULL,
                         updated_at DOUBLE PRECISION NOT NULL
                     )
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    ALTER TABLE {GREETING_OUTBOX_TABLE}
+                    ADD COLUMN IF NOT EXISTS contact_phone TEXT
                     """
                 )
                 cursor.execute(
@@ -82,6 +89,7 @@ def enqueue_greeting(
     *,
     greeting_key: str,
     phone_number: str,
+    contact_phone: str | None = None,
     client_id,
     channel_id,
     transport: str,
@@ -100,11 +108,14 @@ def enqueue_greeting(
             cursor.execute(
                 f"""
                 INSERT INTO {GREETING_OUTBOX_TABLE}
-                    (greeting_key, phone_number, client_id, channel_id, transport,
+                    (greeting_key, phone_number, contact_phone, client_id,
+                     channel_id, transport,
                      message, conversation_epoch, status, attempts, available_at,
                      created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'queued', 0, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                        'queued', 0, %s, %s, %s)
                 ON CONFLICT (greeting_key) DO UPDATE SET
+                    contact_phone = EXCLUDED.contact_phone,
                     client_id = EXCLUDED.client_id,
                     channel_id = EXCLUDED.channel_id,
                     transport = EXCLUDED.transport,
@@ -114,8 +125,8 @@ def enqueue_greeting(
                 RETURNING id
                 """,
                 (
-                    greeting_key, phone_number, str(client_id), str(channel_id),
-                    transport, message, int(conversation_epoch), timestamp,
+                    greeting_key, phone_number, contact_phone, str(client_id),
+                    str(channel_id), transport, message, int(conversation_epoch), timestamp,
                     timestamp, timestamp,
                 ),
             )
@@ -158,7 +169,8 @@ def claim_greeting(
                 FROM candidate
                 WHERE items.id = candidate.id
                 RETURNING items.id, items.greeting_key, items.phone_number,
-                          items.client_id, items.channel_id, items.transport,
+                          items.contact_phone, items.client_id, items.channel_id,
+                          items.transport,
                           items.message, items.conversation_epoch, items.attempts,
                           items.claim_token
                 """,
@@ -177,8 +189,9 @@ def claim_greeting(
         if not row:
             return None
         keys = (
-            "id", "greeting_key", "phone_number", "client_id", "channel_id",
-            "transport", "message", "conversation_epoch", "attempts", "claim_token",
+            "id", "greeting_key", "phone_number", "contact_phone", "client_id",
+            "channel_id", "transport", "message", "conversation_epoch", "attempts",
+            "claim_token",
         )
         return dict(zip(keys, row))
     finally:

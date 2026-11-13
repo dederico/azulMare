@@ -154,6 +154,138 @@ def load_report_state(storage, phone_number: str) -> dict[str, Any] | None:
             conn.close()
 
 
+def load_channel_report_state(
+    storage,
+    *,
+    conversation_key: str,
+    contact_phone: str | None,
+    channel_id,
+    transport: str,
+    conversation_epoch: int,
+) -> dict[str, Any] | None:
+    """Load scoped state, atomically adopting a matching WhatsApp snapshot."""
+
+    normalized_transport = str(transport or "").strip().casefold()
+    persisted = load_report_state(storage, conversation_key)
+    if persisted:
+        if (
+            contact_phone
+            and channel_id not in (None, "")
+            and normalized_transport
+            in {"whatsapp", "wa_direct", "wa_business"}
+            and ensure_report_state_storage(storage)
+        ):
+            conn = None
+            try:
+                conn = _connect(storage)
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        DELETE FROM {REPORT_STATE_TABLE}
+                        WHERE phone_number = %s
+                          AND COALESCE(report_session->>'channel_id', '') = %s
+                          AND LOWER(COALESCE(report_session->>'transport', %s))
+                              IN ('whatsapp', 'wa_direct', 'wa_business')
+                        """,
+                        (
+                            normalize_phone_key(contact_phone),
+                            str(channel_id),
+                            normalized_transport,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                if conn is not None:
+                    conn.close()
+        return persisted
+    if (
+        not contact_phone
+        or channel_id in (None, "")
+        or normalized_transport not in {"whatsapp", "wa_direct", "wa_business"}
+    ):
+        return None
+    if not ensure_report_state_storage(storage):
+        return None
+
+    scoped_key = normalize_phone_key(conversation_key)
+    legacy_key = normalize_phone_key(contact_phone)
+    conn = None
+    row = None
+    try:
+        conn = _connect(storage)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO {REPORT_STATE_TABLE}
+                    (phone_number, report_session, user_answers,
+                     conversation_epoch, updated_at)
+                SELECT %s,
+                       COALESCE(report_session, '{{}}'::jsonb)
+                           || jsonb_build_object('contact_phone', %s::text),
+                       user_answers,
+                       conversation_epoch,
+                       updated_at
+                FROM {REPORT_STATE_TABLE}
+                WHERE phone_number = %s
+                  AND conversation_epoch = %s
+                  AND COALESCE(report_session->>'channel_id', '') = %s
+                  AND COALESCE(report_session->>'transport', %s) = %s
+                ON CONFLICT (phone_number) DO NOTHING
+                RETURNING report_session, user_answers, conversation_epoch
+                """,
+                (
+                    scoped_key,
+                    str(contact_phone),
+                    legacy_key,
+                    int(conversation_epoch),
+                    str(channel_id),
+                    normalized_transport,
+                    normalized_transport,
+                ),
+            )
+            row = cursor.fetchone()
+            cursor.execute(
+                f"""
+                DELETE FROM {REPORT_STATE_TABLE}
+                WHERE phone_number = %s
+                  AND COALESCE(report_session->>'channel_id', '') = %s
+                  AND LOWER(COALESCE(report_session->>'transport', %s))
+                      IN ('whatsapp', 'wa_direct', 'wa_business')
+                  AND EXISTS (
+                      SELECT 1 FROM {REPORT_STATE_TABLE}
+                      WHERE phone_number = %s
+                  )
+                """,
+                (
+                    legacy_key,
+                    str(channel_id),
+                    normalized_transport,
+                    scoped_key,
+                ),
+            )
+        conn.commit()
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if row:
+        session = row[0]
+        if session and session.get("timestamp") and isinstance(session["timestamp"], str):
+            try:
+                session["timestamp"] = datetime.fromisoformat(session["timestamp"])
+            except ValueError:
+                session["timestamp"] = None
+        return {
+            "report_session": session,
+            "user_answers": row[1] or {},
+            "conversation_epoch": int(row[2] or 0),
+        }
+
+    # Another replica may have won the insert race. Its scoped state is
+    # authoritative; never overwrite it with the legacy snapshot.
+    return load_report_state(storage, scoped_key)
+
+
 def delete_report_state(storage, phone_number: str) -> bool:
     key = normalize_phone_key(phone_number)
     if not ensure_report_state_storage(storage):

@@ -237,6 +237,7 @@ def get_recent_report_completion(
     key = normalize_phone_key(phone_number)
     timestamp = float(now if now is not None else time.time())
     cutoff = timestamp - float(max_age_seconds)
+    database_was_queried = False
 
     if storage is not None and ensure_report_completion_storage(storage):
         conn = None
@@ -256,6 +257,7 @@ def get_recent_report_completion(
                     (key, cutoff, timestamp),
                 )
                 row = cursor.fetchone()
+                database_was_queried = True
             if row:
                 completion = {
                     "phone_number": str(row[0]),
@@ -286,6 +288,11 @@ def get_recent_report_completion(
             if conn is not None:
                 conn.close()
 
+    if database_was_queried:
+        with _memory_lock:
+            _memory_completions.pop(key, None)
+        return None
+
     with _memory_lock:
         completion = _memory_completions.get(key)
         if (
@@ -297,6 +304,112 @@ def get_recent_report_completion(
         if completion and float(completion.get("expires_at") or 0) <= timestamp:
             _memory_completions.pop(key, None)
     return None
+
+
+def migrate_legacy_report_completion(
+    storage,
+    legacy_phone_number: str,
+    conversation_key: str,
+    *,
+    channel_id,
+    transport: str,
+    now: float | None = None,
+) -> bool:
+    """Adopt a recent WhatsApp completion while preserving delivery status."""
+
+    legacy_key = normalize_phone_key(legacy_phone_number)
+    scoped_key = normalize_phone_key(conversation_key)
+    expected_transport = str(transport or "").strip().casefold()
+    if (
+        not legacy_key
+        or legacy_key == scoped_key
+        or channel_id in (None, "")
+        or expected_transport not in {"whatsapp", "wa_direct", "wa_business"}
+    ):
+        return False
+    timestamp = float(now if now is not None else time.time())
+
+    if storage is not None and ensure_report_completion_storage(storage):
+        conn = None
+        try:
+            conn = _connect(storage)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {REPORT_COMPLETION_TABLE}
+                        (phone_number, folio, completed_at, updated_at,
+                         notification_message, request_id, origin_uid,
+                         origin_message_id, client_id, channel_id, transport,
+                         notified_at, report_snapshot, expires_at)
+                    SELECT %s, folio, completed_at, updated_at,
+                           notification_message, request_id, origin_uid,
+                           origin_message_id, client_id, channel_id, transport,
+                           notified_at, report_snapshot, expires_at
+                    FROM {REPORT_COMPLETION_TABLE}
+                    WHERE phone_number = %s
+                      AND channel_id = %s
+                      AND LOWER(transport)
+                          IN ('whatsapp', 'wa_direct', 'wa_business')
+                      AND expires_at > %s
+                    ON CONFLICT (phone_number) DO NOTHING
+                    RETURNING phone_number
+                    """,
+                    (scoped_key, legacy_key, str(channel_id), timestamp),
+                )
+                inserted = bool(cursor.fetchone())
+                cursor.execute(
+                    f"""
+                    DELETE FROM {REPORT_COMPLETION_TABLE}
+                    WHERE phone_number = %s
+                      AND channel_id = %s
+                      AND LOWER(transport)
+                          IN ('whatsapp', 'wa_direct', 'wa_business')
+                      AND EXISTS (
+                          SELECT 1 FROM {REPORT_COMPLETION_TABLE}
+                          WHERE phone_number = %s
+                      )
+                    """,
+                    (legacy_key, str(channel_id), scoped_key),
+                )
+            conn.commit()
+            with _memory_lock:
+                _memory_completions.pop(legacy_key, None)
+                _memory_completions.pop(scoped_key, None)
+            return inserted
+        except Exception as error:
+            logger.error(
+                "No se pudo migrar folio legacy %s a %s: %s",
+                legacy_key,
+                scoped_key,
+                error,
+            )
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
+    with _memory_lock:
+        legacy = _memory_completions.get(legacy_key)
+        legacy_matches = bool(
+            legacy
+            and str(legacy.get("channel_id") or "") == str(channel_id)
+            and str(legacy.get("transport") or "").strip().casefold()
+            in {"whatsapp", "wa_direct", "wa_business"}
+        )
+        if scoped_key in _memory_completions:
+            if legacy_matches:
+                _memory_completions.pop(legacy_key, None)
+            return False
+        if (
+            not legacy_matches
+            or float(legacy.get("expires_at") or 0) <= timestamp
+        ):
+            return False
+        migrated = legacy.copy()
+        migrated["phone_number"] = scoped_key
+        _memory_completions[scoped_key] = migrated
+        _memory_completions.pop(legacy_key, None)
+        return True
 
 
 def purge_expired_report_completions(

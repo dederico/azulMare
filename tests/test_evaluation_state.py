@@ -5,6 +5,7 @@ import app.services.evaluation_state as evaluation_state_module
 from app.services.evaluation_state import (
     clear_evaluation_state,
     get_evaluation_state,
+    migrate_legacy_evaluation_state,
     save_evaluation_state,
 )
 
@@ -12,10 +13,72 @@ from app.services.evaluation_state import (
 class EvaluationStateTests(unittest.TestCase):
     def setUp(self):
         self.phone = "5218110000099"
+        self.scoped = "chat2desk:wa_direct:channel:43906:client:123"
         clear_evaluation_state(None, self.phone)
+        clear_evaluation_state(None, self.scoped)
 
     def tearDown(self):
         clear_evaluation_state(None, self.phone)
+        clear_evaluation_state(None, self.scoped)
+
+    def test_matching_legacy_whatsapp_evaluation_is_adopted(self):
+        save_evaluation_state(
+            None,
+            self.phone,
+            state="evaluacion_esperando_motivo",
+            folio="472988",
+            client_id=123,
+            channel_id=43906,
+            transport="wa_direct",
+            now=1000,
+        )
+
+        self.assertTrue(
+            migrate_legacy_evaluation_state(
+                None,
+                self.phone,
+                self.scoped,
+                channel_id=43906,
+                transport="wa_direct",
+                now=1001,
+            )
+        )
+        self.assertEqual(
+            get_evaluation_state(None, self.scoped, now=1001)["folio"],
+            "472988",
+        )
+        clear_evaluation_state(None, self.scoped)
+        self.assertFalse(
+            migrate_legacy_evaluation_state(
+                None,
+                self.phone,
+                self.scoped,
+                channel_id=43906,
+                transport="wa_direct",
+                now=1002,
+            )
+        )
+        self.assertIsNone(get_evaluation_state(None, self.scoped, now=1002))
+
+    def test_platform_channel_cannot_adopt_whatsapp_evaluation(self):
+        save_evaluation_state(
+            None,
+            self.phone,
+            state="evaluacion_esperando_motivo",
+            folio="472988",
+            channel_id=43906,
+            transport="wa_direct",
+        )
+
+        self.assertFalse(
+            migrate_legacy_evaluation_state(
+                None,
+                self.phone,
+                "chat2desk:facebook:channel:43906:client:123",
+                channel_id=43906,
+                transport="facebook",
+            )
+        )
 
     def test_state_survives_outside_the_request_session(self):
         save_evaluation_state(

@@ -1,9 +1,10 @@
 """Canonical identities for Chat2Desk conversations across messengers.
 
-WhatsApp normally identifies a citizen by phone number.  Telegram API and
-Facebook Messenger do not: Chat2Desk exposes a messenger-specific identifier
-instead (for example ``[tg] 123456``).  Treating that identifier as a phone can
-both collide across transports and leak a false phone into CIAC.
+WhatsApp exposes a real citizen phone number, while Telegram API and Facebook
+Messenger expose a messenger-specific identifier instead (for example
+``[tg] 123456``).  A phone number is contact data, not a conversation identity:
+the same citizen can contact more than one Chat2Desk business channel and each
+channel must retain independent state.
 
 This module keeps the transport concern outside SAM's conversational engine.
 The engine receives one stable conversation key while the real contact phone,
@@ -15,6 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from typing import Any
+
+from app.services.whatsapp_failover import (
+    is_phone_allowed_for_failover,
+    load_whatsapp_failover_config,
+)
 
 
 _API_IDENTITY_MARKERS = ("telegram", "facebook", "messenger")
@@ -34,7 +40,11 @@ def normalize_contact_phone(value: Any) -> str | None:
     """Return an E.164-like phone only when the value is genuinely phone-shaped."""
 
     raw = str(value or "").strip()
-    if not raw or re.search(r"\[[a-z]+\]", raw, flags=re.IGNORECASE):
+    if (
+        not raw
+        or raw.casefold().startswith("chat2desk:")
+        or re.search(r"\[[a-z]+\]", raw, flags=re.IGNORECASE)
+    ):
         return None
     digits = re.sub(r"\D", "", raw)
     if 10 <= len(digits) <= 15:
@@ -59,6 +69,7 @@ class Chat2DeskChannelIdentity:
     transport: str
     client_id: str | None
     channel_id: str | None
+    state_channel_id: str | None
     uses_platform_identity: bool
 
     @property
@@ -94,6 +105,18 @@ def extract_chat2desk_channel_identity(payload: dict[str, Any]) -> Chat2DeskChan
     client_id = _first_value(payload.get("client_id"), client.get("id"))
     channel_id = payload.get("channel_id")
     raw_identifier = _first_value(client.get("phone"), client.get("external_id"))
+    identity_client_id = client_id
+    identity_channel_id = channel_id
+    if payload.get("_sam_failover_replay"):
+        identity_client_id = _first_value(
+            payload.get("_sam_failover_origin_client_id"),
+            client_id,
+        )
+        identity_channel_id = _first_value(
+            payload.get("_sam_failover_origin_channel_id"),
+            channel_id,
+        )
+    state_channel_id = identity_channel_id
 
     platform_identity = is_platform_identity_transport(transport)
     explicit_client_phone = normalize_contact_phone(client.get("client_phone"))
@@ -104,21 +127,44 @@ def extract_chat2desk_channel_identity(payload: dict[str, Any]) -> Chat2DeskChan
         contact_phone = explicit_client_phone
         conversation_key = _scoped_key(
             transport=transport,
-            channel_id=channel_id,
-            client_id=client_id,
+            channel_id=identity_channel_id,
+            client_id=identity_client_id,
             provider_identifier=raw_identifier,
             dialog_id=payload.get("dialog_id"),
         )
     else:
         inferred_phone = normalize_contact_phone(raw_identifier)
         contact_phone = explicit_client_phone or inferred_phone
-        conversation_key = contact_phone or _scoped_key(
-            transport=transport,
-            channel_id=channel_id,
-            client_id=client_id,
-            provider_identifier=raw_identifier,
-            dialog_id=payload.get("dialog_id"),
-        )
+        failover_config = load_whatsapp_failover_config()
+        try:
+            routes_through_failover = (
+                failover_config.enabled
+                and is_phone_transport(transport)
+                and is_phone_allowed_for_failover(
+                    contact_phone,
+                    failover_config,
+                )
+                and int(channel_id)
+                in {
+                    failover_config.primary_channel_id,
+                    failover_config.failover_channel_id,
+                }
+            )
+        except (TypeError, ValueError):
+            routes_through_failover = False
+        if contact_phone and routes_through_failover:
+            conversation_key = (
+                f"chat2desk:{transport}:failover:phone:{contact_phone}"
+            )
+            state_channel_id = failover_config.primary_channel_id
+        else:
+            conversation_key = _scoped_key(
+                transport=transport,
+                channel_id=identity_channel_id,
+                client_id=identity_client_id,
+                provider_identifier=raw_identifier,
+                dialog_id=payload.get("dialog_id"),
+            )
 
     return Chat2DeskChannelIdentity(
         conversation_key=conversation_key,
@@ -126,6 +172,11 @@ def extract_chat2desk_channel_identity(payload: dict[str, Any]) -> Chat2DeskChan
         transport=transport,
         client_id=str(client_id) if client_id not in (None, "") else None,
         channel_id=str(channel_id) if channel_id not in (None, "") else None,
+        state_channel_id=(
+            str(state_channel_id)
+            if state_channel_id not in (None, "")
+            else None
+        ),
         uses_platform_identity=platform_identity,
     )
 
@@ -143,9 +194,9 @@ def resolve_report_contact_phone(
     """Return only a genuine phone number suitable for the CIAC payload.
 
     A platform identifier can contain digits and still not be a telephone.
-    The transport marker captured in the report session is therefore the
-    authoritative distinction between a WhatsApp phone and a Facebook or
-    Telegram identity.
+    The contact phone captured in the report session is authoritative.  The
+    conversation key is always scoped by transport/channel/client and must
+    never be submitted to CIAC as though it were a phone number.
     """
 
     session = report_session or {}

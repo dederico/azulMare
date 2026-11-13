@@ -1,11 +1,14 @@
 import unittest
+from unittest.mock import patch
 
+import app.services.report_completion as report_completion_module
 from app.services.report_completion import (
     clear_report_completion,
     get_recent_report_completion,
     is_delayed_pre_completion_event,
     is_queued_before_completion,
     mark_report_completion_notified,
+    migrate_legacy_report_completion,
     purge_expired_report_completions,
     record_report_completion,
     report_session_supersedes_completion,
@@ -14,10 +17,76 @@ from app.services.report_completion import (
 
 class DurableReportCompletionTests(unittest.TestCase):
     def setUp(self):
+        self.scoped = "chat2desk:wa_direct:channel:43906:client:123"
         clear_report_completion(None, "+52 1 81 1234 5678")
+        clear_report_completion(None, self.scoped)
 
     def tearDown(self):
         clear_report_completion(None, "+52 1 81 1234 5678")
+        clear_report_completion(None, self.scoped)
+
+    def test_legacy_completion_keeps_notified_status_when_adopted(self):
+        record_report_completion(
+            None,
+            "5218112345678",
+            "472626",
+            now=100,
+            notification_message="Tu folio es 472626",
+            channel_id=43906,
+            transport="wa_direct",
+        )
+        mark_report_completion_notified(None, "5218112345678", now=110)
+
+        self.assertTrue(
+            migrate_legacy_report_completion(
+                None,
+                "5218112345678",
+                self.scoped,
+                channel_id=43906,
+                transport="wa_direct",
+                now=120,
+            )
+        )
+        migrated = get_recent_report_completion(
+            None,
+            self.scoped,
+            max_age_seconds=300,
+            now=120,
+        )
+        self.assertEqual(migrated["folio"], "472626")
+        self.assertEqual(migrated["notified_at"], 110)
+        clear_report_completion(None, self.scoped)
+        self.assertFalse(
+            migrate_legacy_report_completion(
+                None,
+                "5218112345678",
+                self.scoped,
+                channel_id=43906,
+                transport="wa_direct",
+                now=121,
+            )
+        )
+
+    def test_other_channel_cannot_adopt_legacy_completion(self):
+        record_report_completion(
+            None,
+            "5218112345678",
+            "472626",
+            now=100,
+            channel_id=43906,
+            transport="wa_direct",
+        )
+
+        self.assertFalse(
+            migrate_legacy_report_completion(
+                None,
+                "5218112345678",
+                "chat2desk:wa_direct:channel:43943:client:456",
+                channel_id=43943,
+                transport="wa_direct",
+                now=120,
+            )
+        )
 
     def test_recent_completion_is_shared_by_normalized_phone(self):
         record_report_completion(
@@ -52,6 +121,129 @@ class DurableReportCompletionTests(unittest.TestCase):
         )
 
         self.assertIsNone(completion)
+
+    def test_database_absence_does_not_revive_stale_process_memory(self):
+        record_report_completion(
+            None,
+            "5218112345678",
+            "472626",
+            now=100,
+        )
+
+        class EmptyCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, *_args, **_kwargs):
+                return None
+
+            def fetchone(self):
+                return None
+
+        class EmptyConnection:
+            def cursor(self):
+                return EmptyCursor()
+
+            def close(self):
+                return None
+
+        with (
+            patch.object(
+                report_completion_module,
+                "ensure_report_completion_storage",
+                return_value=True,
+            ),
+            patch.object(
+                report_completion_module,
+                "_connect",
+                return_value=EmptyConnection(),
+            ),
+        ):
+            self.assertIsNone(
+                get_recent_report_completion(
+                    object(),
+                    "5218112345678",
+                    max_age_seconds=300,
+                    now=200,
+                )
+            )
+
+        self.assertIsNone(
+            get_recent_report_completion(
+                None,
+                "5218112345678",
+                max_age_seconds=300,
+                now=200,
+            )
+        )
+
+    def test_durable_migration_invalidates_process_memory(self):
+        record_report_completion(
+            None,
+            "5218112345678",
+            "472626",
+            now=100,
+            channel_id=43906,
+            transport="wa_direct",
+        )
+
+        class MigrationCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, *_args, **_kwargs):
+                return None
+
+            def fetchone(self):
+                return ("scoped",)
+
+        class MigrationConnection:
+            def cursor(self):
+                return MigrationCursor()
+
+            def commit(self):
+                return None
+
+            def close(self):
+                return None
+
+        with (
+            patch.object(
+                report_completion_module,
+                "ensure_report_completion_storage",
+                return_value=True,
+            ),
+            patch.object(
+                report_completion_module,
+                "_connect",
+                return_value=MigrationConnection(),
+            ),
+        ):
+            self.assertTrue(
+                migrate_legacy_report_completion(
+                    object(),
+                    "5218112345678",
+                    self.scoped,
+                    channel_id=43906,
+                    transport="wa_direct",
+                    now=120,
+                )
+            )
+
+        self.assertNotIn(
+            "5218112345678",
+            report_completion_module._memory_completions,
+        )
+        self.assertNotIn(
+            self.scoped,
+            report_completion_module._memory_completions,
+        )
 
     def test_completion_snapshot_expires_after_continuity_window(self):
         record_report_completion(

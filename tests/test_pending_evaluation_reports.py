@@ -5,6 +5,7 @@ from app.services.pending_evaluation_reports import (
     clear_pending_evaluation_reports,
     delete_pending_evaluation_report,
     get_pending_evaluation_reports,
+    migrate_legacy_pending_evaluation_reports,
     stage_pending_evaluation_report,
 )
 
@@ -12,10 +13,59 @@ from app.services.pending_evaluation_reports import (
 class PendingEvaluationReportTests(unittest.TestCase):
     def setUp(self):
         self.phone = "5218110000088"
+        self.scoped = "chat2desk:wa_direct:channel:43906:client:123"
         clear_pending_evaluation_reports(None, self.phone)
+        clear_pending_evaluation_reports(None, self.scoped)
 
     def tearDown(self):
         clear_pending_evaluation_reports(None, self.phone)
+        clear_pending_evaluation_reports(None, self.scoped)
+
+    def test_only_matching_whatsapp_channel_adopts_paused_reports(self):
+        stage_pending_evaluation_report(
+            None,
+            self.phone,
+            evaluation_folio="475667",
+            payload={
+                "message_id": 1001,
+                "channel_id": 43906,
+                "transport": "wa_direct",
+                "text": "Hay un bache",
+            },
+        )
+
+        self.assertEqual(
+            migrate_legacy_pending_evaluation_reports(
+                None,
+                self.phone,
+                self.scoped,
+                channel_id=43906,
+                transport="wa_direct",
+            ),
+            1,
+        )
+        self.assertEqual(len(get_pending_evaluation_reports(None, self.scoped)), 1)
+        clear_pending_evaluation_reports(None, self.scoped)
+        self.assertEqual(
+            migrate_legacy_pending_evaluation_reports(
+                None,
+                self.phone,
+                self.scoped,
+                channel_id=43906,
+                transport="wa_direct",
+            ),
+            0,
+        )
+        self.assertEqual(
+            migrate_legacy_pending_evaluation_reports(
+                None,
+                self.phone,
+                "chat2desk:wa_direct:channel:43943:client:456",
+                channel_id=43943,
+                transport="wa_direct",
+            ),
+            0,
+        )
 
     def test_report_turn_survives_outside_request_memory(self):
         staged = stage_pending_evaluation_report(

@@ -209,6 +209,106 @@ def get_evaluation_state(
     return None
 
 
+def migrate_legacy_evaluation_state(
+    storage,
+    legacy_phone_number: str,
+    conversation_key: str,
+    *,
+    channel_id,
+    transport: str,
+    max_age_seconds: float = 7 * 24 * 60 * 60,
+    now: float | None = None,
+) -> bool:
+    """Adopt a pre-scope WhatsApp evaluation without crossing channels."""
+
+    legacy_key = normalize_phone_key(legacy_phone_number)
+    scoped_key = normalize_phone_key(conversation_key)
+    expected_transport = str(transport or "").strip().casefold()
+    if (
+        not legacy_key
+        or legacy_key == scoped_key
+        or channel_id in (None, "")
+        or expected_transport not in {"whatsapp", "wa_direct", "wa_business"}
+    ):
+        return False
+
+    timestamp = float(now if now is not None else time.time())
+    cutoff = timestamp - float(max_age_seconds)
+    if ensure_evaluation_state_storage(storage):
+        conn = None
+        try:
+            conn = _connect(storage)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {EVALUATION_STATE_TABLE}
+                        (phone_number, state, folio, client_id, channel_id,
+                         transport, visible_prompt, updated_at)
+                    SELECT %s, state, folio, client_id, channel_id, transport,
+                           visible_prompt, updated_at
+                    FROM {EVALUATION_STATE_TABLE}
+                    WHERE phone_number = %s
+                      AND channel_id = %s
+                      AND LOWER(transport) IN ('whatsapp', 'wa_direct', 'wa_business')
+                      AND updated_at >= %s
+                    ON CONFLICT (phone_number) DO NOTHING
+                    RETURNING phone_number
+                    """,
+                    (scoped_key, legacy_key, int(channel_id), cutoff),
+                )
+                inserted = bool(cursor.fetchone())
+                cursor.execute(
+                    f"""
+                    DELETE FROM {EVALUATION_STATE_TABLE}
+                    WHERE phone_number = %s
+                      AND channel_id = %s
+                      AND LOWER(transport)
+                          IN ('whatsapp', 'wa_direct', 'wa_business')
+                      AND EXISTS (
+                          SELECT 1 FROM {EVALUATION_STATE_TABLE}
+                          WHERE phone_number = %s
+                      )
+                    """,
+                    (legacy_key, int(channel_id), scoped_key),
+                )
+            conn.commit()
+            return inserted
+        except Exception as error:
+            logger.error(
+                "No se pudo migrar evaluación legacy %s a %s: %s",
+                legacy_key,
+                scoped_key,
+                error,
+            )
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
+    with _memory_lock:
+        legacy = _memory_states.get(legacy_key)
+        legacy_matches = bool(
+            legacy
+            and int(legacy.get("channel_id") or 0) == int(channel_id)
+            and str(legacy.get("transport") or "").strip().casefold()
+            in {"whatsapp", "wa_direct", "wa_business"}
+        )
+        if scoped_key in _memory_states:
+            if legacy_matches:
+                _memory_states.pop(legacy_key, None)
+            return False
+        if (
+            not legacy_matches
+            or float(legacy.get("updated_at") or 0) < cutoff
+        ):
+            return False
+        migrated = legacy.copy()
+        migrated["phone_number"] = scoped_key
+        _memory_states[scoped_key] = migrated
+        _memory_states.pop(legacy_key, None)
+        return True
+
+
 def clear_evaluation_state(storage, phone_number: str) -> bool:
     key = normalize_phone_key(phone_number)
     with _memory_lock:

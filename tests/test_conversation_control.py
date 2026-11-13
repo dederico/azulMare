@@ -8,6 +8,8 @@ from app.services.conversation_control import (
     activate_human_control,
     consume_human_control,
     get_active_human_control,
+    get_active_human_control_with_legacy,
+    legacy_control_matches_channel,
     normalize_phone_key,
     release_human_control,
     release_human_control_if_matches,
@@ -26,6 +28,72 @@ class ConversationControlTests(unittest.TestCase):
     def test_multichannel_identity_keeps_transport_namespace(self):
         key = "chat2desk:telegram:channel:10:client:123"
         self.assertEqual(normalize_phone_key(key), key)
+
+    def test_legacy_takeover_matches_only_original_whatsapp_channel(self):
+        lifecycle = {"channel_id": "43906", "transport": "wa_direct"}
+
+        self.assertTrue(
+            legacy_control_matches_channel(
+                lifecycle,
+                expected_channel_id=43906,
+                expected_transport="wa_direct",
+            )
+        )
+        self.assertFalse(
+            legacy_control_matches_channel(
+                lifecycle,
+                expected_channel_id=43943,
+                expected_transport="wa_direct",
+            )
+        )
+        self.assertFalse(
+            legacy_control_matches_channel(
+                lifecycle,
+                expected_channel_id=43906,
+                expected_transport="facebook",
+            )
+        )
+
+    def test_scoped_whatsapp_honors_legacy_takeover_during_cutover(self):
+        scoped_key = "chat2desk:wa_direct:channel:43906:client:305183524"
+        legacy_phone = "5218112121212"
+        activate_human_control(
+            legacy_phone,
+            expires_at=None,
+            source="pre-deploy-human-takeover",
+        )
+
+        try:
+            control = get_active_human_control_with_legacy(
+                scoped_key,
+                legacy_phone_number=legacy_phone,
+                allow_legacy=True,
+            )
+            self.assertIsNotNone(control)
+            self.assertEqual(control["phone_number"], legacy_phone)
+        finally:
+            release_human_control(legacy_phone)
+            release_human_control(scoped_key)
+
+    def test_legacy_takeover_is_denied_without_channel_authorization(self):
+        scoped_key = "chat2desk:wa_direct:channel:43943:client:305183524"
+        legacy_phone = "5218112121212"
+        activate_human_control(
+            legacy_phone,
+            expires_at=None,
+            source="pre-deploy-human-takeover",
+        )
+
+        try:
+            self.assertIsNone(
+                get_active_human_control_with_legacy(
+                    scoped_key,
+                    legacy_phone_number=legacy_phone,
+                )
+            )
+        finally:
+            release_human_control(legacy_phone)
+            release_human_control(scoped_key)
 
     def test_active_takeover_is_shared_through_canonical_key(self):
         activate_human_control(

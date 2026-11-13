@@ -244,6 +244,109 @@ def get_pending_evaluation_reports(
         )
 
 
+def migrate_legacy_pending_evaluation_reports(
+    storage,
+    legacy_phone_number: str,
+    conversation_key: str,
+    *,
+    channel_id,
+    transport: str,
+) -> int:
+    """Adopt queued report turns that belong to one WhatsApp channel."""
+
+    legacy_key = normalize_phone_key(legacy_phone_number)
+    scoped_key = normalize_phone_key(conversation_key)
+    expected_transport = str(transport or "").strip().casefold()
+    if (
+        not legacy_key
+        or legacy_key == scoped_key
+        or channel_id in (None, "")
+        or expected_transport not in {"whatsapp", "wa_direct", "wa_business"}
+    ):
+        return 0
+
+    if ensure_pending_evaluation_report_storage(storage):
+        conn = None
+        try:
+            conn = _connect(storage)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {PENDING_EVALUATION_REPORTS_TABLE}
+                        (phone_number, evaluation_folio, event_key, payload,
+                         query_params, created_at, updated_at)
+                    SELECT %s, evaluation_folio, event_key, payload,
+                           query_params, created_at, updated_at
+                    FROM {PENDING_EVALUATION_REPORTS_TABLE}
+                    WHERE phone_number = %s
+                      AND COALESCE(payload->>'channel_id', '') = %s
+                      AND LOWER(COALESCE(payload->>'transport', %s))
+                          IN ('whatsapp', 'wa_direct', 'wa_business')
+                    ON CONFLICT (phone_number, event_key) DO NOTHING
+                    """,
+                    (
+                        scoped_key,
+                        legacy_key,
+                        str(channel_id),
+                        expected_transport,
+                    ),
+                )
+                inserted = max(0, int(cursor.rowcount or 0))
+                cursor.execute(
+                    f"""
+                    DELETE FROM {PENDING_EVALUATION_REPORTS_TABLE}
+                    WHERE phone_number = %s
+                      AND COALESCE(payload->>'channel_id', '') = %s
+                      AND LOWER(COALESCE(payload->>'transport', %s))
+                          IN ('whatsapp', 'wa_direct', 'wa_business')
+                    """,
+                    (legacy_key, str(channel_id), expected_transport),
+                )
+            conn.commit()
+            return inserted
+        except Exception as error:
+            logger.exception(
+                "No se pudieron migrar reportes pausados de %s a %s: %s",
+                legacy_key,
+                scoped_key,
+                error,
+            )
+            return 0
+        finally:
+            if conn is not None:
+                conn.close()
+
+    inserted = 0
+    with _memory_lock:
+        target = _memory_events.setdefault(scoped_key, {})
+        legacy_events = _memory_events.get(legacy_key, {})
+        consumed_event_keys = []
+        for event_key, record in list(legacy_events.items()):
+            payload = record.get("payload") or {}
+            payload_transport = str(
+                payload.get("transport") or expected_transport
+            ).strip().casefold()
+            if (
+                str(payload.get("channel_id") or "") != str(channel_id)
+                or payload_transport
+                not in {"whatsapp", "wa_direct", "wa_business"}
+            ):
+                continue
+            if event_key not in target:
+                migrated = record.copy()
+                migrated["phone_number"] = scoped_key
+                target[event_key] = migrated
+                inserted += 1
+            consumed_event_keys.append(event_key)
+        for event_key in consumed_event_keys:
+            legacy_events.pop(event_key, None)
+        if not legacy_events:
+            _memory_events.pop(legacy_key, None)
+        if not target:
+            _memory_events.pop(scoped_key, None)
+    return inserted
+
+
 def list_resumable_pending_report_phones(
     storage,
     *,

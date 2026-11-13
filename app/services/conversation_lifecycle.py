@@ -338,6 +338,149 @@ def get_lifecycle_state(phone_number: str, *, storage=None) -> dict[str, Any] | 
             conn.close()
 
 
+def migrate_legacy_lifecycle_state(
+    legacy_phone_number: str,
+    conversation_key: str,
+    *,
+    channel_id,
+    transport: str,
+    storage=None,
+) -> bool:
+    """Copy matching pre-scope WhatsApp lifecycle state to a scoped key."""
+
+    legacy_key = normalize_phone_key(legacy_phone_number)
+    scoped_key = normalize_phone_key(conversation_key)
+    expected_channel = str(channel_id) if channel_id not in (None, "") else None
+    expected_transport = str(transport or "").strip().casefold()
+    if (
+        not legacy_key
+        or legacy_key == scoped_key
+        or expected_channel is None
+        or expected_transport not in {"whatsapp", "wa_direct", "wa_business"}
+    ):
+        return False
+    legacy_state = get_lifecycle_state(legacy_key, storage=storage)
+    if not legacy_state:
+        return False
+    legacy_transport = str(legacy_state.get("transport") or "").strip().casefold()
+    if (
+        str(legacy_state.get("channel_id") or "") != expected_channel
+        or legacy_transport not in {"whatsapp", "wa_direct", "wa_business"}
+    ):
+        return False
+
+    migrated_state = legacy_state.copy()
+    migrated_state["phone_number"] = scoped_key
+    durable_migration_succeeded = False
+
+    if storage is not None and ensure_conversation_lifecycle_storage(storage):
+        conn = None
+        try:
+            conn = _connect(storage)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {LIFECYCLE_TABLE}
+                        (phone_number, last_inbound_uid, last_inbound_at, session_key,
+                         greeted_session_key, inactivity_claim_uid,
+                         inactivity_closed_for_uid, reopen_greeting_pending,
+                         client_id, channel_id, transport, inactivity_failure_count,
+                         inactivity_next_retry_at, inactivity_terminal,
+                         conversation_epoch, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (phone_number) DO NOTHING
+                    """,
+                    (
+                        scoped_key,
+                        migrated_state.get("last_inbound_uid"),
+                        migrated_state.get("last_inbound_at"),
+                        migrated_state.get("session_key"),
+                        migrated_state.get("greeted_session_key"),
+                        migrated_state.get("inactivity_claim_uid"),
+                        migrated_state.get("inactivity_closed_for_uid"),
+                        bool(migrated_state.get("reopen_greeting_pending")),
+                        migrated_state.get("client_id"),
+                        migrated_state.get("channel_id"),
+                        migrated_state.get("transport"),
+                        int(migrated_state.get("inactivity_failure_count") or 0),
+                        migrated_state.get("inactivity_next_retry_at"),
+                        bool(migrated_state.get("inactivity_terminal")),
+                        int(migrated_state.get("conversation_epoch") or 0),
+                        float(migrated_state.get("updated_at") or time.time()),
+                    ),
+                )
+                inserted = cursor.rowcount == 1
+                cursor.execute(
+                    f"""
+                    UPDATE {LIFECYCLE_TABLE}
+                    SET last_inbound_uid = NULL,
+                        last_inbound_at = NULL,
+                        session_key = NULL,
+                        greeted_session_key = NULL,
+                        inactivity_claim_uid = NULL,
+                        inactivity_closed_for_uid = NULL,
+                        reopen_greeting_pending = FALSE,
+                        inactivity_failure_count = 0,
+                        inactivity_next_retry_at = NULL,
+                        inactivity_terminal = FALSE
+                    WHERE phone_number = %s
+                      AND channel_id = %s
+                      AND LOWER(transport)
+                          IN ('whatsapp', 'wa_direct', 'wa_business')
+                      AND EXISTS (
+                          SELECT 1 FROM {LIFECYCLE_TABLE}
+                          WHERE phone_number = %s
+                      )
+                    """,
+                    (legacy_key, expected_channel, scoped_key),
+                )
+            conn.commit()
+            durable_migration_succeeded = True
+        except Exception as error:
+            logger.error(
+                "No se pudo migrar lifecycle legacy %s a %s: %s",
+                legacy_key,
+                scoped_key,
+                error,
+            )
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
+    with _memory_lock:
+        current_legacy = _memory_state.get(legacy_key)
+        current_matches = bool(
+            current_legacy
+            and str(current_legacy.get("channel_id") or "") == expected_channel
+            and str(current_legacy.get("transport") or "").strip().casefold()
+            in {"whatsapp", "wa_direct", "wa_business"}
+        )
+        if storage is None or not ensure_conversation_lifecycle_storage(storage):
+            inserted = scoped_key not in _memory_state
+        if inserted:
+            _memory_state[scoped_key] = migrated_state
+        if current_matches and (
+            scoped_key in _memory_state or durable_migration_succeeded
+        ):
+            current_legacy.update(
+                {
+                    "last_inbound_uid": None,
+                    "last_inbound_at": None,
+                    "session_key": None,
+                    "greeted_session_key": None,
+                    "inactivity_claim_uid": None,
+                    "inactivity_closed_for_uid": None,
+                    "reopen_greeting_pending": False,
+                    "inactivity_failure_count": 0,
+                    "inactivity_next_retry_at": None,
+                    "inactivity_terminal": False,
+                }
+            )
+    return inserted
+
+
 def reset_conversation_lifecycle(phone_number: str, *, storage=None) -> bool:
     """Clear lifecycle fields while advancing the durable conversation epoch."""
     key = normalize_phone_key(phone_number)

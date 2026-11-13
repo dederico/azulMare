@@ -15,6 +15,7 @@ from app.services.conversation_lifecycle import (
     mark_inactivity_failure,
     mark_reopen_greeting_pending,
     mark_session_greeting_sent,
+    migrate_legacy_lifecycle_state,
     quarantine_stale_inactivity_backlog,
     record_inbound_activity,
     release_inactivity_claim,
@@ -58,6 +59,104 @@ class ConversationLifecycleTests(unittest.TestCase):
         self.assertTrue(
             claim_session_greeting(self.phone, second_key, boundary_requested=True)
         )
+
+    def test_migrates_matching_legacy_whatsapp_lifecycle_to_scoped_key(self):
+        scoped_key = "chat2desk:wa_direct:channel:43906:client:305183524"
+        session_key = build_session_key(114127775, 31675339)
+        record_inbound_activity(
+            self.phone,
+            970485004,
+            session_key,
+            now=100,
+            client_id=305183524,
+            channel_id=43906,
+            transport="wa_direct",
+        )
+        self.assertTrue(
+            claim_session_greeting(
+                self.phone,
+                session_key,
+                boundary_requested=True,
+            )
+        )
+
+        self.assertTrue(
+            migrate_legacy_lifecycle_state(
+                self.phone,
+                scoped_key,
+                channel_id=43906,
+                transport="wa_direct",
+            )
+        )
+
+        migrated = get_lifecycle_state(scoped_key)
+        self.assertEqual(migrated["last_inbound_uid"], "970485004")
+        self.assertEqual(migrated["greeted_session_key"], session_key)
+        self.assertEqual(migrated["channel_id"], "43906")
+
+        legacy = get_lifecycle_state(self.phone)
+        self.assertIsNone(legacy["last_inbound_uid"])
+        self.assertIsNone(legacy["last_inbound_at"])
+        self.assertEqual(legacy["channel_id"], "43906")
+        self.assertEqual(legacy["transport"], "wa_direct")
+        self.assertNotIn(
+            self.phone,
+            list_inactivity_candidates(threshold_seconds=900, now=1001),
+        )
+
+    def test_new_whatsapp_contact_without_legacy_state_is_safe(self):
+        self.assertFalse(
+            migrate_legacy_lifecycle_state(
+                "5218119999999",
+                "chat2desk:wa_direct:channel:43906:client:999",
+                channel_id=43906,
+                transport="wa_direct",
+            )
+        )
+
+    def test_does_not_migrate_legacy_lifecycle_from_another_channel(self):
+        scoped_key = "chat2desk:wa_direct:channel:43943:client:305183524"
+        record_inbound_activity(
+            self.phone,
+            970485004,
+            build_session_key(1, 10),
+            now=100,
+            client_id=305183524,
+            channel_id=43906,
+            transport="wa_direct",
+        )
+
+        self.assertFalse(
+            migrate_legacy_lifecycle_state(
+                self.phone,
+                scoped_key,
+                channel_id=43943,
+                transport="wa_direct",
+            )
+        )
+        self.assertIsNone(get_lifecycle_state(scoped_key))
+
+    def test_platform_transport_cannot_adopt_whatsapp_lifecycle(self):
+        scoped_key = "chat2desk:facebook:channel:43906:client:305183524"
+        record_inbound_activity(
+            self.phone,
+            970485004,
+            build_session_key(1, 10),
+            now=100,
+            client_id=305183524,
+            channel_id=43906,
+            transport="wa_direct",
+        )
+
+        self.assertFalse(
+            migrate_legacy_lifecycle_state(
+                self.phone,
+                scoped_key,
+                channel_id=43906,
+                transport="facebook",
+            )
+        )
+        self.assertIsNone(get_lifecycle_state(scoped_key))
 
     def test_failed_immediate_return_greeting_is_claimed_by_next_inbound(self):
         session_key = build_session_key(1, 10)

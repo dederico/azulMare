@@ -109,6 +109,8 @@ from app.services.conversation_control import (
     consume_human_control,
     ensure_conversation_control_storage,
     get_active_human_control,
+    get_active_human_control_with_legacy,
+    legacy_control_matches_channel,
     normalize_phone_key,
     release_human_control,
     release_human_control_if_matches,
@@ -127,6 +129,7 @@ from app.services.conversation_lifecycle import (
     mark_inactivity_close_sent,
     mark_reopen_greeting_pending,
     mark_session_greeting_sent,
+    migrate_legacy_lifecycle_state,
     record_inbound_activity,
     quarantine_stale_inactivity_backlog,
     release_inactivity_claim,
@@ -278,6 +281,7 @@ from app.services.whatsapp_failover import (
 from app.services.report_state import (
     delete_report_state,
     ensure_report_state_storage,
+    load_channel_report_state,
     load_report_state,
     save_report_state,
 )
@@ -296,6 +300,7 @@ from app.services.report_completion import (
     is_delayed_pre_completion_event,
     is_queued_before_completion,
     mark_report_completion_notified,
+    migrate_legacy_report_completion,
     purge_expired_report_completions,
     record_report_completion,
     report_session_supersedes_completion,
@@ -312,6 +317,7 @@ from app.services.evaluation_state import (
     clear_evaluation_state,
     ensure_evaluation_state_storage,
     get_evaluation_state,
+    migrate_legacy_evaluation_state,
     save_evaluation_state,
 )
 from app.services.pending_evaluation_reports import (
@@ -321,6 +327,7 @@ from app.services.pending_evaluation_reports import (
     ensure_pending_evaluation_report_storage,
     get_pending_evaluation_reports,
     list_resumable_pending_report_phones,
+    migrate_legacy_pending_evaluation_reports,
     stage_pending_evaluation_report,
 )
 from app.services.media_payload import get_video_from_payload
@@ -505,7 +512,7 @@ def log_chat2desk_outbound_response(context, response, from_number=None, message
 
 
 def _normalize_campaign_phone(raw_phone: str) -> str:
-    digits = "".join(ch for ch in (raw_phone or "") if ch.isdigit())
+    digits = normalize_contact_phone(raw_phone) or ""
     if len(digits) == 10:
         return f"+52{digits}"
     if len(digits) == 12 and digits.startswith("52"):
@@ -1955,7 +1962,33 @@ def release_takeover_if_matches(
 
 def get_active_takeover(phone_number: str, *, storage=None) -> dict | None:
     key = normalize_phone_key(phone_number)
-    control = get_active_human_control(key, storage=storage)
+    context = chat2desk_channel_contexts.get(key) or {}
+    legacy_phone = None
+    candidate_legacy_phone = normalize_contact_phone(context.get("contact_phone"))
+    expected_channel = str(
+        context.get("state_channel_id") or context.get("channel_id") or ""
+    )
+    if (
+        candidate_legacy_phone
+        and expected_channel
+        and is_phone_transport(context.get("channel_transport"))
+    ):
+        legacy_lifecycle = get_lifecycle_state(
+            candidate_legacy_phone,
+            storage=storage,
+        )
+        if legacy_control_matches_channel(
+            legacy_lifecycle,
+            expected_channel_id=expected_channel,
+            expected_transport=context.get("channel_transport"),
+        ):
+            legacy_phone = candidate_legacy_phone
+    control = get_active_human_control_with_legacy(
+        key,
+        legacy_phone_number=legacy_phone,
+        allow_legacy=bool(legacy_phone),
+        storage=storage,
+    )
     if control:
         if is_non_authoritative_control_source(control.get("source")):
             logger.warning(
@@ -1964,7 +1997,10 @@ def get_active_takeover(phone_number: str, *, storage=None) -> dict | None:
                 key,
                 control.get("source"),
             )
-            release_human_control(key, storage=storage)
+            release_human_control(
+                control.get("phone_number") or key,
+                storage=storage,
+            )
             transferred_numbers.pop(key, None)
             return None
         expires_at = control.get("expires_at")
@@ -4329,6 +4365,7 @@ async def send_claimed_session_greeting(
     channel_id,
     transport,
     *,
+    contact_phone: str | None = None,
     ask_emergency: bool = True,
 ) -> bool:
     greeting_message = build_return_to_sam_greeting(
@@ -4358,6 +4395,10 @@ async def send_claimed_session_greeting(
         storage=db,
         greeting_key=f"session:{from_number}:{lifecycle_session_key}:{current_epoch}",
         phone_number=from_number,
+        contact_phone=(
+            normalize_contact_phone(contact_phone)
+            or chat2desk_contact_phone_for_conversation(from_number)
+        ),
         client_id=client_id,
         channel_id=channel_id,
         transport=transport,
@@ -5343,6 +5384,15 @@ user_sessions = {}  # key: from_number, value: WhatsAppSession
 chat2desk_channel_contexts = {}
 
 
+def chat2desk_contact_phone_for_conversation(conversation_key: str) -> str | None:
+    """Return contact data without collapsing channel-scoped conversation state."""
+
+    context = chat2desk_channel_contexts.get(conversation_key) or {}
+    return normalize_contact_phone(
+        context.get("contact_phone")
+    ) or normalize_contact_phone(conversation_key)
+
+
 def remember_chat2desk_channel_context(
     conversation_key: str,
     *,
@@ -5350,13 +5400,26 @@ def remember_chat2desk_channel_context(
     transport: str,
     client_id,
     channel_id,
+    state_channel_id=None,
     uses_platform_identity: bool,
 ) -> None:
+    resolved_state_channel_id = state_channel_id
+    if (
+        resolved_state_channel_id in (None, "")
+        and ":failover:" in str(conversation_key or "")
+        and is_phone_transport(transport)
+    ):
+        resolved_state_channel_id = load_whatsapp_failover_config().primary_channel_id
     context = {
         "contact_phone": normalize_contact_phone(contact_phone),
         "channel_transport": str(transport or "unknown"),
         "channel_client_id": str(client_id) if client_id not in (None, "") else None,
         "channel_id": str(channel_id) if channel_id not in (None, "") else None,
+        "state_channel_id": (
+            str(resolved_state_channel_id)
+            if resolved_state_channel_id not in (None, "")
+            else (str(channel_id) if channel_id not in (None, "") else None)
+        ),
         "uses_platform_identity": bool(uses_platform_identity),
     }
     previous = chat2desk_channel_contexts.get(conversation_key) or {}
@@ -5915,13 +5978,14 @@ async def send_chat2desk_message(phone_number, client_id, channel_id, text, tran
             )
             return False
 
+        failover_phone = chat2desk_contact_phone_for_conversation(phone_number)
         client_id, channel_id = await asyncio.to_thread(
             resolve_failover_outbound,
             storage,
             client_id=client_id,
             channel_id=channel_id,
             transport=transport,
-            phone_number=phone_number,
+            phone_number=failover_phone,
         )
 
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
@@ -6403,11 +6467,50 @@ def _restore_durable_report_context(storage, payload):
     conversation_key = channel_identity.conversation_key
     if not conversation_key:
         return None
-    persisted = load_report_state(storage, conversation_key)
+    if (
+        is_phone_transport(channel_identity.transport)
+        and channel_identity.contact_phone
+    ):
+        migration_args = {
+            "channel_id": channel_identity.state_channel_id,
+            "transport": channel_identity.transport,
+        }
+        migrate_legacy_lifecycle_state(
+            channel_identity.contact_phone,
+            conversation_key,
+            storage=storage,
+            **migration_args,
+        )
+        migrate_legacy_evaluation_state(
+            storage,
+            channel_identity.contact_phone,
+            conversation_key,
+            **migration_args,
+        )
+        migrate_legacy_pending_evaluation_reports(
+            storage,
+            channel_identity.contact_phone,
+            conversation_key,
+            **migration_args,
+        )
+        migrate_legacy_report_completion(
+            storage,
+            channel_identity.contact_phone,
+            conversation_key,
+            **migration_args,
+        )
     current_epoch = int(
         (get_lifecycle_state(conversation_key, storage=storage) or {}).get(
             "conversation_epoch", 0
         )
+    )
+    persisted = load_channel_report_state(
+        storage,
+        conversation_key=conversation_key,
+        contact_phone=channel_identity.contact_phone,
+        channel_id=channel_identity.state_channel_id,
+        transport=channel_identity.transport,
+        conversation_epoch=current_epoch,
     )
     if persisted and int(persisted.get("conversation_epoch") or 0) != current_epoch:
         logger.warning(
@@ -6522,16 +6625,27 @@ async def _deliver_greeting_job(job, storage) -> bool:
                 job["greeting_key"],
             )
             return False
+        remember_chat2desk_channel_context(
+            job["phone_number"],
+            contact_phone=job.get("contact_phone"),
+            transport=job["transport"],
+            client_id=job["client_id"],
+            channel_id=job["channel_id"],
+            uses_platform_identity=not is_phone_transport(job["transport"]),
+        )
         if get_active_takeover(job["phone_number"], storage=storage):
             raise RuntimeError("takeover humano activo")
 
+        failover_phone = chat2desk_contact_phone_for_conversation(
+            job["phone_number"]
+        )
         greeting_client_id, greeting_channel_id = await asyncio.to_thread(
             resolve_failover_outbound,
             storage,
             client_id=job["client_id"],
             channel_id=job["channel_id"],
             transport=job["transport"],
-            phone_number=job["phone_number"],
+            phone_number=failover_phone,
         )
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
         async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as http_client:
@@ -6582,6 +6696,7 @@ async def queue_and_deliver_greeting(
     storage,
     greeting_key,
     phone_number,
+    contact_phone=None,
     client_id,
     channel_id,
     transport,
@@ -6593,6 +6708,10 @@ async def queue_and_deliver_greeting(
         storage,
         greeting_key=greeting_key,
         phone_number=phone_number,
+        contact_phone=(
+            normalize_contact_phone(contact_phone)
+            or chat2desk_contact_phone_for_conversation(phone_number)
+        ),
         client_id=client_id,
         channel_id=channel_id,
         transport=transport,
@@ -7222,7 +7341,7 @@ async def _handle_temporary_whatsapp_failover(
     *,
     storage,
     payload,
-    from_number,
+    phone_number,
     client_id,
     channel_id,
     message_type,
@@ -7238,9 +7357,9 @@ async def _handle_temporary_whatsapp_failover(
         replay=bool(payload.get("_sam_failover_replay")),
     ):
         return None
-    if not is_phone_allowed_for_failover(from_number, config):
+    if not is_phone_allowed_for_failover(phone_number, config):
         return None
-    if not from_number or client_id in (None, ""):
+    if not phone_number or client_id in (None, ""):
         logger.error(
             "🚧 [WHATSAPP FAILOVER] inbound sin phone/client_id channel_id=%s",
             channel_id,
@@ -7258,7 +7377,7 @@ async def _handle_temporary_whatsapp_failover(
         decision = await asyncio.to_thread(
             stage_primary_inbound,
             storage,
-            phone_number=from_number,
+            phone_number=phone_number,
             primary_client_id=client_id,
             payload=payload,
             config=config,
@@ -7269,24 +7388,24 @@ async def _handle_temporary_whatsapp_failover(
                 logger.warning(
                     "♻️ [WHATSAPP FAILOVER RETRY] Reenviando HSM por falta de "
                     "confirmación phone=%s expired_pending=%s",
-                    from_number,
+                    phone_number,
                     decision.get("expired_pending", 0),
                 )
             failover_client_id = await _ensure_chat2desk_failover_client(
-                phone_number=from_number,
+                phone_number=phone_number,
                 nickname=(payload.get("client") or {}).get("name"),
                 config=config,
             )
             sent = await _send_whatsapp_failover_hsm(
                 storage=storage,
-                phone_number=from_number,
+                phone_number=phone_number,
                 client_id=failover_client_id,
                 config=config,
             )
             await asyncio.to_thread(
                 mark_failover_hsm_result,
                 storage,
-                phone_number=from_number,
+                phone_number=phone_number,
                 success=sent,
             )
             if not sent:
@@ -7300,7 +7419,7 @@ async def _handle_temporary_whatsapp_failover(
             logger.critical(
                 "🚧 [WHATSAPP FAILOVER] HSM temporal aceptado phone=%s "
                 "primary_channel=%s failover_channel=%s",
-                from_number,
+                phone_number,
                 config.primary_channel_id,
                 config.failover_channel_id,
             )
@@ -7312,12 +7431,12 @@ async def _handle_temporary_whatsapp_failover(
             pending_messages = await asyncio.to_thread(
                 list_pending_for_active_route,
                 storage,
-                phone_number=from_number,
+                phone_number=phone_number,
                 config=config,
             )
             replayed = await _enqueue_whatsapp_failover_replays(
                 storage=storage,
-                phone_number=from_number,
+                phone_number=phone_number,
                 pending_messages=pending_messages,
                 failover_client_id=decision["failover_client_id"],
                 config=config,
@@ -7325,7 +7444,7 @@ async def _handle_temporary_whatsapp_failover(
             logger.info(
                 "🚧 [WHATSAPP FAILOVER] inbound primario redirigido phone=%s "
                 "replayed=%s",
-                from_number,
+                phone_number,
                 replayed,
             )
             return JSONResponse(
@@ -7342,7 +7461,7 @@ async def _handle_temporary_whatsapp_failover(
     activation = await asyncio.to_thread(
         activate_failover_and_list_pending,
         storage,
-        phone_number=from_number,
+        phone_number=phone_number,
         failover_client_id=client_id,
         config=config,
     )
@@ -7360,7 +7479,7 @@ async def _handle_temporary_whatsapp_failover(
             logger.critical(
                 "🚧 [WHATSAPP FAILOVER] confirmación tardía consumida "
                 "phone=%s expired_pending=%s",
-                from_number,
+                phone_number,
                 activation.get("expired_pending", 0),
             )
             return JSONResponse(
@@ -7370,14 +7489,14 @@ async def _handle_temporary_whatsapp_failover(
 
     replayed = await _enqueue_whatsapp_failover_replays(
         storage=storage,
-        phone_number=from_number,
+        phone_number=phone_number,
         pending_messages=pending_messages,
         failover_client_id=client_id,
         config=config,
     )
     logger.critical(
         "🚧 [WHATSAPP FAILOVER] canal temporal confirmado phone=%s replayed=%s",
-        from_number,
+        phone_number,
         replayed,
     )
     # The quick reply is transport control, not a citizen answer. The saved
@@ -7429,6 +7548,7 @@ async def _process_whatsapp_request(request):
             transport=transport,
             client_id=client_id,
             channel_id=channel_id,
+            state_channel_id=channel_identity.state_channel_id,
             uses_platform_identity=channel_identity.uses_platform_identity,
         )
         contact_phone = (
@@ -7442,7 +7562,7 @@ async def _process_whatsapp_request(request):
             failover_response = await _handle_temporary_whatsapp_failover(
                 storage=db,
                 payload=payload,
-                from_number=from_number,
+                phone_number=contact_phone,
                 client_id=client_id,
                 channel_id=channel_id,
                 message_type=message_type,
@@ -7521,12 +7641,23 @@ async def _process_whatsapp_request(request):
         if reconcile_outgoing_campaign_outbox_event(db, payload):
             return JSONResponse(content={"status": True, "message": "Webhook de campaña saliente conciliado"})
 
-        if message_type == 'from_client' and from_number:
-            record_outgoing_campaign_reply(db, from_number, body or message_text or "")
+        if (
+            message_type == 'from_client'
+            and contact_phone
+            and is_phone_transport(transport)
+        ):
+            record_outgoing_campaign_reply(
+                db,
+                contact_phone,
+                body or message_text or "",
+            )
 
         # 🆕 VERIFICAR SI ES EL NÚMERO ESPECIAL
         # ========EQUIPO CIAC============
-        if from_number == SPECIAL_NUMBER:
+        if (
+            is_phone_transport(transport)
+            and contact_phone == SPECIAL_NUMBER
+        ):
             logger.critical(f"🚨 NÚMERO ESPECIAL DETECTADO ({SPECIAL_NUMBER}) - ENVIANDO A WEBHOOK")
             
             webhook_url = "https://n8n.evolutek.info/webhook/fd814da2-b597-40f6-9f64-e812c8551207"
@@ -7764,7 +7895,14 @@ async def _process_whatsapp_request(request):
                 "human-return",
                 message_id,
             )
-            released_control = consume_human_control(from_number, storage=db)
+            takeover_storage_key = (
+                active_control_before_return.get("phone_number")
+                or from_number
+            )
+            released_control = consume_human_control(
+                takeover_storage_key,
+                storage=db,
+            )
             if not released_control:
                 logger.warning(
                     "🚫 [DUPLICATE RETURN TO SAM] Mensaje de retorno ignorado porque el "
@@ -7861,6 +7999,7 @@ async def _process_whatsapp_request(request):
                 storage=db,
                 greeting_key=f"return:{from_number}:{lifecycle_session_key}:{return_epoch}",
                 phone_number=from_number,
+                contact_phone=contact_phone,
                 client_id=payload.get('client_id'),
                 channel_id=payload.get('channel_id'),
                 transport=payload.get('transport', 'wa_direct'),
@@ -8037,8 +8176,15 @@ async def _process_whatsapp_request(request):
             return JSONResponse(content={"status": True, "message": "Message ignored - conversation transferred to human agent"})
 
         proactive_guard = None
-        if message_type == 'from_client' and from_number:
-            proactive_guard = get_active_proactive_campaign_guard(db, from_number)
+        if (
+            message_type == 'from_client'
+            and contact_phone
+            and is_phone_transport(transport)
+        ):
+            proactive_guard = get_active_proactive_campaign_guard(
+                db,
+                contact_phone,
+            )
             if proactive_guard:
                 logger.critical(
                     "🛑 [PROACTIVE HSM GUARD] phone=%s campaign_id=%s campaign_name=%s campaign_kind=%s body=%s",
@@ -10016,6 +10162,7 @@ async def _process_whatsapp_request(request):
                     client_id,
                     channel_id,
                     transport,
+                    contact_phone=contact_phone,
                 )
                 if not greeting_sent:
                     release_inbound_processing_claim(uid, inbound_claim_token, storage=db)
@@ -10078,6 +10225,7 @@ async def _process_whatsapp_request(request):
                         client_id,
                         channel_id,
                         transport,
+                        contact_phone=contact_phone,
                     )
                     if not greeting_sent:
                         release_inbound_processing_claim(
@@ -11012,6 +11160,7 @@ async def _process_whatsapp_request(request):
                 client_id,
                 channel_id,
                 transport,
+                contact_phone=contact_phone,
                 ask_emergency=not emergency_state_known,
             )
             if not sent:

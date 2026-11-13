@@ -2,6 +2,9 @@ import time
 
 import pytest
 
+from app.services.chat2desk_channel_identity import (
+    extract_chat2desk_channel_identity,
+)
 from app.services import whatsapp_failover as failover
 
 
@@ -246,6 +249,44 @@ def test_explicit_failover_mode_keeps_existing_tunnel_behavior():
     ) == ("202", 43943)
 
 
+def test_removed_allowlist_phone_cannot_use_existing_tunnel():
+    active_config = enabled_config()
+    restricted_config = enabled_config(
+        WHATSAPP_FAILOVER_ALLOWED_PHONES="5215625189364"
+    )
+    phone = "5218112345678"
+    failover.stage_primary_inbound(
+        None,
+        phone_number=phone,
+        primary_client_id=101,
+        payload=inbound(),
+        config=active_config,
+    )
+    failover.activate_failover_and_list_pending(
+        None,
+        phone_number=phone,
+        failover_client_id=202,
+        config=active_config,
+    )
+
+    assert failover.resolve_failover_outbound(
+        None,
+        client_id=101,
+        channel_id=43906,
+        transport="wa_direct",
+        phone_number=phone,
+        config=restricted_config,
+    ) == (101, 43906)
+    assert failover.resolve_failover_outbound(
+        None,
+        client_id=101,
+        channel_id=43906,
+        transport="wa_direct",
+        phone_number=None,
+        config=restricted_config,
+    ) == (101, 43906)
+
+
 def test_invalid_routing_mode_falls_back_to_parallel_without_tunnel():
     failover_config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="failover")
     invalid_config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="typo")
@@ -334,6 +375,40 @@ def test_durable_handoff_flow_preserves_the_full_original_payload():
     assert replay["coordinates"] == first["coordinates"]
     assert replay["text"] == first["text"]
     assert replay["_sam_failover_replay"] is True
+
+
+def test_failover_replay_keeps_primary_conversation_identity():
+    original = inbound()
+    original_identity = extract_chat2desk_channel_identity(original)
+
+    replay = failover.build_failover_replay_payload(
+        original,
+        failover_client_id=202,
+        failover_channel_id=43943,
+    )
+    replay_identity = extract_chat2desk_channel_identity(replay)
+
+    assert replay["channel_id"] == 43943
+    assert replay["client_id"] == 202
+    assert replay_identity.conversation_key == original_identity.conversation_key
+
+
+def test_failover_mode_keeps_ordinary_temporary_messages_in_same_conversation(
+    monkeypatch,
+):
+    monkeypatch.setenv("WHATSAPP_CHANNEL_ROUTING_MODE", "failover")
+    primary = inbound()
+    temporary = {
+        **inbound(message_id="temporary-2", text="Sigo con el reporte"),
+        "channel_id": 43943,
+        "client_id": 202,
+    }
+
+    primary_identity = extract_chat2desk_channel_identity(primary)
+    temporary_identity = extract_chat2desk_channel_identity(temporary)
+
+    assert primary_identity.conversation_key == temporary_identity.conversation_key
+    assert primary_identity.contact_phone == "5218112345678"
 
 
 def test_active_route_replays_new_primary_messages_without_another_hsm():

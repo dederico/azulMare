@@ -18,6 +18,7 @@ except ImportError:  # Mantiene disponible el fallback en memoria en pruebas mí
 
 CONTROL_TABLE = "conversation_controls"
 HUMAN_MODE = "human"
+_PHONE_TRANSPORTS = {"whatsapp", "wa_direct", "wa_business"}
 _memory_controls: dict[str, dict[str, Any]] = {}
 _memory_lock = threading.RLock()
 _schema_lock = threading.Lock()
@@ -32,6 +33,25 @@ def normalize_phone_key(phone_number: str | None) -> str:
         return raw.casefold()
     digits = re.sub(r"\D", "", raw)
     return digits or raw
+
+
+def legacy_control_matches_channel(
+    lifecycle_state: dict[str, Any] | None,
+    *,
+    expected_channel_id,
+    expected_transport: str,
+) -> bool:
+    """Authorize legacy phone state only for its original WhatsApp channel."""
+
+    state = lifecycle_state or {}
+    transport = str(expected_transport or "").strip().casefold()
+    legacy_transport = str(state.get("transport") or "").strip().casefold()
+    return bool(
+        expected_channel_id not in (None, "")
+        and transport in _PHONE_TRANSPORTS
+        and legacy_transport in _PHONE_TRANSPORTS
+        and str(state.get("channel_id") or "") == str(expected_channel_id)
+    )
 
 
 def _connect(storage):
@@ -336,3 +356,25 @@ def get_active_human_control(phone_number: str, *, storage=None) -> dict[str, An
     with _memory_lock:
         _memory_controls[key] = candidate.copy()
     return candidate
+
+
+def get_active_human_control_with_legacy(
+    phone_number: str,
+    *,
+    legacy_phone_number: str | None = None,
+    allow_legacy: bool = False,
+    storage=None,
+) -> dict[str, Any] | None:
+    """Honor takeovers created before WhatsApp keys became channel-scoped."""
+
+    control = get_active_human_control(phone_number, storage=storage)
+    if control:
+        return control
+    if not allow_legacy:
+        return None
+
+    primary_key = normalize_phone_key(phone_number)
+    legacy_key = normalize_phone_key(legacy_phone_number)
+    if not legacy_key or legacy_key == primary_key:
+        return None
+    return get_active_human_control(legacy_key, storage=storage)

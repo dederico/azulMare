@@ -255,6 +255,10 @@ def build_failover_replay_payload(
         or replay.get("request_id")
         or f"unknown-{time.time_ns()}"
     )
+    replay["_sam_failover_origin_client_id"] = replay.get("client_id") or (
+        replay.get("client") or {}
+    ).get("id")
+    replay["_sam_failover_origin_channel_id"] = replay.get("channel_id")
     replay["message_id"] = f"{original_message_id}:sam-failover"
     replay["client_id"] = failover_client_id
     replay["channel_id"] = failover_channel_id
@@ -898,6 +902,8 @@ def resolve_failover_outbound(
     now = time.time()
     phone = str(phone_number or "").strip()
     client_key = str(client_id or "")
+    if phone and not is_phone_allowed_for_failover(phone, config):
+        return client_id, channel_id
 
     if storage is None:
         with _memory_lock:
@@ -908,6 +914,11 @@ def resolve_failover_outbound(
             )
             for route in candidates:
                 if not route or route.get("status") != "active":
+                    continue
+                if not is_phone_allowed_for_failover(
+                    route.get("phone_number"),
+                    config,
+                ):
                     continue
                 if float(route.get("expires_at") or 0) <= now:
                     continue
@@ -928,7 +939,7 @@ def resolve_failover_outbound(
             if phone:
                 cursor.execute(
                     f"""
-                    SELECT failover_client_id, failover_channel_id
+                    SELECT phone_number, failover_client_id, failover_channel_id
                     FROM {ROUTES_TABLE}
                     WHERE phone_number = %s AND status = 'active' AND expires_at > %s
                     """,
@@ -937,7 +948,7 @@ def resolve_failover_outbound(
             else:
                 cursor.execute(
                     f"""
-                    SELECT failover_client_id, failover_channel_id
+                    SELECT phone_number, failover_client_id, failover_channel_id
                     FROM {ROUTES_TABLE}
                     WHERE status = 'active' AND expires_at > %s
                       AND (primary_client_id = %s OR failover_client_id = %s)
@@ -946,8 +957,12 @@ def resolve_failover_outbound(
                     (now, client_key, client_key),
                 )
             row = cursor.fetchone()
-        if row and row[0]:
-            return row[0], int(row[1])
+        if (
+            row
+            and row[1]
+            and is_phone_allowed_for_failover(row[0], config)
+        ):
+            return row[1], int(row[2])
         return client_id, channel_id
     except Exception as error:
         logger.exception("No se pudo resolver la ruta temporal de WhatsApp: %s", error)

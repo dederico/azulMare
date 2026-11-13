@@ -280,6 +280,7 @@ from app.services.whatsapp_failover import (
 )
 from app.services.report_state import (
     delete_report_state,
+    ensure_report_session_defaults,
     ensure_report_state_storage,
     load_channel_report_state,
     load_report_state,
@@ -2821,28 +2822,26 @@ def create_or_update_report_session(from_number):
     NO requiere imágenes para iniciar la sesión.
     """
     with report_sessions_lock:
+        current_timestamp = datetime.now(
+            pytz.timezone('America/Mexico_City')
+        )
         if from_number not in report_sessions:
-            report_sessions[from_number] = {
-                "images": [],
-                "image_descriptions": [],
-                "pending_images": [],
-                "pending_image_descriptions": [],
-                "location": None,
-                "started_at": time.time(),
-                "timestamp": datetime.now(pytz.timezone('America/Mexico_City')),
-                "image_prompted": False,
-                "image_decision": None,
-                "awaiting_report_image": False,
-                "declared_emergency": None,
-                "citizen_report_messages": [],
-                "report_intent_confirmed": False,
-            }
+            report_sessions[from_number] = ensure_report_session_defaults(
+                {},
+                timestamp=current_timestamp,
+            )
             channel_context = chat2desk_channel_contexts.get(from_number) or {}
             report_sessions[from_number].update(channel_context)
             logger.critical(f"🎯 [NEW SESSION] Sesión de reporte creada para {from_number}")
         else:
-            # Actualizar timestamp si ya existe
-            report_sessions[from_number]["timestamp"] = datetime.now(pytz.timezone('America/Mexico_City'))
+            # A pre-report emergency answer can restore a deliberately minimal
+            # session. Promote it to the complete runtime shape before any
+            # report path reads required keys such as location or images.
+            report_sessions[from_number] = ensure_report_session_defaults(
+                report_sessions[from_number],
+                timestamp=current_timestamp,
+            )
+            report_sessions[from_number]["timestamp"] = current_timestamp
             channel_context = chat2desk_channel_contexts.get(from_number) or {}
             report_sessions[from_number].update(channel_context)
             logger.critical(f"🎯 [UPDATE SESSION] Timestamp actualizado para {from_number}")
@@ -10669,7 +10668,7 @@ async def _process_whatsapp_request(request):
                     # Never use workflow controls (FIN/Sí/No) as report data.
                     # The canonical location is rebuilt from validated selections
                     # immediately before submission.
-                    user_location = report_sessions[from_number]["location"] or ""
+                    user_location = report_sessions[from_number].get("location") or ""
                     
                     # FIN no debe invocar CIAC con datos que ya sabemos que faltan.
                     # Las respuestas a esta pregunta reanudan el mismo intento,
@@ -11062,6 +11061,14 @@ async def _process_whatsapp_request(request):
                     
     # Continuar con el procesamiento normal
     except KeyError as e:
+        # No response was confirmed for this inbound. Release the durable
+        # processing claim so the webhook worker can retry instead of treating
+        # the retry as a distributed duplicate and leaving the citizen silent.
+        release_inbound_processing_claim(
+            uid,
+            inbound_claim_token,
+            storage=db,
+        )
         logger.error(f"Falta el parámetro requerido: {e}")
         return JSONResponse(content={"error": f"Falta el parámetro {str(e)}"}, status_code=400)
     except Exception as e:

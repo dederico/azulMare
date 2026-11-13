@@ -20,6 +20,47 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 
+def ensure_report_session_defaults(
+    report_session: dict[str, Any] | None,
+    *,
+    timestamp: datetime | None = None,
+    started_at: float | None = None,
+) -> dict[str, Any]:
+    """Backfill the complete runtime shape of a report session.
+
+    A pre-report emergency answer is intentionally persisted as a minimal
+    session.  When the citizen subsequently describes a problem, that session
+    must be promoted to a full report session before legacy report code reads
+    keys such as ``location`` or ``images``.
+    """
+
+    session = report_session if isinstance(report_session, dict) else {}
+    list_defaults = (
+        "images",
+        "image_descriptions",
+        "pending_images",
+        "pending_image_descriptions",
+        "citizen_report_messages",
+    )
+    for key in list_defaults:
+        if not isinstance(session.get(key), list):
+            session[key] = []
+
+    defaults = {
+        "location": None,
+        "started_at": time.time() if started_at is None else started_at,
+        "timestamp": datetime.now() if timestamp is None else timestamp,
+        "image_prompted": False,
+        "image_decision": None,
+        "awaiting_report_image": False,
+        "declared_emergency": None,
+        "report_intent_confirmed": False,
+    }
+    for key, value in defaults.items():
+        session.setdefault(key, value)
+    return session
+
+
 def _connect(storage):
     if psycopg2 is None:
         raise RuntimeError("psycopg2 no está instalado")

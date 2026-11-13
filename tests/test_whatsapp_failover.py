@@ -19,6 +19,7 @@ def clear_memory_failover_state():
 def enabled_config(**overrides):
     values = {
         "WHATSAPP_FAILOVER_ENABLED": "true",
+        "WHATSAPP_CHANNEL_ROUTING_MODE": "failover",
         "WHATSAPP_PRIMARY_CHANNEL_ID": "43906",
         "WHATSAPP_FAILOVER_CHANNEL_ID": "43943",
         "WHATSAPP_FAILOVER_TEMPLATE": "continuidad_canal_temporal",
@@ -47,11 +48,33 @@ def test_failover_is_disabled_by_default():
     config = failover.load_whatsapp_failover_config({})
 
     assert config.enabled is False
+    assert config.routing_mode == "parallel"
     assert config.primary_channel_id == 43906
     assert config.failover_channel_id == 43943
     assert config.confirmation_retry_seconds == 300
     assert config.pending_replay_window_seconds == 1800
     assert config.allowed_phone_numbers == frozenset()
+
+
+def test_legacy_enabled_flag_selects_failover_when_mode_is_not_configured():
+    config = failover.load_whatsapp_failover_config(
+        {"WHATSAPP_FAILOVER_ENABLED": "true"}
+    )
+
+    assert config.enabled is True
+    assert config.routing_mode == "failover"
+
+
+def test_explicit_failover_mode_overrides_disabled_legacy_flag():
+    config = failover.load_whatsapp_failover_config(
+        {
+            "WHATSAPP_FAILOVER_ENABLED": "false",
+            "WHATSAPP_CHANNEL_ROUTING_MODE": "failover",
+        }
+    )
+
+    assert config.enabled is True
+    assert config.routing_mode == "failover"
 
 
 def test_optional_phone_allowlist_normalizes_common_formats():
@@ -143,6 +166,119 @@ def test_only_intercepts_the_two_whatsapp_channels(
         )
         is expected
     )
+
+
+def test_parallel_mode_does_not_intercept_either_whatsapp_inbound():
+    config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="parallel")
+
+    assert config.routing_mode == "parallel"
+    for channel_id in (43906, 43943):
+        assert not failover.is_failover_candidate(
+            config=config,
+            message_type="from_client",
+            transport="wa_direct",
+            channel_id=channel_id,
+        )
+
+
+def test_parallel_mode_preserves_both_outbound_routes_with_old_active_route():
+    failover_config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="failover")
+    parallel_config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="parallel")
+    phone = "5218112345678"
+    failover.stage_primary_inbound(
+        None,
+        phone_number=phone,
+        primary_client_id=101,
+        payload=inbound(),
+        config=failover_config,
+    )
+    failover.activate_failover_and_list_pending(
+        None,
+        phone_number=phone,
+        failover_client_id=202,
+        config=failover_config,
+    )
+
+    for client_id, channel_id in ((101, 43906), (202, 43943)):
+        assert failover.resolve_failover_outbound(
+            None,
+            client_id=client_id,
+            channel_id=channel_id,
+            transport="wa_direct",
+            phone_number=phone,
+            config=parallel_config,
+        ) == (client_id, channel_id)
+
+
+def test_explicit_failover_mode_keeps_existing_tunnel_behavior():
+    config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="failover")
+    phone = "5218112345678"
+
+    assert config.routing_mode == "failover"
+    for channel_id in (43906, 43943):
+        assert failover.is_failover_candidate(
+            config=config,
+            message_type="from_client",
+            transport="wa_direct",
+            channel_id=channel_id,
+        )
+
+    failover.stage_primary_inbound(
+        None,
+        phone_number=phone,
+        primary_client_id=101,
+        payload=inbound(),
+        config=config,
+    )
+    failover.activate_failover_and_list_pending(
+        None,
+        phone_number=phone,
+        failover_client_id=202,
+        config=config,
+    )
+    assert failover.resolve_failover_outbound(
+        None,
+        client_id=101,
+        channel_id=43906,
+        transport="wa_direct",
+        phone_number=phone,
+        config=config,
+    ) == ("202", 43943)
+
+
+def test_invalid_routing_mode_falls_back_to_parallel_without_tunnel():
+    failover_config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="failover")
+    invalid_config = enabled_config(WHATSAPP_CHANNEL_ROUTING_MODE="typo")
+    phone = "5218112345678"
+    failover.stage_primary_inbound(
+        None,
+        phone_number=phone,
+        primary_client_id=101,
+        payload=inbound(),
+        config=failover_config,
+    )
+    failover.activate_failover_and_list_pending(
+        None,
+        phone_number=phone,
+        failover_client_id=202,
+        config=failover_config,
+    )
+
+    assert invalid_config.routing_mode == "parallel"
+    assert not failover.is_failover_candidate(
+        config=invalid_config,
+        message_type="from_client",
+        transport="wa_direct",
+        channel_id=43906,
+    )
+    assert failover.resolve_failover_outbound(
+        None,
+        client_id=101,
+        channel_id=43906,
+        transport="wa_direct",
+        phone_number=phone,
+        config=invalid_config,
+    ) == (101, 43906)
 
 
 def test_durable_handoff_flow_preserves_the_full_original_payload():

@@ -1,7 +1,9 @@
-"""Durable, reversible routing between the primary and temporary WhatsApp channels.
+"""Durable routing modes for the two Chat2Desk WhatsApp channels.
 
-The failover is intentionally opt-in.  When disabled every helper is a no-op and
-the existing Chat2Desk routing remains unchanged.
+``parallel`` preserves each channel's own inbound and outbound identity.
+``failover`` keeps the reversible primary-to-temporary tunnel.  The historical
+``WHATSAPP_FAILOVER_ENABLED`` flag remains supported when no explicit routing
+mode is configured.
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ PENDING_TABLE = "whatsapp_failover_pending_messages"
 DEFAULT_ACTIVE_TTL_SECONDS = 23 * 60 * 60
 DEFAULT_CONFIRMATION_RETRY_SECONDS = 5 * 60
 DEFAULT_PENDING_REPLAY_WINDOW_SECONDS = 30 * 60
+PARALLEL_ROUTING_MODE = "parallel"
+FAILOVER_ROUTING_MODE = "failover"
+VALID_ROUTING_MODES = frozenset({PARALLEL_ROUTING_MODE, FAILOVER_ROUTING_MODE})
 
 _schema_lock = threading.Lock()
 _schema_ready = False
@@ -41,6 +46,7 @@ _memory_pending: dict[tuple[str, str], dict[str, Any]] = {}
 @dataclass(frozen=True)
 class WhatsAppFailoverConfig:
     enabled: bool
+    routing_mode: str
     primary_channel_id: int
     failover_channel_id: int
     template_name: str
@@ -108,12 +114,39 @@ def _phone_allowlist(value: Any) -> frozenset[str]:
     )
 
 
+def _whatsapp_routing_mode(env: Mapping[str, str]) -> str:
+    """Resolve the explicit mode, falling back to the legacy feature flag.
+
+    An invalid explicit value fails closed to independent channel routing so a
+    typo cannot unexpectedly redirect live conversations through the tunnel.
+    """
+    configured_mode = (
+        str(env.get("WHATSAPP_CHANNEL_ROUTING_MODE") or "").strip().casefold()
+    )
+    if not configured_mode:
+        return (
+            FAILOVER_ROUTING_MODE
+            if _as_bool(env.get("WHATSAPP_FAILOVER_ENABLED", "false"))
+            else PARALLEL_ROUTING_MODE
+        )
+    if configured_mode in VALID_ROUTING_MODES:
+        return configured_mode
+    logger.warning(
+        "WHATSAPP_CHANNEL_ROUTING_MODE=%r no es válido; se usará %s",
+        configured_mode,
+        PARALLEL_ROUTING_MODE,
+    )
+    return PARALLEL_ROUTING_MODE
+
+
 def load_whatsapp_failover_config(
     environ: Mapping[str, str] | None = None,
 ) -> WhatsAppFailoverConfig:
     env = os.environ if environ is None else environ
+    routing_mode = _whatsapp_routing_mode(env)
     return WhatsAppFailoverConfig(
-        enabled=_as_bool(env.get("WHATSAPP_FAILOVER_ENABLED", "false")),
+        enabled=routing_mode == FAILOVER_ROUTING_MODE,
+        routing_mode=routing_mode,
         primary_channel_id=_as_int(
             env.get("WHATSAPP_PRIMARY_CHANNEL_ID"),
             43906,

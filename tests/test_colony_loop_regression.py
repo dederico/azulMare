@@ -42,6 +42,47 @@ def test_chipinque_public_name_maps_to_official_ciac_catalog_value():
         ) == {"selection7": "Zona Residencia Chipinque"}
 
 
+def test_industrial_public_name_maps_to_official_ciac_catalog_value():
+    expected = {"selection7": "Zona Industrial"}
+
+    for answer in (
+        "Industrial",
+        "Colonia Industrial",
+        "Zona Industrial",
+        "Zona Indusrial",
+    ):
+        assert extract_catalog_location(
+            answer,
+            {},
+            expected_field="selection7",
+        ) == expected
+        assert extract_pending_report_answers("selection7", answer) == expected
+
+
+def test_industrial_full_report_captures_colony_without_reprompting():
+    message = (
+        "Hola! Quiero reportar multiples señalamientos viales vandalizados "
+        "con grafiti y solicitar su reparación y limpieza. Ubicados en "
+        "banqueta pegada a rieles de tren en Avenida Diaz Ordaz #sin numero "
+        "entre Dattile y calle Zinc, Colonia Industrial. No es una emergencia."
+    )
+
+    fields, _ = extract_initial_report_bundle(message, {})
+
+    assert fields["selection6"] == "0000"
+    assert fields["selection7"] == "Zona Industrial"
+
+
+def test_approximate_colony_guard_still_rejects_unrelated_text():
+    for answer in (
+        "Springfield",
+        "Zona comercial inventada",
+        "Industrialización del país",
+    ):
+        assert canonical_report_location_value("selection7", answer) is None
+        assert extract_pending_report_answers("selection7", answer) == {}
+
+
 def test_loujay_full_address_ignores_postal_code_and_captures_all_fields():
     message = (
         "El número exterior más cercano y su calle es: Av. Roberto Garza "

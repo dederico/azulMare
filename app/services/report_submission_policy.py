@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from functools import lru_cache
 
 from app.api.colonies_array import SAN_PEDRO_COLONIES
@@ -358,6 +359,7 @@ _COLONY_ALIAS_TARGETS = {
     "casco urbano de san pedro": "Casco Urbano",
     "centro de san pedro": "San Pedro Garza Garcia Centro",
     "centro de san pedro garza garcia": "San Pedro Garza Garcia Centro",
+    "industrial": "Zona Industrial",
     "residencial chipinque": "Zona Residencia Chipinque",
     "zona residencial chipinque": "Zona Residencia Chipinque",
 }
@@ -366,6 +368,41 @@ COLONY_ALIASES = {
     for alias, target in _COLONY_ALIAS_TARGETS.items()
     if normalize_report_text(target) in COLONY_CATALOG
 }
+
+
+def _unique_approximate_colony_match(candidate: str) -> str | None:
+    """Resolve a close colony spelling only when one canonical target wins.
+
+    Exact official names and explicit public aliases remain preferred.  This
+    fallback tolerates ordinary misspellings, but groups aliases by their
+    canonical CIAC value so duplicate spellings cannot manufacture confidence.
+    Short one-word guesses stay strict because the colony catalog contains many
+    similar names.
+    """
+    if len(candidate) < 5:
+        return None
+
+    scores_by_canonical: dict[str, float] = {}
+    for catalog_name, canonical in {**COLONY_CATALOG, **COLONY_ALIASES}.items():
+        score = SequenceMatcher(None, candidate, catalog_name).ratio()
+        scores_by_canonical[canonical] = max(
+            score,
+            scores_by_canonical.get(canonical, 0.0),
+        )
+
+    ranked = sorted(
+        ((score, canonical) for canonical, score in scores_by_canonical.items()),
+        reverse=True,
+    )
+    if not ranked:
+        return None
+    best_score, best_value = ranked[0]
+    second_score = ranked[1][0] if len(ranked) > 1 else 0.0
+    minimum_score = 0.90 if len(candidate.split()) == 1 else 0.80
+    minimum_margin = 0.08 if len(candidate.split()) == 1 else 0.05
+    if best_score >= minimum_score and best_score - second_score >= minimum_margin:
+        return best_value
+    return None
 
 
 _LOCATION_REJECTION_MARKERS = (
@@ -407,7 +444,11 @@ def canonical_report_colony_value(value: str | None) -> str | None:
     candidate = _strip_colony_answer_wrappers(value)
     if not candidate:
         return None
-    return COLONY_CATALOG.get(candidate) or COLONY_ALIASES.get(candidate)
+    return (
+        COLONY_CATALOG.get(candidate)
+        or COLONY_ALIASES.get(candidate)
+        or _unique_approximate_colony_match(candidate)
+    )
 
 
 def _unique_location_catalog_mention(

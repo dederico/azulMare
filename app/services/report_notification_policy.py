@@ -62,16 +62,21 @@ def build_report_status_notification(
             is_hsm=True,
         )
 
-    if status == "en_progreso":
-        text = (
-            f"Su reporte #{clean_report_id} ya se encuentra en proceso de atención. "
-            "Un técnico está trabajando para resolver su solicitud lo antes posible."
+    if status == "concluido":
+        # Chat2Desk substitutes the folio in Meta's approved {{1}} variable.
+        # The template also owns the OK quick-reply button used to start the
+        # detail/evaluation flow.  Additional free text must not be appended to
+        # the HSM transport command because it would change its parameters.
+        return ReportStatusNotification(
+            status=status,
+            text=f"@HSM@\nnotifica_conclusion|es_mx\n\n{clean_report_id}\n",
+            is_hsm=True,
         )
-    else:
-        text = (
-            f"¡Buenas noticias! Su reporte #{clean_report_id} ha sido concluido "
-            "satisfactoriamente. Gracias por su paciencia."
-        )
+
+    text = (
+        f"Su reporte #{clean_report_id} ya se encuentra en proceso de atención. "
+        "Un técnico está trabajando para resolver su solicitud lo antes posible."
+    )
 
     clean_additional_info = " ".join(str(additional_info or "").split()).strip()
     if clean_additional_info:

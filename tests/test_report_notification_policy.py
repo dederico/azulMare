@@ -8,6 +8,20 @@ from app.services.report_notification_policy import (
 
 
 class ReportNotificationPolicyTests(unittest.TestCase):
+    def test_conclusion_status_builds_approved_hsm_with_folio(self):
+        notification = build_report_status_notification(
+            489932,
+            "Concluido",
+            "Este texto no debe alterar el HSM",
+        )
+
+        self.assertEqual(notification.status, "concluido")
+        self.assertTrue(notification.is_hsm)
+        self.assertEqual(
+            notification.text,
+            "@HSM@\nnotifica_conclusion|es_mx\n\n489932\n",
+        )
+
     def test_reactivation_status_builds_approved_hsm(self):
         notification = build_report_status_notification(477699, "Reactivación")
 

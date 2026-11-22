@@ -9,6 +9,7 @@ except ImportError:  # pragma: no cover
     psycopg2 = None
 
 from app.services.conversation_control import normalize_phone_key
+from app.services.report_status_delivery import record_report_status_route
 from app.util.logger import logger
 
 
@@ -171,9 +172,23 @@ def record_report_completion(
         "report_snapshot": _minimize_report_snapshot(report_snapshot),
         "expires_at": expires_at,
         "durable": False,
+        "status_route_durable": False,
     }
     with _memory_lock:
         _memory_completions[key] = completion.copy()
+
+    if completion["client_id"] and completion["channel_id"] and transport:
+        completion["status_route_durable"] = record_report_status_route(
+            storage,
+            completion["folio"],
+            conversation_key=key,
+            client_id=completion["client_id"],
+            channel_id=completion["channel_id"],
+            transport=transport,
+            now=timestamp,
+        )
+        with _memory_lock:
+            _memory_completions[key] = completion.copy()
 
     if storage is None or not ensure_report_completion_storage(storage):
         return completion

@@ -243,6 +243,13 @@ from app.services.report_notification_policy import (
     build_report_status_notification,
     extract_ciac_conclusion_attachments,
 )
+from app.services.report_status_delivery import (
+    claim_report_status_delivery,
+    ensure_report_status_delivery_storage,
+    get_report_status_delivery,
+    mark_report_status_delivered,
+    mark_report_status_failed,
+)
 from app.services.report_summary import repair_report_summary_with_model
 from app.services.inbound_processing import (
     claim_inbound_processing,
@@ -333,7 +340,10 @@ from app.services.pending_evaluation_reports import (
     stage_pending_evaluation_report,
 )
 from app.services.media_payload import get_video_from_payload
-from app.services.outbound_delivery import post_json_with_retry
+from app.services.outbound_delivery import (
+    DEFINITELY_PRE_SEND_ERRORS,
+    post_json_with_retry,
+)
 
 #from app.services.functions.implementations.save_selection2 import save_user_answer, get_user_answer
 evaluated_reports = {}
@@ -3547,6 +3557,11 @@ async def save_client_selection2_protected(yoga_number: str, selection1: str, se
             if not completion.get("durable"):
                 logger.critical(
                     "⚠️ [REPORT COMPLETION OUTBOX] folio=%s sólo quedó en memoria",
+                    confirmed_folio,
+                )
+            if not completion.get("status_route_durable"):
+                logger.critical(
+                    "⚠️ [REPORT STATUS ROUTE] folio=%s no conservó una ruta durable",
                     confirmed_folio,
                 )
             # MARCAR COMO EXITOSO
@@ -13819,29 +13834,26 @@ def format_phone_number(phone):
 
 @router.post("/report-status")
 async def report_status_update(request: Request):
-    """
-    Endpoint para recibir actualizaciones de estados de reportes y enviar notificaciones
-    por WhatsApp a los clientes correspondientes. El contrato acepta eventos de
-    progreso, conclusión y reactivación; cada uno se traduce en un mensaje explícito.
-    """
+    """Deliver one CIAC lifecycle transition through its originating route."""
     try:
-        # Obtener los datos del cuerpo de la solicitud
         payload = await request.json()
         logger.debug(f"Payload de actualización de reporte recibido: {payload}")
-        
-        # Validar campos requeridos
+
         required_fields = ["reportId", "reportStatus", "phoneNumber"]
         for field in required_fields:
             if field not in payload:
                 return JSONResponse(
-                    content={"error": f"Campo requerido ausente: {field}"}, 
-                    status_code=400
+                    content={"error": f"Campo requerido ausente: {field}"},
+                    status_code=400,
                 )
-        
-        # Extraer datos
-        report_id = payload["reportId"]
+
+        report_id = str(payload["reportId"] or "").strip()
         report_status_input = payload["reportStatus"]
-        phone_number = payload["phoneNumber"]
+        if not report_id:
+            return JSONResponse(
+                content={"error": "reportId no puede estar vacío"},
+                status_code=400,
+            )
 
         notification = build_report_status_notification(
             report_id,
@@ -13855,159 +13867,296 @@ async def report_status_update(request: Request):
                 "message": f"No se requiere notificación para el estado: {report_status_input}"
             })
         report_status = notification.status
-        
-        # Formatear el número de teléfono para Chat2Desk
-        original_phone = phone_number
-        phone_number = format_phone_number(phone_number)
+
+        original_phone = payload["phoneNumber"]
+        phone_number = format_phone_number(original_phone)
         logger.debug(f"Número de teléfono formateado: {original_phone} -> {phone_number}")
-            
-        # Buscar cliente en Chat2Desk
+
         api_token = os.getenv("CHAT2DESK_API_TOKEN")
+        if not api_token:
+            return JSONResponse(
+                content={"error": "CHAT2DESK_API_TOKEN no está configurado"},
+                status_code=503,
+            )
         chat2desk_base_url = "https://api.chat2desk.com.mx/v1"
-        
         headers = {
             "Authorization": api_token,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-        
-        # Buscar cliente por número de teléfono
-        search_url = f"{chat2desk_base_url}/clients"
-        params = {"phone": phone_number}
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(search_url, params=params, headers=headers)
-            
-        if response.status_code != 200:
-            logger.error(f"Error al buscar cliente en Chat2Desk: {response.status_code} - {response.text}")
-            return JSONResponse(
-                content={"error": f"Error al buscar cliente: {response.status_code}"}, 
-                status_code=500
-            )
-            
-        response_data = response.json()
-        logger.debug(f"Respuesta de búsqueda de cliente: {response_data}")
-        
-        # Verificar si se encontró el cliente basado en la estructura de respuesta de Chat2Desk
-        if response_data.get("status") != "success" or not response_data.get("data") or len(response_data.get("data", [])) == 0:
-            # Cliente no encontrado, lo creamos
-            logger.debug(f"Cliente no encontrado, creando nuevo cliente con número: {phone_number}")
-            create_url = f"{chat2desk_base_url}/clients"
-            client_data = {
-                "phone": phone_number,
-                "transport": "wa_direct"
-            }
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(create_url, json=client_data, headers=headers)
-                
-            if response.status_code != 200:
-                logger.error(f"Error al crear cliente en Chat2Desk: {response.status_code} - {response.text}")
-                return JSONResponse(
-                    content={"error": f"Error al crear cliente: {response.status_code}"}, 
-                    status_code=500
-                )
-                
-            create_response = response.json()
-            
 
-            if create_response.get("status") != "success":
-                logger.error(f"Error en la respuesta al crear cliente: {create_response}")
-                return JSONResponse(
-                    content={"error": "Error al crear cliente en Chat2Desk"}, 
-                    status_code=500
-                )
-                
-            client_id = create_response.get("data", {}).get("id")
-        else:
-            # Cliente encontrado
-            client_id = response_data.get("data")[0].get("id")
-            
-        # Obtener información del canal (channel_id)
-        if not client_id:
-            return JSONResponse(
-                content={"error": "No se pudo obtener el ID del cliente"}, 
-                status_code=500
-            )
-            
         db = LocalStorage()
+
+        # A callback can be retried safely only when the claim is durable.  If
+        # PostgreSQL is unavailable, fail before touching Chat2Desk.
+        if not await asyncio.to_thread(ensure_report_status_delivery_storage, db):
+            return JSONResponse(
+                content={"error": "No está disponible el control durable de entregas"},
+                status_code=503,
+            )
+
+        saved_route = await asyncio.to_thread(
+            get_report_status_delivery,
+            db,
+            report_id,
+        )
+        client_id = saved_route.get("client_id") if saved_route else None
+        channel_id = saved_route.get("channel_id") if saved_route else None
+        transport = saved_route.get("transport") if saved_route else None
+        conversation_key = (
+            saved_route.get("conversation_key") if saved_route else None
+        )
+
+        # Explicit routing fields keep old folios recoverable while CIAC adopts
+        # the durable route contract.  A stored folio route always wins.
+        if not client_id or not channel_id:
+            client_id = payload.get("clientId") or payload.get("client_id")
+            channel_id = payload.get("channelId") or payload.get("channel_id")
+            transport = payload.get("transport") or "wa_direct"
+
+        # Legacy fallback: accept a unique Chat2Desk client.  Never create a
+        # new client here and never choose the first of multiple matches,
+        # because either action can send through the wrong WhatsApp number.
+        if not client_id or not channel_id:
+            search_url = f"{chat2desk_base_url}/clients"
+            async with httpx.AsyncClient() as client:
+                search_response = await client.get(
+                    search_url,
+                    params={"phone": phone_number},
+                    headers=headers,
+                )
+            if search_response.status_code != 200:
+                logger.error(
+                    "Error al buscar cliente en Chat2Desk: %s - %s",
+                    search_response.status_code,
+                    search_response.text[:300],
+                )
+                return JSONResponse(
+                    content={"error": "No se pudo resolver la ruta de Chat2Desk"},
+                    status_code=502,
+                )
+            search_data = search_response.json()
+            candidates = (
+                search_data.get("data")
+                if search_data.get("status") == "success"
+                and isinstance(search_data.get("data"), list)
+                else []
+            )
+            if len(candidates) != 1:
+                logger.error(
+                    "Ruta ambigua para folio=%s phone=%s candidates=%s",
+                    report_id,
+                    phone_number,
+                    len(candidates),
+                )
+                return JSONResponse(
+                    content={
+                        "error": "No existe una ruta única para este folio",
+                        "reportId": report_id,
+                        "candidateCount": len(candidates),
+                    },
+                    status_code=409,
+                )
+            candidate = candidates[0]
+            client_id = candidate.get("id")
+            channel_id = (
+                candidate.get("channel_id")
+                or candidate.get("channelId")
+                or payload.get("channelId")
+                or payload.get("channel_id")
+                or load_whatsapp_failover_config().primary_channel_id
+            )
+            transport = candidate.get("transport") or transport or "wa_direct"
+
+        if not client_id or not channel_id or not transport:
+            return JSONResponse(
+                content={"error": "La ruta de entrega está incompleta"},
+                status_code=409,
+            )
+
         client_id, channel_id = await asyncio.to_thread(
             resolve_failover_outbound,
             db,
             client_id=client_id,
-            channel_id=43906,
-            transport="wa_direct",
+            channel_id=channel_id,
+            transport=transport,
             phone_number=phone_number,
         )
         logger.debug(
-            "Cliente identificado: client_id=%s, usando channel_id=%s",
+            "Ruta de estado resuelta: folio=%s client_id=%s channel_id=%s transport=%s",
+            report_id,
             client_id,
             channel_id,
+            transport,
         )
-        
-        # Preparar y enviar el mensaje al cliente
+
+        claim_token = await asyncio.to_thread(
+            claim_report_status_delivery,
+            db,
+            report_id,
+            report_status,
+        )
+        if not claim_token:
+            current = await asyncio.to_thread(
+                get_report_status_delivery,
+                db,
+                report_id,
+            )
+            return JSONResponse(content={
+                "status": True,
+                "duplicate": True,
+                "message": "La transición ya fue recibida o está en proceso",
+                "reportId": report_id,
+                "reportStatus": report_status,
+                "deliveryState": (current or {}).get("delivery_state"),
+            })
+
         message_url = f"{chat2desk_base_url}/messages"
-        
-        message_text = notification.text
-            
         message_data = {
             "client_id": client_id,
             "channel_id": channel_id,
-            "transport": "wa_direct",
-            "text": message_text
+            "transport": transport,
+            "text": notification.text,
         }
-        
-        # Enviar el mensaje
-        async with httpx.AsyncClient() as client:
-            response = await client.post(message_url, json=message_data, headers=headers)
-            
-        if response.status_code != 200:
-            logger.error(f"Error al enviar mensaje: {response.status_code} - {response.text}")
-            return JSONResponse(
-                content={"error": f"Error al enviar mensaje: {response.status_code}"}, 
-                status_code=500
+
+        try:
+            response = await post_json_with_retry(
+                message_url,
+                json=message_data,
+                headers=headers,
             )
-            
-        send_response = response.json()
-        if send_response.get("status") != "success":
-            logger.error(f"Error en la respuesta al enviar mensaje: {send_response}")
+        except DEFINITELY_PRE_SEND_ERRORS as error:
+            await asyncio.to_thread(
+                mark_report_status_failed,
+                db,
+                report_id,
+                claim_token,
+            )
+            logger.error("Chat2Desk no recibió la entrega de %s: %s", report_id, error)
             return JSONResponse(
-                content={"error": "Error al enviar mensaje en Chat2Desk"}, 
-                status_code=500
+                content={"error": "No fue posible conectar con Chat2Desk"},
+                status_code=503,
+            )
+        except httpx.TransportError as error:
+            await asyncio.to_thread(
+                mark_report_status_failed,
+                db,
+                report_id,
+                claim_token,
+                ambiguous=True,
+            )
+            logger.critical(
+                "Entrega ambigua de estado CIAC folio=%s: %s",
+                report_id,
+                error,
+            )
+            return JSONResponse(
+                content={
+                    "status": True,
+                    "deliveryState": "ambiguous",
+                    "message": "Chat2Desk pudo haber aceptado la notificación; no se reintentará automáticamente",
+                    "reportId": report_id,
+                },
+                status_code=202,
             )
 
-        persist_bot_outbound_marker(db, phone_number, response, "report_status_update")
-            
-        # Almacenar el mensaje en la base de datos local
+        if response.status_code != 200:
+            ambiguous = response.status_code >= 500
+            await asyncio.to_thread(
+                mark_report_status_failed,
+                db,
+                report_id,
+                claim_token,
+                ambiguous=ambiguous,
+            )
+            logger.error(
+                "Error al enviar estado CIAC: %s - %s",
+                response.status_code,
+                response.text[:300],
+            )
+            return JSONResponse(
+                content={
+                    "error": f"Error al enviar mensaje: {response.status_code}",
+                    "deliveryState": "ambiguous" if ambiguous else "failed",
+                },
+                status_code=202 if ambiguous else 502,
+            )
+
+        try:
+            send_response = response.json()
+        except ValueError:
+            send_response = {}
+        if send_response.get("status") != "success":
+            await asyncio.to_thread(
+                mark_report_status_failed,
+                db,
+                report_id,
+                claim_token,
+                ambiguous=not bool(send_response),
+            )
+            logger.error("Respuesta inválida al enviar mensaje: %s", send_response)
+            return JSONResponse(
+                content={"error": "Error al enviar mensaje en Chat2Desk"},
+                status_code=202 if not send_response else 502,
+            )
+
+        response_payload = send_response.get("data") or {}
+        provider_message_id = (
+            response_payload.get("message_id") or response_payload.get("id")
+        )
+        delivered = await asyncio.to_thread(
+            mark_report_status_delivered,
+            db,
+            report_id,
+            claim_token,
+            provider_message_id=provider_message_id,
+        )
+        if not delivered:
+            logger.critical(
+                "Chat2Desk entregó folio=%s pero no se pudo cerrar su claim durable",
+                report_id,
+            )
+
+        message_number = conversation_key or phone_number
+        persist_bot_outbound_marker(db, message_number, response, "report_status_update")
         message = Message(
             time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             senderName="Sistema",
-            message=message_text,
-            number=phone_number,
-            uid=f"report-{report_id}-{datetime.now().timestamp()}",
+            message=notification.text,
+            number=message_number,
+            uid=(
+                f"report-status-{report_id}-{report_status}-"
+                f"{provider_message_id or claim_token}"
+            ),
             direction="outbound",
             mtype="text",
-            source="whatsapp"
+            source="whatsapp" if transport == "wa_direct" else str(transport),
         )
         db.Insert(message)
-        await manage_message_history(db, phone_number)
-        
-        logger.debug(f"Mensaje de actualización enviado exitosamente para el reporte #{report_id} - Estado: {report_status}")
-        
+        await manage_message_history(db, message_number)
+
+        logger.info(
+            "Estado CIAC entregado folio=%s status=%s client_id=%s channel_id=%s",
+            report_id,
+            report_status,
+            client_id,
+            channel_id,
+        )
         return JSONResponse(content={
-            "status": True, 
+            "status": True,
+            "duplicate": False,
             "message": "Notificación de actualización de reporte enviada",
             "reportId": report_id,
             "clientId": client_id,
+            "channelId": channel_id,
             "reportStatus": report_status,
             "isHsm": notification.is_hsm,
         })
-        
+
     except Exception as e:
-        logger.error(f"Error al procesar la actualización del reporte: {str(e)}")
-        traceback.print_exc()
+        logger.exception("Error al procesar la actualización del reporte: %s", e)
         return JSONResponse(
-            content={"error": f"Error al procesar la solicitud: {str(e)}"}, 
-            status_code=500
+            content={"error": f"Error al procesar la solicitud: {str(e)}"},
+            status_code=500,
         )
 @router.get("/health")
 async def health():

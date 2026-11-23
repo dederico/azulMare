@@ -2,6 +2,7 @@ import unittest
 
 from app.services.report_notification_policy import (
     build_report_status_notification,
+    extract_conclusion_hsm_folio,
     extract_ciac_conclusion_attachments,
     normalize_report_status,
 )
@@ -19,7 +20,32 @@ class ReportNotificationPolicyTests(unittest.TestCase):
         self.assertTrue(notification.is_hsm)
         self.assertEqual(
             notification.text,
-            "@HSM@\nnotifica_conclusion|es_mx\n\n489932\n",
+            "@HSM@\nnotifica_conclusion|es_mx\n489932",
+        )
+
+    def test_conclusion_folio_parser_accepts_current_one_parameter_hsm(self):
+        self.assertEqual(
+            extract_conclusion_hsm_folio(
+                "@HSM@\nnotifica_conclusion|es_mx\n489932"
+            ),
+            "489932",
+        )
+
+    def test_conclusion_folio_parser_accepts_legacy_ciac_hsm(self):
+        self.assertEqual(
+            extract_conclusion_hsm_folio(
+                "@HSM@\nnotifica_conclusion|es_mx\n"
+                "Juan Pérez\n12345\nBache reparado en calle X"
+            ),
+            "12345",
+        )
+
+    def test_conclusion_folio_parser_accepts_old_empty_parameter_format(self):
+        self.assertEqual(
+            extract_conclusion_hsm_folio(
+                "@HSM@\nnotifica_conclusion|es_mx\n\n472988\n"
+            ),
+            "472988",
         )
 
     def test_reactivation_status_builds_approved_hsm(self):

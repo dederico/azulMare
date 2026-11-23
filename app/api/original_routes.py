@@ -241,6 +241,7 @@ from app.services.report_intake_policy import (
 )
 from app.services.report_notification_policy import (
     build_report_status_notification,
+    extract_conclusion_hsm_folio,
     extract_ciac_conclusion_attachments,
 )
 from app.services.report_status_delivery import (
@@ -927,12 +928,10 @@ async def handle_hsm_conclusion_notification(payload, from_number, storage=None)
     if message_type != "to_client" or not text.startswith("@HSM@"):
         return None
         
-    # Parsear mensaje HSM
-    hsm_parts = text.split("\n")
-    if len(hsm_parts) < 5 or "notifica_conclusion" not in hsm_parts[1]:
+    reporte_id = extract_conclusion_hsm_folio(text)
+    if not reporte_id:
         return None
-        
-    reporte_id = hsm_parts[3]
+
     client_id = payload.get("client", {}).get("id")
     channel_id = payload.get("channel_id")
 

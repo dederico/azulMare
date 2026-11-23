@@ -42,6 +42,41 @@ def normalize_report_status(value: str | None) -> str | None:
     return aliases.get(normalized)
 
 
+def extract_conclusion_hsm_folio(text: str | None) -> str | None:
+    """Read the folio from current and legacy Chat2Desk HSM commands.
+
+    Chat2Desk treats every line after ``template|language`` as a positional
+    parameter.  The current Meta template has one parameter (folio), while the
+    historical CIAC sender used name, folio and resolution detail.
+    """
+    lines = str(text or "").splitlines()
+    if (
+        len(lines) < 3
+        or lines[0].strip().casefold() != "@hsm@"
+        or "notifica_conclusion" not in lines[1].casefold()
+    ):
+        return None
+
+    parameters = lines[2:]
+    while parameters and not parameters[-1].strip():
+        parameters.pop()
+    if not parameters:
+        return None
+
+    if len(parameters) == 1:
+        candidate = parameters[0]
+    elif not parameters[0].strip():
+        # Compatibility with the old SAM command that included an empty first
+        # parameter before the folio.
+        candidate = parameters[1]
+    else:
+        # Historical CIAC format: reporter name, folio, resolution detail.
+        candidate = parameters[1]
+
+    clean_candidate = candidate.strip()
+    return clean_candidate if clean_candidate.isdigit() else None
+
+
 def build_report_status_notification(
     report_id,
     report_status: str | None,
@@ -69,7 +104,7 @@ def build_report_status_notification(
         # the HSM transport command because it would change its parameters.
         return ReportStatusNotification(
             status=status,
-            text=f"@HSM@\nnotifica_conclusion|es_mx\n\n{clean_report_id}\n",
+            text=f"@HSM@\nnotifica_conclusion|es_mx\n{clean_report_id}",
             is_hsm=True,
         )
 

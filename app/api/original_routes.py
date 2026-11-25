@@ -223,6 +223,7 @@ from app.services.report_submission_policy import (
     resolve_trusted_reporter_name,
     resolve_unambiguous_catalog_category,
     should_resolve_report_number_semantically,
+    split_chat2desk_quoted_reply,
     sidewalk_sign_category_options,
     validate_structured_report_lifecycle_action,
     validate_structured_report_number_decision,
@@ -1308,8 +1309,11 @@ def get_effective_user_message_text(body, reply_context):
     Usa solo la respuesta del usuario cuando el mensaje llega como quoted reply.
     """
     if reply_context and reply_context.get("is_quoted") and reply_context.get("user_response"):
-        return reply_context["user_response"].strip()
-    return (body or "").strip()
+        return extract_citizen_reply_text(reply_context["user_response"])
+    # Defensa adicional: algunas versiones de Chat2Desk serializan la cita
+    # dentro de ``text`` sin incluir metadata de reply. El bloque citado es
+    # contexto de SAM, no una respuesta escrita por el ciudadano.
+    return extract_citizen_reply_text(body)
 
 
 async def send_conclusion_comment_and_image(client_id, channel_id, reporte_id, transport="wa_direct"):
@@ -2646,8 +2650,6 @@ def extract_quoted_message_content(text):
     Returns:
         dict: Información del mensaje citado y respuesta del usuario
     """
-    import re
-    
     result = {
         'is_quoted': False,
         'quoted_text': None,
@@ -2661,30 +2663,17 @@ def extract_quoted_message_content(text):
         return result
     
     try:
-        # ÚNICO PATRÓN: « texto citado » \n respuesta_usuario
-        pattern = r'«\s*(.*?)\s*»\s*\n\s*(.*)'
-        match = re.search(pattern, text, re.DOTALL)
-        
-        if match:
-            quoted_text = match.group(1).strip()
-            user_response = match.group(2).strip()
-            
-            
-            # Validaciones adicionales para evitar falsos positivos
-            if (quoted_text and user_response and 
-                len(user_response) > 0 and 
-                len(user_response) < len(quoted_text)):  # La respuesta debe ser más corta que lo citado
-                
-                result.update({
-                    'is_quoted': True,
-                    'quoted_text': quoted_text,
-                    'user_response': user_response
-                })
-                
-                logger.debug(f"✅ QUOTED MATCH: Citado='{quoted_text[:30]}...', Respuesta='{user_response}'")
-                return result
-            else:
-                logger.debug(f"❌ QUOTED REJECTED: Citado='{quoted_text[:30]}...', Respuesta='{user_response}' (no cumple validaciones)")
+        quoted_reply = split_chat2desk_quoted_reply(text)
+        if quoted_reply:
+            quoted_text, user_response = quoted_reply
+            result.update({
+                'is_quoted': True,
+                'quoted_text': quoted_text,
+                'user_response': user_response
+            })
+
+            logger.debug(f"✅ QUOTED MATCH: Citado='{quoted_text[:30]}...', Respuesta='{user_response}'")
+            return result
                         
     except Exception as e:
         logger.error(f"Error extracting quoted content: {str(e)}")
@@ -8491,11 +8480,15 @@ async def _process_whatsapp_request(request):
                 reply_context.get('user_response'),
             )
         )
-        effective_inbound_text = (
-            reply_context.get('user_response')
-            if reply_context.get('is_reply')
-            else body
+        effective_inbound_text = get_effective_user_message_text(
+            body,
+            reply_context,
         )
+        # Desde este punto todas las políticas de intención, captura de campos,
+        # handoff y el modelo deben ver exclusivamente texto ciudadano. Antes,
+        # varios bloques seguían leyendo ``body`` y podían interpretar palabras
+        # de la pregunta citada (p. ej. "sin número") como una respuesta.
+        body = effective_inbound_text
         evaluation_suspended_for_active_emergency = bool(
             durable_evaluation
             and report_sessions.get(from_number, {}).get(
@@ -9979,11 +9972,10 @@ async def _process_whatsapp_request(request):
         chat_id = payload.get('chat_id')
         sender_name = payload.get('client', {}).get('name', 'Usuario')
         message_id = payload.get('message_id')
-        body = payload.get('text', '')
-        # Handle None values in body
-        if body is None:
-            body = ""
-            logger.debug("Message with None body detected, setting to empty string")
+        # ``body`` ya contiene solamente la respuesta ciudadana. No volver a
+        # cargar aquí payload['text'], porque reintroduciría la cita serializada
+        # de Chat2Desk después de haberla eliminado al inicio del flujo.
+        body = effective_inbound_text
 
 
         # Get recent AI messages for this number to check for echoes

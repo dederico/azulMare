@@ -137,4 +137,16 @@ def test_pending_field_never_bypasses_loop_guards_via_legacy_finalization():
 
     source = Path("app/api/original_routes.py").read_text(encoding="utf-8")
     assert "[REPORT FINALIZATION QUEUE COALESCED]" in source
+    normalized_body_start = source.rindex(
+        "# Extraer información del payload de Chat2Desk"
+    )
+    normalized_body_stage = source[
+        normalized_body_start:
+        source.index(
+            "# Get recent AI messages for this number",
+            normalized_body_start,
+        )
+    ]
+    assert "body = effective_inbound_text" in normalized_body_stage
+    assert "payload.get('text'" not in normalized_body_stage
     assert '"pending_intake_question"\n                            ] = "emergency"' in source

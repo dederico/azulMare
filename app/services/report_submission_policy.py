@@ -620,6 +620,27 @@ def captured_report_question_field(
     return None
 
 
+def split_chat2desk_quoted_reply(
+    value: str | None,
+) -> tuple[str, str] | None:
+    """Return Chat2Desk's serialized quote and the citizen-authored reply."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    quoted_reply = re.fullmatch(
+        r"\s*«\s*(.*?)\s*»\s*(.+?)\s*",
+        raw,
+        flags=re.DOTALL,
+    )
+    if not quoted_reply:
+        return None
+    quoted_text = quoted_reply.group(1).strip()
+    citizen_reply = quoted_reply.group(2).strip()
+    if not quoted_text or not citizen_reply:
+        return None
+    return quoted_text, citizen_reply
+
+
 def extract_citizen_reply_text(value: str | None) -> str:
     """Remove Chat2Desk's quoted assistant block from a citizen reply.
 
@@ -629,12 +650,8 @@ def extract_citizen_reply_text(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-    quoted_reply = re.fullmatch(
-        r"\s*«.*?»\s*(.+?)\s*",
-        raw,
-        flags=re.DOTALL,
-    )
-    return quoted_reply.group(1).strip() if quoted_reply else raw
+    quoted_reply = split_chat2desk_quoted_reply(raw)
+    return quoted_reply[1] if quoted_reply else raw
 
 
 def sanitize_report_description(value: str | None) -> str:
@@ -1029,7 +1046,7 @@ def resolve_trusted_reporter_name(sender_name: str | None) -> str:
 
 
 def normalize_report_number_input(value: str | None) -> str | None:
-    raw = " ".join(str(value or "").split()).strip()
+    raw = " ".join(extract_citizen_reply_text(value).split()).strip()
     # WhatsApp preserves punctuation and typographic quotes typed by the
     # citizen.  They do not change the meaning of an otherwise unambiguous
     # number answer, so remove them only at the edges before interpreting it.
@@ -1091,6 +1108,22 @@ def normalize_report_number_input(value: str | None) -> str | None:
         flags=re.IGNORECASE,
     )
     if unavailable_number or unknown_number:
+        return "0000"
+    # Cuando estamos resolviendo específicamente el número exterior, una
+    # ubicación expresada como cruce/intersección comunica que no hay una
+    # numeración aplicable. No aplicar esta regla si el texto contiene dígitos:
+    # ese caso puede incluir un número real y debe quedar para resolución
+    # semántica en vez de descartarlo como 0000.
+    intersection_without_number = (
+        not re.search(r"\d", normalized)
+        and re.search(
+            r"\b(?:es|esta|queda|se\s+encuentra)\s+(?:en\s+)?"
+            r"(?:el\s+|la\s+)?(?:cruce|interseccion|esquina)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+    if intersection_without_number:
         return "0000"
     return None
 
@@ -1155,7 +1188,7 @@ def extract_pending_report_answers(
 ) -> dict[str, str]:
     """Parse the requested field from durable state, independent of prompt wording."""
     field = str(pending_field or "").strip()
-    raw = str(citizen_message or "").strip()
+    raw = extract_citizen_reply_text(citizen_message)
     compact = " ".join(raw.split()).strip()
     normalized = normalize_report_text(compact)
     if not field or not compact:
@@ -1286,7 +1319,7 @@ def extract_report_field_answer(
 ) -> tuple[str, str] | None:
     """Capture a field from the question context, independent of issue vocabulary."""
     previous = normalize_report_text(previous_assistant_message)
-    answer = " ".join(str(citizen_message or "").split()).strip()
+    answer = " ".join(extract_citizen_reply_text(citizen_message).split()).strip()
     normalized_answer = normalize_report_text(answer)
     asks_for_name = any(
         phrase in previous

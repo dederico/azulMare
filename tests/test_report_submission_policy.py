@@ -35,6 +35,7 @@ from app.services.report_submission_policy import (
     sanitize_report_description,
     select_citizen_report_description,
     should_resolve_report_number_semantically,
+    split_chat2desk_quoted_reply,
     validate_and_normalize_report_submission,
     validate_structured_report_lifecycle_action,
     validate_structured_report_number_decision,
@@ -556,6 +557,22 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
             "No, los carros las han arrojado hacia los lados",
         )
 
+    def test_chat2desk_quote_accepts_a_reply_longer_than_the_quoted_prompt(self):
+        message = (
+            "« ¿En qué colonia se encuentra el problema? »\n"
+            "Ya había contestado que es en la colonia Centro y estoy "
+            "explicando nuevamente la ubicación completa."
+        )
+
+        self.assertEqual(
+            split_chat2desk_quoted_reply(message),
+            (
+                "¿En qué colonia se encuentra el problema?",
+                "Ya había contestado que es en la colonia Centro y estoy "
+                "explicando nuevamente la ubicación completa.",
+            ),
+        )
+
     def test_structured_field_answer_does_not_expand_description(self):
         self.assertFalse(
             is_likely_report_description(
@@ -830,6 +847,43 @@ class ReportSubmissionPolicyTests(unittest.TestCase):
                     extract_pending_report_answers("selection6", answer),
                     {"selection6": "0000"},
                 )
+
+    def test_quoted_number_prompt_cannot_supply_the_citizens_answer(self):
+        message = (
+            "« ¿Cuál es el número exterior? Si no existe o no lo conoces, "
+            "indícame ‘sin número’. »\n"
+            "El número es 136"
+        )
+
+        self.assertEqual(
+            extract_pending_report_answers("selection6", message),
+            {"selection6": "136"},
+        )
+
+    def test_crossing_reply_resolves_pending_exterior_number_as_unavailable(self):
+        message = (
+            "« ¿Cuál es el número exterior? Si no existe o no lo conoces, "
+            "indícame ‘sin número’. »\n"
+            "Este tipo de preguntas es medio tonta. Te estoy diciendo que es "
+            "el cruce con"
+        )
+
+        self.assertEqual(
+            extract_pending_report_answers("selection6", message),
+            {"selection6": "0000"},
+        )
+
+    def test_quoted_colony_reply_stores_only_a_real_colony(self):
+        prompt = "« ¿En qué colonia se encuentra el problema? »\n"
+
+        self.assertEqual(
+            extract_pending_report_answers("selection7", prompt + "Centro"),
+            {"selection7": "Centro"},
+        )
+        self.assertEqual(
+            extract_pending_report_answers("selection7", prompt + "¿Otra vez?"),
+            {},
+        )
 
     def test_unresolved_number_language_is_delegated_without_corrupting_problem(self):
         answer = "Ahí las casas se identifican de otra manera"

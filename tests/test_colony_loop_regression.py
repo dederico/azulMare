@@ -9,8 +9,10 @@ from app.services.report_intake_policy import (
 )
 from app.services.report_submission_policy import (
     canonical_report_location_value,
+    captured_report_question_field,
     extract_explicit_report_image_decision,
     extract_pending_report_answers,
+    next_missing_report_field,
 )
 
 
@@ -71,6 +73,55 @@ def test_industrial_full_report_captures_colony_without_reprompting():
 
     assert fields["selection6"] == "0000"
     assert fields["selection7"] == "Zona Industrial"
+
+
+def test_quoted_number_and_colony_complete_multiturn_location_without_reprompting():
+    selections = {
+        "selection1": "984",
+        "selection4": "Hay un bache que obstruye la circulación",
+        "selection5": "Vasconcelos",
+    }
+
+    assert next_missing_report_field(selections)[0] == "selection6"
+
+    number_reply = (
+        "« ¿Cuál es el número exterior? Si no existe o no lo conoces, "
+        "indícame ‘sin número’. »\n"
+        "Te estoy diciendo que es el cruce con"
+    )
+    selections.update(
+        extract_pending_report_answers(
+            "selection6",
+            number_reply,
+            existing_fields=selections,
+        )
+    )
+
+    assert selections["selection6"] == "0000"
+    assert next_missing_report_field(selections)[0] == "selection7"
+
+    colony_reply = (
+        "« ¿En qué colonia se encuentra el problema? »\n"
+        "En la colonia Centro"
+    )
+    selections.update(
+        extract_pending_report_answers(
+            "selection7",
+            colony_reply,
+            existing_fields=selections,
+        )
+    )
+
+    assert selections["selection7"] == "Centro"
+    assert next_missing_report_field(selections) is None
+    assert captured_report_question_field(
+        "¿Cuál es el número exterior?",
+        selections,
+    ) == "selection6"
+    assert captured_report_question_field(
+        "¿En qué colonia se encuentra el problema?",
+        selections,
+    ) == "selection7"
 
 
 def test_approximate_colony_guard_still_rejects_unrelated_text():

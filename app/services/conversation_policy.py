@@ -452,7 +452,7 @@ def should_suppress_repeated_report_question(
     report_progress_made: bool,
     repeated_count: int = 0,
 ) -> bool:
-    """Allow one retry, then suppress the same unanswered report question."""
+    """Never emit the exact same report question twice in succession."""
     previous = normalize_policy_text(previous_outbound)
     proposed = normalize_policy_text(proposed_outbound)
     is_question = str(proposed_outbound or "").strip().endswith("?")
@@ -461,7 +461,6 @@ def should_suppress_repeated_report_question(
         and proposed
         and previous == proposed
         and is_question
-        and (report_progress_made or int(repeated_count or 0) >= 1)
     )
 
 
@@ -469,9 +468,9 @@ def consume_report_prompt_attempt(
     session: dict,
     prompt_key: str,
     *,
-    max_attempts: int = 2,
+    max_attempts: int = 1,
 ) -> bool:
-    """Allow the initial prompt plus one retry in durable session state."""
+    """Allow a report prompt once; unresolved answers go to human review."""
     prompt_counts = session.setdefault("report_prompt_counts", {})
     prompt_count = int(prompt_counts.get(prompt_key) or 0)
     if prompt_count >= max(1, int(max_attempts)):

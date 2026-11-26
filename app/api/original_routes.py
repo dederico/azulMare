@@ -2847,7 +2847,7 @@ def create_or_update_report_session(from_number):
 
 
 def allow_report_prompt_attempt(from_number: str, prompt_key: str) -> bool:
-    """Allow an initial report question and one retry, then open the circuit."""
+    """Allow one field question, then open the circuit instead of repeating it."""
     with report_sessions_lock:
         session = report_sessions.setdefault(from_number, {})
         allowed = consume_report_prompt_attempt(session, prompt_key)
@@ -9447,11 +9447,26 @@ async def _process_whatsapp_request(request):
                         else None
                     )
                 )
+                # The pending-field parser can recover several facts from one
+                # answer (for example ``Monte Blanco 502``). Run it before the
+                # catalog parser claims the street alone; otherwise setting
+                # ``captured_report_field`` below prevents the number from
+                # being processed and SAM asks for it again.
+                pending_location_answers = (
+                    extract_pending_report_answers(
+                        pending_location_field,
+                        body,
+                        existing_fields=existing_answers,
+                    )
+                    if pending_location_field in {"selection5", "selection7"}
+                    else {}
+                )
                 catalog_location = extract_catalog_location(
                     body,
                     existing_answers,
                     expected_field=expected_location_field,
                 )
+                catalog_location.update(pending_location_answers)
                 if catalog_location and has_confirmed_report_intent(from_number):
                     catalog_field = next(iter(catalog_location))
                     location_was_requested = bool(

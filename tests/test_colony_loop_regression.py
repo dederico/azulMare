@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.services.conversation_policy import (
+    consume_report_prompt_attempt,
     should_enter_legacy_report_finalization,
 )
 from app.services.report_intake_policy import (
@@ -73,6 +74,34 @@ def test_industrial_full_report_captures_colony_without_reprompting():
 
     assert fields["selection6"] == "0000"
     assert fields["selection7"] == "Zona Industrial"
+
+
+def test_real_production_location_answers_never_trigger_an_identical_retry():
+    for field in ("selection5", "selection6", "selection7"):
+        session = {}
+        prompt_key = f"ask_field:{field}"
+        assert consume_report_prompt_attempt(session, prompt_key)
+        assert not consume_report_prompt_attempt(session, prompt_key)
+
+
+def test_residencial_san_agustin_ordinal_maps_to_the_exact_ciac_colony():
+    assert extract_pending_report_answers(
+        "selection7",
+        "Residencial San Agustín 2do Sector",
+    ) == {"selection7": "Residencial San Agustín 2 Sector"}
+
+
+def test_street_and_number_in_one_pending_answer_are_both_preserved():
+    assert extract_pending_report_answers(
+        "selection5",
+        "Monte Blanco 502",
+    ) == {
+        "selection5": "Monte Blanco",
+        "selection6": "502",
+    }
+
+    source = Path("app/api/original_routes.py").read_text(encoding="utf-8")
+    assert "catalog_location.update(pending_location_answers)" in source
 
 
 def test_quoted_number_and_colony_complete_multiturn_location_without_reprompting():

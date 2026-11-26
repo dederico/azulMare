@@ -436,7 +436,18 @@ def _strip_colony_answer_wrappers(value: str | None) -> str:
         candidate,
     )
     candidate = re.sub(r"^(?:en\s+)+(?:el|la)?\s*", "", candidate)
-    return candidate.strip()
+    candidate = candidate.strip()
+    # CIAC writes ordinal sectors as ``1 Sector`` / ``2 Sector`` while
+    # citizens naturally use ``1er``, ``2do``, ``primero`` or ``segundo``.
+    # Normalize only this structural suffix before exact catalog matching.
+    ordinal_patterns = {
+        r"\b(?:1|1er|1ro|primero|primer)\s+(?:sector|seccion)\b": "1 sector",
+        r"\b(?:2|2do|2da|segundo|segunda)\s+(?:sector|seccion)\b": "2 sector",
+        r"\b(?:3|3er|3ro|tercero|tercer)\s+(?:sector|seccion)\b": "3 sector",
+    }
+    for pattern, replacement in ordinal_patterns.items():
+        candidate = re.sub(pattern, replacement, candidate)
+    return candidate
 
 
 def canonical_report_colony_value(value: str | None) -> str | None:

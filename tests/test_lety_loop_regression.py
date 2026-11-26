@@ -132,9 +132,8 @@ def test_lety_report_does_not_reopen_or_forget_location_and_images():
     question = "¿Cuál es el número exterior?"
     prompt_session = {}
     assert consume_report_prompt_attempt(prompt_session, "ask_field:selection6")
-    assert consume_report_prompt_attempt(prompt_session, "ask_field:selection6")
     assert not consume_report_prompt_attempt(prompt_session, "ask_field:selection6")
-    assert not should_suppress_repeated_report_question(
+    assert should_suppress_repeated_report_question(
         question,
         question,
         report_progress_made=False,

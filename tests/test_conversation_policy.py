@@ -202,7 +202,7 @@ class AutomaticReportPolicyTests(unittest.TestCase):
                 report_progress_made=True,
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             should_suppress_repeated_report_question(
                 question,
                 question,
@@ -217,10 +217,10 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             )
         )
 
-    def test_same_report_question_allows_only_one_retry(self):
+    def test_same_report_question_is_never_repeated(self):
         question = "¿En qué colonia se encuentra el problema?"
 
-        self.assertFalse(
+        self.assertTrue(
             should_suppress_repeated_report_question(
                 question,
                 question,
@@ -237,7 +237,6 @@ class AutomaticReportPolicyTests(unittest.TestCase):
             )
         )
         session = {}
-        self.assertTrue(consume_report_prompt_attempt(session, "ask_field:selection7"))
         self.assertTrue(consume_report_prompt_attempt(session, "ask_field:selection7"))
         self.assertFalse(consume_report_prompt_attempt(session, "ask_field:selection7"))
 
